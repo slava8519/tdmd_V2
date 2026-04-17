@@ -20,9 +20,6 @@ format:
   # Always trailing comma for multi-line argument lists.
   enable_sort: true
   autosort: false
-  # Preserve comment blocks (important for # TODO, # NOTE, # NOLINT markers).
-  hashruler_min_length: 10
-  canonicalize_hashrulers: true
 
 parse:
   # TDMD-specific custom commands (fill in as we introduce them).
@@ -52,8 +49,13 @@ markup:
 
 lint:
   disabled_codes:
-    - C0113   # missing docstring on function (we document via adjacent .md)
+    - C0111   # missing docstring on function (we document via adjacent .md)
+    - C0113   # no reason given for disable (legacy code entry, kept for parity)
     - C0321   # multiple statements on one line (cmake idiomatic sometimes)
+    - C0103   # naming conventions — collide with CMake FindModule convention
+              # (e.g. `Lammps_VERSION_TAG`, `_arch` macro locals). CMake
+              # community practice takes precedence over cmake-lint defaults.
+    - C0307   # false-positive bad indentation on multiline strings in find()
   function_pattern: '[0-9a-z_]+'
   macro_pattern: '[0-9A-Z_]+'
   global_var_pattern: '[A-Z][0-9A-Z_]+'

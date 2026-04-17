@@ -41,8 +41,8 @@ function(tdmd_apply_warnings target)
   # ----------------------------------------------------------------------------
   # CUDA — nvcc passes host flags through -Xcompiler.
   # ----------------------------------------------------------------------------
-  # Fp64ReferenceBuild treats CUDA warnings as errors (oracle must be clean).
-  # Other flavors: warn-only.
+  # Fp64ReferenceBuild treats CUDA warnings as errors (oracle must be clean). Other flavors:
+  # warn-only.
   if(TDMD_BUILD_FLAVOR STREQUAL "Fp64ReferenceBuild")
     target_compile_options(${target} PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--Werror=all-warnings>)
   endif()

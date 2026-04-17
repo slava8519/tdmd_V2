@@ -40,8 +40,7 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/verify/third_party/lammps/.git")
   execute_process(
     COMMAND git -C "${CMAKE_SOURCE_DIR}/verify/third_party/lammps" describe --tags --exact-match
     OUTPUT_VARIABLE _tag
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-    ERROR_QUIET
+    OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET
     RESULT_VARIABLE _tag_rc)
   if(_tag_rc EQUAL 0 AND _tag)
     set(Lammps_VERSION_TAG "${_tag}")
@@ -61,9 +60,8 @@ if(Lammps_FOUND)
   if(NOT TARGET Lammps::lammps)
     add_library(Lammps::lammps SHARED IMPORTED)
     set_target_properties(
-      Lammps::lammps
-      PROPERTIES IMPORTED_LOCATION "${Lammps_LIBRARY}"
-                 INTERFACE_INCLUDE_DIRECTORIES "${Lammps_INCLUDE_DIR}")
+      Lammps::lammps PROPERTIES IMPORTED_LOCATION "${Lammps_LIBRARY}" INTERFACE_INCLUDE_DIRECTORIES
+                                                                      "${Lammps_INCLUDE_DIR}")
   endif()
 endif()
 

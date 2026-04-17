@@ -9,18 +9,17 @@ include(FetchContent)
 set(FETCHCONTENT_QUIET OFF)
 
 # ------------------------------------------------------------------------------
-# Catch2 v3 — unit test framework.
-# Pinned tag to avoid surprise changes.
+# Catch2 v3 — unit test framework. Pinned tag to avoid surprise changes.
 # ------------------------------------------------------------------------------
 if(TDMD_BUILD_TESTS)
-  FetchContent_Declare(
+  fetchcontent_declare(
     Catch2
     GIT_REPOSITORY https://github.com/catchorg/Catch2.git
     GIT_TAG v3.5.3
     GIT_SHALLOW TRUE
     SYSTEM # treat headers as system (suppresses warnings from Catch2)
   )
-  FetchContent_MakeAvailable(Catch2)
+  fetchcontent_makeavailable(Catch2)
 
   # Register Catch2's CMake helpers for auto-discovery from test binaries.
   if(TARGET Catch2::Catch2)
@@ -30,10 +29,7 @@ if(TDMD_BUILD_TESTS)
 endif()
 
 # ------------------------------------------------------------------------------
-# Future deps (uncomment when milestones require):
-#   - yaml-cpp (M1 — CLI config parsing)
-#   - HDF5 (M3 — trajectory output)
-#   - nlohmann_json (M3 — threshold registry, manifest)
-#   - fmt (M1 — structured logging; or rely on C++23 std::print once available)
-#   - MPI (M5 — multi-rank comm layer)
+# Future deps (uncomment when milestones require): - yaml-cpp (M1 — CLI config parsing) - HDF5 (M3 —
+# trajectory output) - nlohmann_json (M3 — threshold registry, manifest) - fmt (M1 — structured
+# logging; or rely on C++23 std::print once available) - MPI (M5 — multi-rank comm layer)
 # ------------------------------------------------------------------------------

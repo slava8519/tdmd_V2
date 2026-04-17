@@ -24,3 +24,6 @@ ignore: |
   build_*/
   verify/third_party/
   .git/
+  # clang-format's YAML uses column-aligned `:` and `Yes`/`No` truthies that
+  # clash with yamllint defaults — it's a foreign format with its own style.
+  .clang-format

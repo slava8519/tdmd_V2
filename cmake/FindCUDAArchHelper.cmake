@@ -15,10 +15,8 @@ function(tdmd_resolve_cuda_archs out_var input)
     # Query nvidia-smi for the first visible device's compute cap.
     find_program(NVIDIA_SMI nvidia-smi)
     if(NOT NVIDIA_SMI)
-      message(
-        FATAL_ERROR
-        "TDMD_CUDA_ARCHS=native requested but nvidia-smi not found. "
-        "Set TDMD_CUDA_ARCHS to an explicit value (e.g. 120).")
+      message(FATAL_ERROR "TDMD_CUDA_ARCHS=native requested but nvidia-smi not found. "
+                          "Set TDMD_CUDA_ARCHS to an explicit value (e.g. 120).")
     endif()
 
     execute_process(
@@ -39,13 +37,13 @@ function(tdmd_resolve_cuda_archs out_var input)
     endif()
     string(REPLACE "." "" _arch "${_first_cap}")
 
-    message(
-      WARNING
-      "TDMD_CUDA_ARCHS=native resolved to ${_arch} from nvidia-smi — "
-      "this build is NOT reproducible on machines with different GPUs. "
-      "Use an explicit arch list in CI.")
+    message(WARNING "TDMD_CUDA_ARCHS=native resolved to ${_arch} from nvidia-smi — "
+                    "this build is NOT reproducible on machines with different GPUs. "
+                    "Use an explicit arch list in CI.")
 
-    set(${out_var} "${_arch}" PARENT_SCOPE)
+    set(${out_var}
+        "${_arch}"
+        PARENT_SCOPE)
   else()
     # Validate each entry is a 2-3 digit number.
     foreach(_arch IN LISTS input)
@@ -53,6 +51,8 @@ function(tdmd_resolve_cuda_archs out_var input)
         message(FATAL_ERROR "TDMD_CUDA_ARCHS entry '${_arch}' is not numeric")
       endif()
     endforeach()
-    set(${out_var} "${input}" PARENT_SCOPE)
+    set(${out_var}
+        "${input}"
+        PARENT_SCOPE)
   endif()
 endfunction()

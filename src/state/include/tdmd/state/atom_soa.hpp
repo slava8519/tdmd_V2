@@ -17,7 +17,7 @@ struct AtomSoA {
   [[nodiscard]] std::size_t size() const noexcept { return size_; }
   [[nodiscard]] bool empty() const noexcept { return size_ == 0; }
 
- private:
+private:
   std::size_t size_ = 0;
 };
 

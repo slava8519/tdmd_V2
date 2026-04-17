@@ -9,7 +9,7 @@
 namespace tdmd {
 
 class Integrator {
- public:
+public:
   Integrator() = default;
   virtual ~Integrator() = default;
 

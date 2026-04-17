@@ -20,10 +20,13 @@ repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v4.6.0
     hooks:
+      # docs/_sources/ is read-only upstream reference (master spec Андреева,
+      # deep_research_report, spec drafts). CLAUDE.md forbids editing it; these
+      # destructive hooks would silently rewrite bytes (incl. the .docx binary).
       - id: trailing-whitespace
-        exclude: '\.patch$'
+        exclude: '^(docs/_sources/|.*\.patch$)'
       - id: end-of-file-fixer
-        exclude: '\.svg$'
+        exclude: '^(docs/_sources/|.*\.svg$)'
       - id: check-yaml
         args: ['--allow-multiple-documents']
         # CMakePresets.json is JSON; ctest config is INI — skip them here
@@ -38,6 +41,7 @@ repos:
       - id: check-shebang-scripts-are-executable
       - id: mixed-line-ending
         args: ['--fix=lf']
+        exclude: '^docs/_sources/'
 
   # ---------------------------------------------------------------------------
   # C++ / CUDA — clang-format.
@@ -69,9 +73,14 @@ repos:
     hooks:
       - id: cmake-format
         args: ['--config-files', '.cmake-format.yaml', '--in-place']
+        # cmakelang ships pyyaml as an optional [YAML] extra; pre-commit's
+        # default env omits it, so the YAML config loader raises ImportError.
+        additional_dependencies: [pyyaml]
         # Exclude third-party cmake (LAMMPS submodule, FetchContent sources).
         exclude: '^(verify/third_party|build/_deps)/.*'
       - id: cmake-lint
+        args: ['--config-files', '.cmake-format.yaml']
+        additional_dependencies: [pyyaml]
         exclude: '^(verify/third_party|build/_deps)/.*'
 
   # ---------------------------------------------------------------------------

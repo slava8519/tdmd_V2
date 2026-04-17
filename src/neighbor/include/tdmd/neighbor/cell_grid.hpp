@@ -17,7 +17,7 @@ struct CellGrid {
   [[nodiscard]] std::size_t cell_count() const noexcept { return cell_count_; }
   [[nodiscard]] bool empty() const noexcept { return cell_count_ == 0; }
 
- private:
+private:
   std::size_t cell_count_ = 0;
 };
 

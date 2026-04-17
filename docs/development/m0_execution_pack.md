@@ -545,12 +545,13 @@ Updated:
     - link check (опционально — markdown-link-check action)
   - All jobs required for merge
 
-- [included] `.github/CODEOWNERS` — placeholder:
-  ```
-  *           @slava8519
-  /docs/specs @slava8519
-  /docs/development @slava8519
-  ```
+- [included] `.github/CODEOWNERS` — placeholder (contents follow):
+
+```text
+*           @slava8519
+/docs/specs @slava8519
+/docs/development @slava8519
+```
 
 - [included] `.github/PULL_REQUEST_TEMPLATE.md` — checklist согласованный с playbook §1.3 (pre-implementation report) и §4 (session report):
   - Pre-implementation report attached (link or inline)

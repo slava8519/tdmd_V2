@@ -38,3 +38,37 @@ MD048:
 
 # MD029 — ordered list prefix. Allow both "1. 2. 3." and "1. 1. 1." styles.
 MD029: false
+
+# MD040 — fenced code language required. The existing SPECs (written pre-M0)
+# mix prose-only fences with code fences; requiring a language now would force
+# mass-editing every SPEC to pick one (text/plain/none). Deferred to a M1+
+# lint-sweep SPEC delta; for now, reviewers enforce via PR review.
+MD040: false
+
+# MD031 / MD032 — blank lines around fences / lists. Pre-existing SPECs often
+# pack lists and fences tightly for density; adding blank lines is cosmetic.
+# Keeping disabled for consistency with MD040 deferral above.
+MD031: false
+MD032: false
+
+# MD022 — blank lines around headings. Same rationale as MD031/MD032: cosmetic,
+# mass-fix would touch every SPEC; deferred.
+MD022: false
+
+# MD004 — unordered list style. TDMD convention is `-` (dash); the markdownlint
+# default `consistent` trips on files that mix `-` and `*`. Lock to `dash`.
+MD004:
+  style: dash
+
+# MD014 — dollar-prefixed commands without output. Spec examples use
+# `$ cmd args` to indicate shell prompts even without output; this is idiomatic.
+MD014: false
+
+# MD025 — multiple top-level H1 headings. TDMD_Engineering_Spec.md is a
+# multi-part document ("# Часть I", "# Часть II", ...); forcing a single H1
+# would break the intentional part structure.
+MD025: false
+
+# MD050 — strong style (asterisk vs underscore). SPECs mix both; unifying would
+# be a SPEC delta-level churn. Deferred.
+MD050: false

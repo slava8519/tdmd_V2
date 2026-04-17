@@ -14,12 +14,9 @@ project(
   DESCRIPTION "Time-Decomposition Molecular Dynamics"
   LANGUAGES CXX)
 
-# Prevent in-source builds — they spray build artifacts into the source tree
-# and confuse git.
+# Prevent in-source builds — they spray build artifacts into the source tree and confuse git.
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_BINARY_DIR)
-  message(
-    FATAL_ERROR
-    "In-source builds are disallowed. Use: cmake -B build --preset default")
+  message(FATAL_ERROR "In-source builds are disallowed. Use: cmake -B build --preset default")
 endif()
 
 # ------------------------------------------------------------------------------
@@ -35,15 +32,11 @@ set(TDMD_BUILD_FLAVOR
     CACHE STRING "Active BuildFlavor (master spec §7.1)")
 set_property(
   CACHE TDMD_BUILD_FLAVOR
-  PROPERTY STRINGS
-           "Fp64ReferenceBuild"
-           "Fp64ProductionBuild"
-           "MixedFastBuild"
-           "MixedFastAggressiveBuild"
-           "Fp32ExperimentalBuild")
+  PROPERTY STRINGS "Fp64ReferenceBuild" "Fp64ProductionBuild" "MixedFastBuild"
+           "MixedFastAggressiveBuild" "Fp32ExperimentalBuild")
 
-# RTX 5080 (Blackwell) = sm_120, requires CUDA 12.8+.
-# Users on CUDA 12.6 must override: -DTDMD_CUDA_ARCHS=89
+# RTX 5080 (Blackwell) = sm_120, requires CUDA 12.8+. Users on CUDA 12.6 must override:
+# -DTDMD_CUDA_ARCHS=89
 set(TDMD_CUDA_ARCHS
     "120"
     CACHE STRING "CUDA compute capabilities (semicolon list, or 'native')")
@@ -65,10 +58,8 @@ if(TDMD_BUILD_CUDA)
   include(CheckLanguage)
   check_language(CUDA)
   if(NOT CMAKE_CUDA_COMPILER)
-    message(
-      WARNING
-      "CUDA compiler not found; disabling CUDA targets. "
-      "To enable, install CUDA 12.8+ and re-configure, or set -DTDMD_BUILD_CUDA=OFF.")
+    message(WARNING "CUDA compiler not found; disabling CUDA targets. "
+                    "To enable, install CUDA 12.8+ and re-configure, or set -DTDMD_BUILD_CUDA=OFF.")
     set(TDMD_BUILD_CUDA OFF)
   else()
     enable_language(CUDA)
@@ -80,16 +71,16 @@ if(TDMD_BUILD_CUDA)
     tdmd_resolve_cuda_archs(TDMD_CUDA_ARCHS_RESOLVED "${TDMD_CUDA_ARCHS}")
     set(CMAKE_CUDA_ARCHITECTURES ${TDMD_CUDA_ARCHS_RESOLVED})
 
-    # sm_120 requires CUDA 12.8+. Emit hard error if toolchain is older —
-    # nvcc would fail anyway, but our message is clearer.
+    # sm_120 requires CUDA 12.8+. Emit hard error if toolchain is older — nvcc would fail anyway,
+    # but our message is clearer.
     if("120" IN_LIST CMAKE_CUDA_ARCHITECTURES)
       if(CMAKE_CUDA_COMPILER_VERSION VERSION_LESS "12.8")
         message(
           FATAL_ERROR
-          "sm_120 (RTX 5080 Blackwell) requires CUDA 12.8+, but detected "
-          "${CMAKE_CUDA_COMPILER_VERSION}. Options:\n"
-          "  1. Upgrade: sudo apt install cuda-toolkit-12-8 (or newer)\n"
-          "  2. Override: cmake -DTDMD_CUDA_ARCHS=89 (Ada / RTX 40xx fallback)")
+            "sm_120 (RTX 5080 Blackwell) requires CUDA 12.8+, but detected "
+            "${CMAKE_CUDA_COMPILER_VERSION}. Options:\n"
+            "  1. Upgrade: sudo apt install cuda-toolkit-12-8 (or newer)\n"
+            "  2. Override: cmake -DTDMD_CUDA_ARCHS=89 (Ada / RTX 40xx fallback)")
       endif()
     endif()
 
