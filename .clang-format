@@ -1,0 +1,75 @@
+---
+# TDMD C++ / CUDA format config.
+# Base: Google, with TDMD adjustments (master spec §15, playbook §5.1).
+# Applies to: *.cpp, *.cc, *.h, *.hpp, *.cu, *.cuh
+#
+# To reformat the whole tree: tools/lint/run_clang_format.sh
+# CI enforces this file via mirrors-clang-format pre-commit hook.
+
+Language:        Cpp
+BasedOnStyle:    Google
+
+# TDMD adjustments (differ from Google defaults):
+ColumnLimit:     100              # Google default 80; TDMD allows 100 (matches most modern codebases)
+AccessModifierOffset: -2          # public:/private: outdented
+IndentWidth:     2
+TabWidth:        2
+UseTab:          Never
+ContinuationIndentWidth: 4
+
+# Pointer/reference alignment — TDMD uses left-binding (`int* p`, not `int *p`)
+# for consistency with CUDA kernel signatures where `float* __restrict__ f` reads
+# as "pointer-to-float that is restrict". See master spec §D.16.
+DerivePointerAlignment: false
+PointerAlignment: Left
+
+# Braces — Attach style everywhere.
+BreakBeforeBraces: Attach
+
+# Keep short blocks readable but avoid one-liners that hide control flow.
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortCaseLabelsOnASingleLine: false
+AllowShortBlocksOnASingleLine: Never
+
+# Includes — sort case-sensitive, preserve block structure (module headers,
+# then external, then standard). Priority groups match typical TDMD layout.
+SortIncludes: CaseSensitive
+IncludeBlocks: Regroup
+IncludeCategories:
+  - Regex: '^<.*\.h>'              # C headers
+    Priority: 4
+  - Regex: '^<.*'                  # C++ standard
+    Priority: 3
+  - Regex: '^"tdmd/'               # internal TDMD headers
+    Priority: 1
+  - Regex: '.*'                    # everything else (third-party)
+    Priority: 2
+
+# Spacing / alignment
+SpaceAfterCStyleCast: true
+SpaceBeforeCpp11BracedList: false
+AlignAfterOpenBracket: Align
+AlignConsecutiveAssignments: false
+AlignConsecutiveDeclarations: false
+AlignTrailingComments: true
+
+# Function parameters — allow them on one line if they fit, else one-per-line.
+BinPackArguments: false
+BinPackParameters: false
+AllowAllArgumentsOnNextLine: false
+AllowAllParametersOfDeclarationOnNextLine: false
+
+# Templates
+AlwaysBreakTemplateDeclarations: Yes
+SpaceAfterTemplateKeyword: true
+
+# Namespaces — do not indent body, add comment on closing brace.
+NamespaceIndentation: None
+FixNamespaceComments: true
+ShortNamespaceLines: 1
+
+# Standards
+Standard: c++20
+...

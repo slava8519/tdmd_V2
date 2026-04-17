@@ -1,0 +1,71 @@
+---
+# TDMD clang-tidy configuration.
+# Master spec: §15 (methodology), §D.16 (__restrict__ policy).
+# Playbook: §5.1 (auto-reject patterns), §5.4 (performance violations).
+#
+# Check selection favors correctness + portability + performance.
+# Some categories intentionally excluded because they conflict with scientific
+# numeric code (magic-numbers in force formulas, unit conversion constants).
+
+Checks: >
+  bugprone-*,
+  cppcoreguidelines-*,
+  modernize-*,
+  performance-*,
+  readability-*,
+  cert-*,
+  misc-*,
+  portability-*,
+  -bugprone-easily-swappable-parameters,
+  -cppcoreguidelines-avoid-magic-numbers,
+  -cppcoreguidelines-pro-bounds-array-to-pointer-decay,
+  -cppcoreguidelines-pro-bounds-pointer-arithmetic,
+  -cppcoreguidelines-pro-bounds-constant-array-index,
+  -cppcoreguidelines-avoid-do-while,
+  -cppcoreguidelines-avoid-c-arrays,
+  -modernize-use-trailing-return-type,
+  -modernize-avoid-c-arrays,
+  -readability-magic-numbers,
+  -readability-function-cognitive-complexity,
+  -readability-identifier-length,
+  -misc-non-private-member-variables-in-classes,
+  -misc-no-recursion
+
+WarningsAsErrors: ''
+
+# We intentionally run clang-tidy on our own code only; third-party sources
+# (LAMMPS submodule, FetchContent Catch2) are excluded via build wrapper.
+HeaderFilterRegex: '^(src|include|tests)/.*\.(h|hpp|cuh)$'
+
+# Format applied to suggested fixes (when using --fix).
+FormatStyle: file
+
+CheckOptions:
+  # Naming — TDMD convention (see docs/development/code_style.md).
+  readability-identifier-naming.NamespaceCase: lower_case
+  readability-identifier-naming.ClassCase: CamelCase
+  readability-identifier-naming.StructCase: CamelCase
+  readability-identifier-naming.EnumCase: CamelCase
+  readability-identifier-naming.EnumConstantCase: CamelCase
+  readability-identifier-naming.FunctionCase: lower_case
+  readability-identifier-naming.VariableCase: lower_case
+  readability-identifier-naming.MemberCase: lower_case
+  readability-identifier-naming.PrivateMemberSuffix: _
+  readability-identifier-naming.ConstantCase: lower_case
+  readability-identifier-naming.ConstexprVariableCase: lower_case
+  readability-identifier-naming.GlobalConstantCase: UPPER_CASE
+  readability-identifier-naming.MacroDefinitionCase: UPPER_CASE
+  readability-identifier-naming.TemplateParameterCase: CamelCase
+  # Modernize
+  modernize-use-default-member-init.UseAssignment: true
+  modernize-use-nodiscard.ReplacementString: '[[nodiscard]]'
+  # Performance
+  performance-move-const-arg.CheckTriviallyCopyableMove: false
+  # cppcoreguidelines
+  cppcoreguidelines-explicit-virtual-functions.IgnoreDestructors: true
+
+# NOTE on missing-restrict check:
+# The auto-reject rule for hot kernels without __restrict__ (playbook §5.1) is
+# NOT yet implemented as a clang-tidy check. It requires a custom AST matcher;
+# scheduled for M2-M3. Until then enforced by: (a) code review, (b) the local
+# pre-commit hook tools/lint/check_restrict_stub.py (STUB).

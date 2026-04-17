@@ -1,0 +1,26 @@
+# yamllint config for TDMD.
+# Strict enough to catch typos, lenient enough to coexist with CI YAML that
+# uses long matrix lines.
+
+extends: default
+
+rules:
+  line-length:
+    max: 160
+    level: warning
+  document-start: disable
+  indentation:
+    spaces: 2
+    indent-sequences: consistent
+  truthy:
+    allowed-values: ['true', 'false', 'on', 'off']
+    check-keys: false
+  comments:
+    min-spaces-from-content: 1
+  comments-indentation: disable
+
+ignore: |
+  build/
+  build_*/
+  verify/third_party/
+  .git/

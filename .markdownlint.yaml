@@ -1,0 +1,40 @@
+# markdownlint-cli2 config for TDMD.
+# Spec files mix Russian prose with English code — some default rules don't fit.
+
+default: true
+
+# MD013 — line length. Long formula descriptions in SPECs routinely exceed 80;
+# hard-wrapping breaks readability. Disabled.
+MD013: false
+
+# MD024 — duplicate heading content. Module SPECs use repeated section names
+# like "Purpose" across subsections. Allow siblings-only.
+MD024:
+  siblings_only: true
+
+# MD033 — inline HTML. We use <!-- TODO --> markers extensively in templates.
+MD033: false
+
+# MD041 — first line must be top-level heading. OK by default.
+
+# MD034 — bare URLs. SPECs sometimes paste raw URLs; allow.
+MD034: false
+
+# MD026 — trailing punctuation in heading. Allow "§7." style.
+MD026: false
+
+# MD036 — emphasis used instead of heading. Allow (used for role callouts).
+MD036: false
+
+# MD046 — code block style. Require fenced (not indented).
+MD046:
+  style: fenced
+
+# MD048 — code fence style. Require backticks.
+MD048:
+  style: backtick
+
+# MD007 — unordered list indent. Default 2 spaces is fine.
+
+# MD029 — ordered list prefix. Allow both "1. 2. 3." and "1. 1. 1." styles.
+MD029: false
