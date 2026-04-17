@@ -1,0 +1,109 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 25,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "default",
+      "displayName": "Default (CPU + CUDA, Release, sm_120)",
+      "description": "Canonical dev-machine config. Requires CUDA 12.8+ for sm_120 (RTX 5080). Use 'default-sm89' fallback for CUDA 12.6.",
+      "binaryDir": "${sourceDir}/build",
+      "generator": "Ninja",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "TDMD_BUILD_CUDA": "ON",
+        "TDMD_BUILD_TESTS": "ON",
+        "TDMD_BUILD_FLAVOR": "Fp64ReferenceBuild",
+        "TDMD_CUDA_ARCHS": "120"
+      }
+    },
+    {
+      "name": "default-sm89",
+      "displayName": "Default fallback (CPU + CUDA, Release, sm_89)",
+      "description": "For machines on CUDA 12.6 without sm_120 support (Ada RTX 40xx, or waiting on toolchain upgrade).",
+      "inherits": "default",
+      "binaryDir": "${sourceDir}/build_sm89",
+      "cacheVariables": {
+        "TDMD_CUDA_ARCHS": "89"
+      }
+    },
+    {
+      "name": "debug",
+      "displayName": "Debug (CPU + CUDA, sanitizers)",
+      "description": "Debug build with ASan + UBSan for host code. CUDA builds with debug symbols but without sanitizers (ASan + nvcc are incompatible).",
+      "binaryDir": "${sourceDir}/build_debug",
+      "generator": "Ninja",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "TDMD_BUILD_CUDA": "ON",
+        "TDMD_BUILD_TESTS": "ON",
+        "TDMD_BUILD_FLAVOR": "Fp64ReferenceBuild",
+        "TDMD_CUDA_ARCHS": "120",
+        "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer",
+        "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=address,undefined"
+      }
+    },
+    {
+      "name": "cpu-only",
+      "displayName": "CPU only (no CUDA, for lint/CI/non-GPU machines)",
+      "description": "Used by CI lint job and any developer without CUDA installed. Produces compile_commands.json for clang-tidy.",
+      "binaryDir": "${sourceDir}/build_cpu",
+      "generator": "Ninja",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "TDMD_BUILD_CUDA": "OFF",
+        "TDMD_BUILD_TESTS": "ON",
+        "TDMD_BUILD_FLAVOR": "Fp64ReferenceBuild"
+      }
+    },
+    {
+      "name": "release",
+      "displayName": "Release (stripped, no debug info)",
+      "description": "Production binary build — minimal size, no tests.",
+      "binaryDir": "${sourceDir}/build_release",
+      "generator": "Ninja",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "TDMD_BUILD_CUDA": "ON",
+        "TDMD_BUILD_TESTS": "OFF",
+        "TDMD_BUILD_BENCHMARKS": "ON",
+        "TDMD_BUILD_FLAVOR": "Fp64ProductionBuild",
+        "TDMD_CUDA_ARCHS": "120",
+        "TDMD_WARNINGS_AS_ERRORS": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "default",       "configurePreset": "default" },
+    { "name": "default-sm89",  "configurePreset": "default-sm89" },
+    { "name": "debug",         "configurePreset": "debug" },
+    { "name": "cpu-only",      "configurePreset": "cpu-only" },
+    { "name": "release",       "configurePreset": "release" }
+  ],
+  "testPresets": [
+    {
+      "name": "default",
+      "configurePreset": "default",
+      "output": { "outputOnFailure": true },
+      "execution": { "noTestsAction": "ignore" }
+    },
+    {
+      "name": "default-sm89",
+      "configurePreset": "default-sm89",
+      "inherits": "default"
+    },
+    {
+      "name": "debug",
+      "configurePreset": "debug",
+      "inherits": "default"
+    },
+    {
+      "name": "cpu-only",
+      "configurePreset": "cpu-only",
+      "inherits": "default"
+    }
+  ]
+}
