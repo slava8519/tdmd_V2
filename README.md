@@ -177,6 +177,27 @@ Total v1 (M0–M8): ~58 недель ≈ 14 месяцев команды 3-5 и
 
 ---
 
+## Сборка (M0+ status: skeleton only)
+
+M0 (Process & skeleton) находится в процессе. Декомпозиция на 7 PR-size задач и execution plan — в [`docs/development/m0_execution_pack.md`](docs/development/m0_execution_pack.md).
+
+Формальные build instructions появятся после T0.4 (root CMake) в [`docs/development/build_instructions.md`](docs/development/build_instructions.md). Пока — quick reference по окружению:
+
+| Компонент | Minimal version | Примечание |
+|---|---|---|
+| OS | Linux (Ubuntu 24.04 LTS) | Dev baseline |
+| C++ compiler | GCC 13+ / Clang 17+ | C++20 required |
+| CMake | 3.25+ | |
+| CUDA toolkit | **12.8+** | Обязательно для `sm_120` (Blackwell consumer / RTX 50). `sm_80` A100 и `sm_90` H100 тоже supported |
+| Python | 3.10+ | Для `pre-commit`, build helpers |
+| Ninja | 1.11+ | Рекомендуемый CMake generator |
+| MPI | OpenMPI 4.1+ | Нужен с M5+ |
+| LAMMPS | pinned stable tag | Git submodule в `verify/third_party/lammps/` (заполняется в T0.7) |
+
+Статус задач M0: см. GitHub issues / PRs с тегом `milestone:M0`.
+
+---
+
 ## Связь документов (dependency graph)
 
 ```

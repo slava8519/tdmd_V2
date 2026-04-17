@@ -1,0 +1,49 @@
+# Default: auto-detect text; enforce LF line endings
+* text=auto eol=lf
+
+# Explicit text
+*.md text
+*.txt text
+*.yml text
+*.yaml text
+*.json text
+*.toml text
+*.cpp text
+*.hpp text
+*.cc text
+*.h text
+*.cu text
+*.cuh text
+*.c text
+*.py text
+*.sh text
+*.cmake text
+CMakeLists.txt text
+*.cff text
+
+# Explicit binary
+*.docx binary
+*.pdf binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.tar binary
+*.tar.gz binary
+*.tgz binary
+*.zip binary
+*.7z binary
+
+# Linguist hints
+docs/_sources/*.docx linguist-documentation
+
+# LFS tracking for large reference data (M5+ fixtures)
+verify/**/*.h5 filter=lfs diff=lfs merge=lfs -text
+verify/**/*.npz filter=lfs diff=lfs merge=lfs -text
+verify/**/*.bin filter=lfs diff=lfs merge=lfs -text
+verify/**/*.data filter=lfs diff=lfs merge=lfs -text
+benchmarks/**/*.h5 filter=lfs diff=lfs merge=lfs -text
+benchmarks/**/*.npz filter=lfs diff=lfs merge=lfs -text
+benchmarks/**/*.bin filter=lfs diff=lfs merge=lfs -text
+benchmarks/**/*.data filter=lfs diff=lfs merge=lfs -text

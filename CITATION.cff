@@ -1,0 +1,37 @@
+cff-version: 1.2.0
+title: TDMD
+message: "If you use TDMD, please cite this software and reference the foundational dissertation (Andreev, 2007)."
+type: software
+authors:
+  - name: "TDMD Project Contributors"
+version: 0.1.0
+date-released: "2026-04-17"
+url: "https://github.com/slava8519/tdmd_V2"
+repository-code: "https://github.com/slava8519/tdmd_V2"
+license: BSD-3-Clause
+keywords:
+  - molecular-dynamics
+  - time-decomposition
+  - gpu
+  - cuda
+  - hpc
+  - eam
+  - snap
+  - mliap
+  - pace
+  - meam
+abstract: "TDMD is a GPU-first standalone molecular-dynamics engine built on the time decomposition (TD) parallelism principle from V.V. Andreev's 2007 dissertation, targeting expensive local many-body and ML potentials (EAM, MEAM, SNAP, MLIAP, PACE) on commodity HPC and cloud clusters."
+references:
+  - type: thesis
+    thesis-type: "doctoral thesis"
+    authors:
+      - family-names: "Андреев"
+        given-names: "В. В."
+    title: "Метод декомпозиции по времени (TIME-MD) для параллельного моделирования молекулярной динамики"
+    year: 2007
+    notes: >
+      Foundational dissertation establishing the time decomposition (TD)
+      parallelism principle on which TDMD is built. Full text available in
+      docs/_sources/dissertation_andreev_2007.docx. The exact title above is
+      a working placeholder — please verify against the original cover page
+      and update this reference when the canonical citation is confirmed.
