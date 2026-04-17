@@ -1,7 +1,7 @@
 # tdmd::neighbor — cell grid and neighbor list management.
 # SPEC: docs/specs/neighbor/SPEC.md
 
-add_library(tdmd_neighbor STATIC cell_grid.cpp)
+add_library(tdmd_neighbor STATIC cell_grid.cpp neighbor_list.cpp displacement_tracker.cpp)
 add_library(tdmd::neighbor ALIAS tdmd_neighbor)
 
 target_include_directories(
