@@ -1,0 +1,155 @@
+# TDMD CI — Pipeline A (lint + build).
+# Master spec §11, §15.1. Playbook §8.
+# Pipelines B-F added in M1+ as their test layers come online.
+
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+# Cancel in-flight runs from the same PR when new commits arrive.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # lint — pre-commit hooks (clang-format, markdownlint, cmake-format, ruff,
+  # shellcheck, yamllint, etc).
+  # ---------------------------------------------------------------------------
+  lint:
+    name: Lint (pre-commit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Cache pre-commit envs
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pre-commit
+          key: pre-commit-${{ runner.os }}-${{ hashFiles('.pre-commit-config.yaml') }}
+
+      - name: Install pre-commit
+        run: pip install pre-commit
+
+      - name: Run pre-commit on all files
+        run: pre-commit run --all-files --show-diff-on-failure
+
+  # ---------------------------------------------------------------------------
+  # docs-lint — extra markdown sanity check (explicit, beyond pre-commit).
+  # ---------------------------------------------------------------------------
+  docs-lint:
+    name: Docs lint (markdownlint-cli2)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Run markdownlint-cli2
+        uses: DavidAnson/markdownlint-cli2-action@v16
+        with:
+          config: '.markdownlint.yaml'
+          globs: |
+            **/*.md
+            !docs/_sources/**
+            !verify/third_party/**
+            !build/**
+            !build_*/**
+
+  # ---------------------------------------------------------------------------
+  # build-cpu — CPU-only build, matrix over GCC + Clang. Fast feedback.
+  # ---------------------------------------------------------------------------
+  build-cpu:
+    name: Build CPU (${{ matrix.compiler }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc-13, clang-17]
+        include:
+          - compiler: gcc-13
+            cc: gcc-13
+            cxx: g++-13
+            apt: gcc-13 g++-13
+          - compiler: clang-17
+            cc: clang-17
+            cxx: clang++-17
+            apt: clang-17
+
+    env:
+      CC: ${{ matrix.cc }}
+      CXX: ${{ matrix.cxx }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ${{ matrix.apt }} cmake ninja-build
+
+      - name: Configure (cpu-only preset)
+        run: cmake -B build_cpu --preset cpu-only -DTDMD_WARNINGS_AS_ERRORS=ON
+
+      - name: Build
+        run: cmake --build build_cpu --parallel
+
+      - name: Test
+        run: ctest --test-dir build_cpu --output-on-failure
+
+      - name: Upload compile_commands.json
+        if: matrix.compiler == 'clang-17'
+        uses: actions/upload-artifact@v4
+        with:
+          name: compile-commands-cpu
+          path: build_cpu/compile_commands.json
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # build-cuda — GPU build on the self-hosted RTX 5080 runner.
+  # Requires: runner registered with label `gpu-rtx5080`; CUDA 12.8+ installed.
+  # ---------------------------------------------------------------------------
+  build-cuda:
+    name: Build CUDA (sm_120, self-hosted RTX 5080)
+    runs-on: [self-hosted, linux, gpu-rtx5080]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Print GPU info
+        run: |
+          nvidia-smi
+          nvcc --version
+
+      - name: Configure (default preset, sm_120)
+        run: cmake -B build --preset default -DTDMD_WARNINGS_AS_ERRORS=ON
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Cleanup workspace (isolated runner)
+        if: always()
+        run: rm -rf build build_cpu build_debug build_sm89

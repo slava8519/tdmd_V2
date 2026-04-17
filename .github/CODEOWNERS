@@ -1,0 +1,30 @@
+# TDMD code owners. Auto-requests reviews on matching PRs.
+# Docs: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-security/customizing-your-repository/about-code-owners
+
+# Default owner for everything — solo-maintainer phase.
+*                           @slava8519
+
+# Specs (master + module) — Architect review on every change.
+/TDMD_Engineering_Spec.md   @slava8519
+/docs/specs/                @slava8519
+/docs/development/          @slava8519
+
+# CI and build system — Core Runtime / Validation Engineer review.
+/.github/                   @slava8519
+/cmake/                     @slava8519
+/CMakeLists.txt             @slava8519
+/CMakePresets.json          @slava8519
+
+# Tooling and lint configs.
+/tools/                     @slava8519
+/.clang-format              @slava8519
+/.clang-tidy                @slava8519
+/.pre-commit-config.yaml    @slava8519
+
+# Module source — each module will grow its own owner line as it lands.
+/src/state/                 @slava8519
+/src/neighbor/              @slava8519
+/src/integrator/            @slava8519
+
+# Verify layer — Validation Engineer exclusively once M1+ tests appear.
+/verify/                    @slava8519
