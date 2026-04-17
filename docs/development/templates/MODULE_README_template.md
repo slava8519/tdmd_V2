@@ -33,10 +33,12 @@ This is the README-level version of SPEC §1.3. -->
 SPEC §2 in full — just the headline. Link to full API doc. -->
 
 ```cpp
-namespace tdmd::<module> {
+namespace tdmd {
     class <PrimaryClass>;     // <one-liner>
 }
 ```
+
+Note: TDMD uses a flat `namespace tdmd` (master spec convention); module identity is conveyed via include path (`tdmd/<module>/<header>.hpp`) and file layout, not namespace nesting.
 
 Full API: [SPEC §2](../../docs/specs/<module>/SPEC.md#2-public-interface).
 

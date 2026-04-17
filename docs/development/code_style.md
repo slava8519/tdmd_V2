@@ -9,6 +9,7 @@ Binding conventions for all TDMD C++ and CUDA source. Enforcement: `.clang-forma
 ## 1. Language and standards
 
 - **C++20**, extensions off. Features: concepts, ranges, `[[likely]]`, `constinit`, `consteval`.
+- **Namespace:** flat `namespace tdmd { ... }` for all library code. Module identity lives in include paths (`tdmd/<module>/<header>.hpp`), not namespace nesting — matches authoritative module SPECs.
 - **CUDA C++17** (nvcc 12.x ceiling). Host code remains C++20.
 - Headers use `#pragma once`, never include guards.
 - Never `using namespace std` at file scope; allowed inside functions or `.cpp` for short-lived scopes.
@@ -17,7 +18,7 @@ Binding conventions for all TDMD C++ and CUDA source. Enforcement: `.clang-forma
 
 | Kind                        | Style               | Example                            |
 | --------------------------- | ------------------- | ---------------------------------- |
-| Namespaces                  | `lower_case`        | `tdmd::scheduler`                  |
+| Namespaces                  | `lower_case`        | `tdmd` (flat — see §1)             |
 | Classes / structs / enums   | `CamelCase`         | `SafetyCertificate`, `BuildFlavor` |
 | Free / member functions     | `lower_case`        | `advance_to`, `rebuild_if_stale`   |
 | Variables (local, param)    | `lower_case`        | `zone_id`, `safe_until`            |

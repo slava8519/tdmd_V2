@@ -50,15 +50,17 @@ that does own them. Critical for ownership boundaries (master spec §8.2). -->
 // TODO: header-level declarations exposed to other modules.
 // One class / function per subsection. Include doc comments with units (eV, Å, ps).
 
-namespace tdmd::<module> {
+namespace tdmd {
 
 class <PrimaryClass> {
 public:
     // TODO
 };
 
-}  // namespace tdmd::<module>
+}  // namespace tdmd
 ```
+
+Note: TDMD uses a flat `namespace tdmd` (master spec convention). Module identity lives in the include path (`tdmd/<module>/<header>.hpp`), not in a nested namespace.
 
 ### 2.2. CUDA API (if applicable)
 
