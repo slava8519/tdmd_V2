@@ -1,0 +1,16 @@
+# Canonical Al Morse parameters — Girifalco & Weizer, Phys. Rev. 114, 687 (1959).
+# Carried in the test tree for T1.8 and reused by T1.11 (LAMMPS differential).
+# Consumed by the T1.4 YAML parser once that lands; for now the M1 tests use
+# compile-time constants that mirror this file.
+#
+# Units: metal (Å, eV, ps — see docs/specs/state/SPEC.md §5).
+# cutoff_treatment default per potentials/SPEC §2.4.2 Morse row.
+
+potential:
+  kind: morse
+  species_pair: [Al, Al]
+  D: 0.2703          # eV, well depth
+  alpha: 1.1646      # 1/Å, width parameter
+  r0: 3.253          # Å, equilibrium separation
+  cutoff: 8.0        # Å, interaction cutoff
+  cutoff_treatment: shifted_force  # SPEC §2.4.2 — TDMD production default
