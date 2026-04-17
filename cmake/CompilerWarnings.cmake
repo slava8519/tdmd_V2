@@ -8,7 +8,7 @@ function(tdmd_apply_warnings target)
   endif()
 
   # ----------------------------------------------------------------------------
-  # GCC / Clang host C++ warnings.
+  # GCC / Clang host C++ warnings (shared set — must be accepted by both).
   # ----------------------------------------------------------------------------
   set(TDMD_GCC_CLANG_WARNINGS
       -Wall
@@ -25,9 +25,11 @@ function(tdmd_apply_warnings target)
       -Wdouble-promotion
       -Wformat=2
       -Wmisleading-indentation
-      -Wduplicated-cond
-      -Wlogical-op
       -Wimplicit-fallthrough)
+
+  # GCC-exclusive warnings. Clang rejects these as "unknown warning option", which under -Werror
+  # becomes fatal. Kept separate and gated on compiler id.
+  set(TDMD_GCC_ONLY_WARNINGS -Wduplicated-cond -Wlogical-op -Wduplicated-branches)
 
   # MSVC isn't supported (TDMD is Linux/GPU first), but if it ever is...
   set(TDMD_MSVC_WARNINGS /W4 /permissive-)
@@ -36,6 +38,7 @@ function(tdmd_apply_warnings target)
     ${target}
     PRIVATE
       $<$<OR:$<CXX_COMPILER_ID:Clang>,$<CXX_COMPILER_ID:AppleClang>,$<CXX_COMPILER_ID:GNU>>:${TDMD_GCC_CLANG_WARNINGS}>
+      $<$<CXX_COMPILER_ID:GNU>:${TDMD_GCC_ONLY_WARNINGS}>
       $<$<CXX_COMPILER_ID:MSVC>:${TDMD_MSVC_WARNINGS}>)
 
   # ----------------------------------------------------------------------------
