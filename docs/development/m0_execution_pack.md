@@ -25,10 +25,34 @@
 |---|---|---|---|
 | **D-M0-1** | LICENSE | `BSD-3-Clause` | Научный стандарт; совместим с LAMMPS-as-submodule (LAMMPS остаётся под GPLv2 внутри submodule, основной TDMD source — BSD). Approved by human 2026-04-17. |
 | **D-M0-2** | Стартовые 3 модуля | `state/`, `neighbor/`, `integrator/` | First M1 deliverables (master spec §14 M1); демонстрируют compute-path tier из INDEX.md. |
-| **D-M0-3** | CUDA в CI | Полная компиляция + запуск | Self-hosted runner на dev-машине с RTX 5080. См. §2 environment. |
+| **D-M0-3** | CUDA в CI | Локально (pre-push), НЕ в CI | См. Amendment A-1 (2026-04-17) ниже. Изначально — self-hosted runner; пересмотрено после security review public-repo. |
 | **D-M0-4** | C++ standard | C++20 | Concepts/ranges нужны в scheduler (M4); единый стандарт без миграции в середине проекта. |
 | **D-M0-5** | Pre-commit framework | `pre-commit.com` | Python-based mainstream; версионируется через `.pre-commit-config.yaml`. |
 | **D-M0-6** | LAMMPS submodule | `verify/third_party/lammps/`, GPU build, packages: `MANYBODY`, `MEAM`, `ML-SNAP`, `MOLECULE`, `KSPACE`, `EXTRA-PAIR`, `EXTRA-DUMP` | Готов для M1+ differential gates без rebuild; user explicitly requested GPU build с full v1 packages. Pinning policy в T0.7. |
+
+### Amendment A-1 (2026-04-17): GPU CI → local-only ("Option A")
+
+**Context.** При M0 acceptance gate обсуждался выпуск self-hosted runner на dev-машине (RTX 5080) для `build-cuda` job. После review выяснилось: репозиторий **public**, self-hosted runner на рабочей машине = arbitrary-code-execution с PR любого внешнего contributor'а. Даже с `Require approval for all fork PRs` settings — остаётся риск при случайном approve.
+
+**Решение.** Option A: никакого self-hosted runner в M0. GPU/CUDA build и LAMMPS oracle прогоняются **локально разработчиком перед push**:
+
+```bash
+# (pre-push GPU check — занимает ~1 мин после первого раза)
+cmake --preset default && cmake --build build --parallel && ctest --preset default
+
+# (LAMMPS oracle check — первый раз ~20 мин, incremental ~минуты)
+tools/build_lammps.sh && tools/lammps_smoke_test.sh
+```
+
+**Affected sections of this pack:**
+
+- **T0.6 (CI Pipeline A).** Job `build-cuda` **удалён** из `.github/workflows/ci.yml`. `scheduled-cuda-rebuild.yml` удалён. `build-lammps.yml` оставлен (label/dispatch only, без cron) — чтобы быть готовым к reactivation.
+- **§5 Acceptance gate.** Required status checks на `main`: `Lint (pre-commit)`, `Docs lint (markdownlint-cli2)`, `Build CPU (gcc-13)`, `Build CPU (clang-17)`. Без `Build CUDA`. Уже применено через `gh api PUT /repos/.../branches/main/protection`.
+- **R3 risk** (self-hosted runner reliability) — moot; снят.
+- **OQ2** (PAT vs GitHub App для runner) — moot; снят.
+- **"Hints" и текст с упоминанием self-hosted runner** — stale, перечитывать с поправкой на это Amendment.
+
+**Revisit.** Когда M6 (GPU path) реально заедет — оформить отдельное Amendment с вариантом C (isolated VM/container runner) или опцией GitHub-hosted GPU runners (paid).
 
 ---
 
@@ -822,6 +846,15 @@ Updated:
 
 ## 8. Change log пакета
 
+### v0.2 (2026-04-17) — post-execution amendment
+
+- **Amendment A-1:** отказ от self-hosted runner в M0. CUDA/LAMMPS тесты — local-only pre-push. См. §1, подраздел "Amendment A-1".
+- Удалены workflows: `scheduled-cuda-rebuild.yml`.
+- `build-cuda` job удалён из `ci.yml`, заменён комментарием.
+- `build-lammps.yml` сохранён, но переведён в `workflow_dispatch` + label-only (убран weekly cron).
+- Branch protection на `main` требует: `Lint (pre-commit)`, `Docs lint`, `Build CPU (gcc-13)`, `Build CPU (clang-17)` — без `Build CUDA`.
+- D-M0-3 пересмотрено; R3 и OQ2 сняты как N/A.
+
 ### v0.1 (2026-04-17)
 
 - Initial draft. 7 задач, 6 решений, 4 risks, 4 open questions.
@@ -829,4 +862,4 @@ Updated:
 
 ---
 
-*Конец M0 Execution Pack v0.1.*
+*Конец M0 Execution Pack v0.2.*

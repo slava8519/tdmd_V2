@@ -1,17 +1,22 @@
 # Opt-in LAMMPS oracle rebuild.
-# Not run on every PR — full build takes 15-30 min. Triggered by:
-#   - the `lammps-rebuild` label on a PR
-#   - a weekly cron (Sundays) to catch submodule drift
+# Full build takes 15-30 min and needs a self-hosted runner with GPU.
+# Currently no self-hosted runner is registered (see docs/development/m0_execution_pack.md
+# "Option A"); this workflow is kept for future reactivation. Until then, run
+# locally: tools/build_lammps.sh && tools/lammps_smoke_test.sh
+#
+# When a runner is eventually registered, re-enable the triggers below.
+# Triggers (when runner exists):
+#   - `lammps-rebuild` label on a PR
 #   - manual workflow_dispatch
+# (Weekly cron intentionally omitted: the scheduled-cuda-rebuild.yml precedent
+# showed that schedules hang jobs indefinitely when no runner is registered.)
 
 name: Build LAMMPS oracle
 
 on:
   pull_request:
-    types: [labeled, opened, reopened, synchronize]
+    types: [labeled]
     branches: [main]
-  schedule:
-    - cron: '0 4 * * 0'    # Sunday 04:00 UTC
   workflow_dispatch: {}
 
 concurrency:

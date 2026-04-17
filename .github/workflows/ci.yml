@@ -124,32 +124,12 @@ jobs:
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
-  # build-cuda — GPU build on the self-hosted RTX 5080 runner.
-  # Requires: runner registered with label `gpu-rtx5080`; CUDA 12.8+ installed.
+  # NOTE: CUDA / GPU build is intentionally NOT in CI.
+  # Rationale: self-hosted runner on a public repo executes arbitrary PR code on
+  # the dev workstation. See docs/development/m0_execution_pack.md "Option A".
+  # GPU tests are run locally before push:
+  #   cmake --preset default && cmake --build build && ctest --preset default
+  #   tools/build_lammps.sh && tools/lammps_smoke_test.sh
+  # Revisit when M6 (GPU path) lands and an isolated runner (container/VM) is
+  # available.
   # ---------------------------------------------------------------------------
-  build-cuda:
-    name: Build CUDA (sm_120, self-hosted RTX 5080)
-    runs-on: [self-hosted, linux, gpu-rtx5080]
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: false
-
-      - name: Print GPU info
-        run: |
-          nvidia-smi
-          nvcc --version
-
-      - name: Configure (default preset, sm_120)
-        run: cmake -B build --preset default -DTDMD_WARNINGS_AS_ERRORS=ON
-
-      - name: Build
-        run: cmake --build build --parallel
-
-      - name: Test
-        run: ctest --test-dir build --output-on-failure
-
-      - name: Cleanup workspace (isolated runner)
-        if: always()
-        run: rm -rf build build_cpu build_debug build_sm89
