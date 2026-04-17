@@ -93,3 +93,6 @@ core.*
 # Local env
 .env
 .env.local
+
+# Claude Code local state
+.claude/
