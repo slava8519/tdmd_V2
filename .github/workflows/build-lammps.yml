@@ -51,6 +51,8 @@ jobs:
 
       - name: Verify required packages
         run: |
+          # Shared-libs install; point the loader at install_tdmd/lib/.
+          export LD_LIBRARY_PATH="$PWD/verify/third_party/lammps/install_tdmd/lib:${LD_LIBRARY_PATH:-}"
           verify/third_party/lammps/install_tdmd/bin/lmp -h | \
             tee lammps_help.txt | \
             grep -E 'GPU|MANYBODY|MEAM|ML-SNAP|MOLECULE|KSPACE|EXTRA-PAIR|EXTRA-DUMP'

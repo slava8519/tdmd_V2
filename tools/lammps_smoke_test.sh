@@ -11,10 +11,16 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-LMP="${LMP:-$REPO_ROOT/verify/third_party/lammps/install_tdmd/bin/lmp}"
+LAMMPS_INSTALL="$REPO_ROOT/verify/third_party/lammps/install_tdmd"
+LMP="${LMP:-$LAMMPS_INSTALL/bin/lmp}"
 INPUT="$SCRIPT_DIR/lammps_smoke_test.in"
 POTENTIALS_DIR="${LAMMPS_POTENTIALS:-$REPO_ROOT/verify/third_party/lammps/potentials}"
 RUN_GPU="${TDMD_LAMMPS_GPU:-on}"
+
+# Shared-libs build: lmp links to liblammps.so.0 under $LAMMPS_INSTALL/lib.
+# LAMMPS itself ships etc/profile.d/lammps.sh for this, but baking it into the
+# script avoids the "source first" footgun.
+export LD_LIBRARY_PATH="$LAMMPS_INSTALL/lib:${LD_LIBRARY_PATH:-}"
 
 WORK_DIR="$(mktemp -d -t tdmd-lammps-smoke-XXXXXX)"
 trap 'rm -rf "$WORK_DIR"' EXIT
@@ -30,8 +36,8 @@ if [[ ! -f "$INPUT" ]]; then
   exit 2
 fi
 
-if [[ ! -f "$POTENTIALS_DIR/Al99.eam.alloy" ]]; then
-  echo "ERROR: Al EAM potential not found at $POTENTIALS_DIR/Al99.eam.alloy" >&2
+if [[ ! -f "$POTENTIALS_DIR/Al_zhou.eam.alloy" ]]; then
+  echo "ERROR: Al EAM potential not found at $POTENTIALS_DIR/Al_zhou.eam.alloy" >&2
   echo "Expected under LAMMPS potentials/ dir. Check submodule integrity." >&2
   exit 2
 fi
@@ -43,7 +49,7 @@ echo "  potentials: $POTENTIALS_DIR"
 echo
 
 cd "$WORK_DIR"
-ln -s "$POTENTIALS_DIR/Al99.eam.alloy" Al99.eam.alloy
+ln -s "$POTENTIALS_DIR/Al_zhou.eam.alloy" Al_zhou.eam.alloy
 
 # --------- CPU run ---------
 echo "[CPU] Running 100-step Al FCC EAM NVE..."
@@ -55,7 +61,31 @@ echo "[CPU] TotEng at step 100 = $CPU_E"
 if [[ "$RUN_GPU" == "on" ]]; then
   echo
   echo "[GPU] Running same trajectory with package gpu 1..."
-  "$LMP" -log gpu.log -in "$INPUT" -var gpu on
+  # Don't abort on arch mismatch — we catch it and downgrade to a skip with a
+  # clear message (see below). `set -e` would otherwise kill us on non-zero exit.
+  set +e
+  "$LMP" -log gpu.log -in "$INPUT" -var gpu on > gpu.stdout 2>&1
+  GPU_RC=$?
+  set -e
+
+  if [[ $GPU_RC -ne 0 ]]; then
+    # Distinguish "binary not compatible with this GPU" (expected on
+    # CUDA 12.6 + sm_120 hw build for sm_89) from a real bug.
+    if grep -q "GPU library not compiled for this accelerator" gpu.stdout gpu.log 2>/dev/null; then
+      echo "[GPU] SKIPPED: LAMMPS GPU binary built for an arch that is not"
+      echo "              runnable on this hardware. This is expected if CUDA"
+      echo "              < 12.8 forced a sm_89 fallback but the GPU is sm_120."
+      echo "              Upgrade CUDA to 12.8+ and rebuild LAMMPS to enable GPU."
+      echo
+      echo "=== Smoke test complete (CPU-only, GPU skipped with known reason) ==="
+      exit 0
+    else
+      echo "[GPU] FAIL (exit $GPU_RC). Last 30 lines of gpu.stdout:" >&2
+      tail -30 gpu.stdout >&2
+      exit $GPU_RC
+    fi
+  fi
+
   GPU_E=$(grep -E '^\s+100\s+' gpu.log | tail -1 | awk '{print $3}')
   echo "[GPU] TotEng at step 100 = $GPU_E"
 

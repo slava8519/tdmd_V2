@@ -1,5 +1,5 @@
 # TDMD LAMMPS smoke test input.
-# 100 atoms Al FCC, 100 steps NVE, EAM Mishin (Al99.eam.alloy).
+# 500 atoms Al FCC (5x5x5), 100 steps NVE, EAM Zhou et al. 2001 (Al_zhou.eam.alloy).
 # Invoked with `-var gpu on|off` to toggle GPU package.
 #
 # Success criteria:
@@ -11,6 +11,12 @@ units           metal
 atom_style      atomic
 boundary        p p p
 
+# GPU package must be declared BEFORE create_box. `-var gpu on|off` set by
+# the driver script; `suffix gpu` routes eam/alloy → eam/alloy/gpu.
+if "${gpu} == on" then &
+  "package         gpu 1" &
+  "suffix          gpu"
+
 # Compact FCC aluminum: 5x5x5 unit cells = 500 atoms.
 lattice         fcc 4.05
 region          box block 0 5 0 5 0 5
@@ -19,7 +25,7 @@ create_atoms    1 box
 mass            1 26.98
 
 pair_style      eam/alloy
-pair_coeff      * * Al99.eam.alloy Al
+pair_coeff      * * Al_zhou.eam.alloy Al
 
 velocity        all create 300.0 12345 loop geom
 
@@ -27,11 +33,6 @@ neighbor        2.0 bin
 neigh_modify    every 1 delay 0 check yes
 
 timestep        0.001    # 1 fs
-
-# GPU package (conditional). `-var gpu on|off` set by the driver script.
-if "${gpu} == on" then &
-  "package         gpu 1" &
-  "suffix          gpu"
 
 fix             1 all nve
 
