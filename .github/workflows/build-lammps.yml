@@ -1,0 +1,74 @@
+# Opt-in LAMMPS oracle rebuild.
+# Not run on every PR — full build takes 15-30 min. Triggered by:
+#   - the `lammps-rebuild` label on a PR
+#   - a weekly cron (Sundays) to catch submodule drift
+#   - manual workflow_dispatch
+
+name: Build LAMMPS oracle
+
+on:
+  pull_request:
+    types: [labeled, opened, reopened, synchronize]
+    branches: [main]
+  schedule:
+    - cron: '0 4 * * 0'    # Sunday 04:00 UTC
+  workflow_dispatch: {}
+
+concurrency:
+  group: build-lammps-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-lammps:
+    name: Build LAMMPS (sm_120 + required packages)
+    # Only run on label, cron, or manual dispatch.
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'schedule' ||
+      (github.event_name == 'pull_request' &&
+       contains(github.event.pull_request.labels.*.name, 'lammps-rebuild'))
+    runs-on: [self-hosted, linux, gpu-rtx5080]
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Init LAMMPS submodule
+        run: git submodule update --init --depth 1 verify/third_party/lammps
+
+      - name: Print toolchain info
+        run: |
+          nvidia-smi
+          nvcc --version
+          cmake --version
+
+      - name: Build LAMMPS
+        run: tools/build_lammps.sh
+
+      - name: Verify required packages
+        run: |
+          verify/third_party/lammps/install_tdmd/bin/lmp -h | \
+            tee lammps_help.txt | \
+            grep -E 'GPU|MANYBODY|MEAM|ML-SNAP|MOLECULE|KSPACE|EXTRA-PAIR|EXTRA-DUMP'
+
+      - name: Run LAMMPS smoke test
+        run: tools/lammps_smoke_test.sh
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lammps-build-log
+          path: |
+            verify/third_party/lammps/build_tdmd/CMakeCache.txt
+            verify/third_party/lammps/build_tdmd/CMakeFiles/CMakeOutput.log
+            lammps_help.txt
+          if-no-files-found: warn
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf verify/third_party/lammps/build_tdmd

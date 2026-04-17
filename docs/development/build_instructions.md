@@ -125,8 +125,34 @@ ls build/compile_commands.json    # exists
 ctest --test-dir build            # all tests pass (0 tests until T0.5)
 ```
 
+## Building the LAMMPS oracle
+
+TDMD uses LAMMPS as an **external scientific oracle** for differential validation (master spec §3, §13). It is not a runtime dependency — TDMD does not link against it. You only need it if you run tests on Pipeline D (differential) or do local anchor runs.
+
+Prerequisites on top of the TDMD build stack: MPI (OpenMPI 4.1+), CUDA 12.8+ for sm_120 (fallback: sm_89), ~4 GB free disk, ~20 min build time.
+
+```bash
+# Init the submodule at its pinned stable tag:
+git submodule update --init --depth 1 verify/third_party/lammps
+
+# Build with GPU + required packages:
+tools/build_lammps.sh
+# On CUDA 12.6 (sm_120 not yet supported):
+# TDMD_LAMMPS_CUDA_ARCH=sm_89 tools/build_lammps.sh
+
+# Verify the binary + packages:
+verify/third_party/lammps/install_tdmd/bin/lmp -h | grep -E 'GPU|MANYBODY|MEAM|ML-SNAP'
+
+# Smoke test (100-step Al FCC EAM, CPU vs GPU agreement within 1e-8):
+tools/lammps_smoke_test.sh
+```
+
+See [`verify/third_party/lammps_README.md`](../../verify/third_party/lammps_README.md) for the full package list, rationale for each package, and re-pinning policy.
+
 ## See also
 
 - [`code_style.md`](code_style.md) — lint + pre-commit setup
+- [`ci_setup.md`](ci_setup.md) — CI + self-hosted runner
+- [`../../verify/third_party/lammps_README.md`](../../verify/third_party/lammps_README.md) — LAMMPS oracle setup
 - Master spec §7 (BuildFlavor × ExecProfile), §D.14 (build system integration)
 - [`m0_execution_pack.md`](m0_execution_pack.md) T0.4 — origin task spec

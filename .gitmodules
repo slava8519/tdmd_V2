@@ -1,0 +1,9 @@
+[submodule "verify/third_party/lammps"]
+	path = verify/third_party/lammps
+	url = https://github.com/lammps/lammps.git
+	# Pinned at tag stable_22Jul2025_update4 (checkout HEAD after init).
+	# Rationale + re-pinning policy: verify/third_party/lammps_README.md.
+	# ignore=dirty: hides build_tdmd/ and install_tdmd/ from `git status` in
+	# the parent repo. These dirs are created by tools/build_lammps.sh but
+	# live inside the submodule, so they'd otherwise show as local changes.
+	ignore = dirty

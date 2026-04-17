@@ -192,7 +192,33 @@ M0 (Process & skeleton) находится в процессе. Декомпоз
 | Python | 3.10+ | Для `pre-commit`, build helpers |
 | Ninja | 1.11+ | Рекомендуемый CMake generator |
 | MPI | OpenMPI 4.1+ | Нужен с M5+ |
-| LAMMPS | pinned stable tag | Git submodule в `verify/third_party/lammps/` (заполняется в T0.7) |
+| LAMMPS | `stable_22Jul2025_update4` | Git submodule в `verify/third_party/lammps/`; см. [`verify/third_party/lammps_README.md`](verify/third_party/lammps_README.md) |
+
+### Quick start (TDMD build)
+
+```bash
+# Клонирование с submodule
+git clone --recursive https://github.com/slava8519/tdmd_V2.git
+cd tdmd_V2
+
+# Сборка TDMD (sm_120 RTX 5080, CUDA 12.8+)
+cmake -B build --preset default
+cmake --build build --parallel
+ctest --test-dir build --output-on-failure
+```
+
+На CUDA 12.6 (sm_120 ещё не поддерживается): используйте preset `default-sm89` (см. [`docs/development/build_instructions.md`](docs/development/build_instructions.md)).
+
+### LAMMPS oracle (для differential-валидации, M1+)
+
+```bash
+# Однократно, ~15-30 мин:
+git submodule update --init --depth 1 verify/third_party/lammps
+tools/build_lammps.sh
+tools/lammps_smoke_test.sh      # sanity check
+```
+
+Для CUDA 12.6: `TDMD_LAMMPS_CUDA_ARCH=sm_89 tools/build_lammps.sh`.
 
 Статус задач M0: см. GitHub issues / PRs с тегом `milestone:M0`.
 
