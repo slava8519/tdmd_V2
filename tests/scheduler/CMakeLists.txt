@@ -1,7 +1,7 @@
 add_executable(test_scheduler test_scheduler_types.cpp test_safety_certificate.cpp
-                              test_zone_state_machine.cpp)
+                              test_zone_state_machine.cpp test_scheduler_core.cpp)
 
-target_link_libraries(test_scheduler PRIVATE tdmd::scheduler Catch2::Catch2WithMain)
+target_link_libraries(test_scheduler PRIVATE tdmd::scheduler tdmd::zoning Catch2::Catch2WithMain)
 
 add_test(NAME test_scheduler COMMAND test_scheduler)
 

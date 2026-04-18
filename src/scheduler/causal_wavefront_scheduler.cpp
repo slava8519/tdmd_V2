@@ -1,0 +1,342 @@
+// SPEC: docs/specs/scheduler/SPEC.md §2.3 (canonical realization), §4.4, §9, §10
+// Master spec: §6.3, §6.6, §12.4
+// Exec pack: docs/development/m4_execution_pack.md T4.5
+
+#include "tdmd/scheduler/causal_wavefront_scheduler.hpp"
+
+#include "tdmd/zoning/zoning.hpp"
+
+#include <algorithm>
+#include <stdexcept>
+#include <utility>
+
+namespace tdmd::scheduler {
+
+CausalWavefrontScheduler::CausalWavefrontScheduler(SchedulerPolicy policy)
+    : policy_(std::move(policy)), cert_store_(policy_.mode_policy_tag) {}
+
+CausalWavefrontScheduler::~CausalWavefrontScheduler() = default;
+
+void CausalWavefrontScheduler::require_initialized(const char* op) const {
+  if (!initialized_) {
+    throw std::logic_error(std::string{"CausalWavefrontScheduler::"} + op +
+                           ": scheduler not initialized");
+  }
+}
+
+void CausalWavefrontScheduler::initialize(const tdmd::zoning::ZoningPlan& plan) {
+  if (initialized_) {
+    throw std::logic_error(
+        "CausalWavefrontScheduler::initialize: already initialized; call shutdown() first");
+  }
+
+  const auto total = plan.total_zones();
+  if (total == 0) {
+    throw std::logic_error("CausalWavefrontScheduler::initialize: plan has zero zones");
+  }
+  if (plan.canonical_order.size() != total) {
+    throw std::logic_error("CausalWavefrontScheduler::initialize: canonical_order size mismatch");
+  }
+
+  // zone_dag enforces the >64 ceiling; do it here too so callers see a
+  // scheduler-scoped message.
+  if (total > 64) {
+    throw std::logic_error(
+        "CausalWavefrontScheduler::initialize: >64 zones not supported in M4 "
+        "(see OQ-M4-1)");
+  }
+
+  total_zones_ = static_cast<std::size_t>(total);
+  metas_.assign(total_zones_, ZoneMeta{});
+  canonical_order_ = plan.canonical_order;  // copy by value (invariant)
+
+  // Every zone id in the canonical order must be in [0, total).
+  for (const auto z : canonical_order_) {
+    if (static_cast<std::uint64_t>(z) >= total) {
+      throw std::logic_error(
+          "CausalWavefrontScheduler::initialize: canonical_order contains out-of-range ZoneId");
+    }
+  }
+
+  const double radius = plan.cutoff + plan.skin;
+  spatial_dep_mask_ = compute_spatial_dependencies(plan, radius);
+
+  // Cache planner-derived introspection inputs. We don't keep a reference
+  // to `plan` itself — the scheduler must not outlive a stale plan shape.
+  min_zones_per_rank_ = plan.n_min_per_rank;
+  optimal_rank_count_cached_ = plan.optimal_rank_count;
+
+  initialized_ = true;
+  last_progress_ = std::chrono::steady_clock::now();
+}
+
+void CausalWavefrontScheduler::attach_outer_coordinator(OuterSdCoordinator* coord) {
+  // Pattern 1 single-rank (M4) — nullptr is the expected argument and the
+  // only legal value until M7 (D-M4-2). We still accept a non-null pointer
+  // for forward compatibility with M7 test doubles, but M4 never dispatches
+  // to it.
+  outer_coord_ = coord;
+}
+
+void CausalWavefrontScheduler::shutdown() {
+  // Idempotent: a shutdown on an uninitialized scheduler is a no-op, not
+  // an error — mirrors how SimulationEngine drivers pair RAII guards.
+  cert_store_.invalidate_all("shutdown");
+  metas_.clear();
+  canonical_order_.clear();
+  spatial_dep_mask_.clear();
+  cert_source_ = nullptr;
+  outer_coord_ = nullptr;
+  total_zones_ = 0;
+  target_time_level_ = 0;
+  min_zones_per_rank_ = 1;
+  optimal_rank_count_cached_ = 1;
+  initialized_ = false;
+}
+
+void CausalWavefrontScheduler::refresh_certificates() {
+  require_initialized("refresh_certificates");
+
+  for (const ZoneId z : canonical_order_) {
+    const auto& meta = metas_[z];
+    const TimeLevel target = meta.time_level + 1;
+
+    CertificateInputs in{};
+    in.zone_id = z;
+    in.time_level = target;
+    in.version = meta.version;
+
+    if (cert_source_ != nullptr) {
+      cert_source_->fill_inputs(z, target, in);
+      // The store stamps mode_policy_tag authoritatively; the source may
+      // populate physics/neighbor fields and the validity windows.
+      in.zone_id = z;
+      in.time_level = target;
+    }
+
+    (void) cert_store_.build(in);
+  }
+
+  last_progress_ = std::chrono::steady_clock::now();
+}
+
+void CausalWavefrontScheduler::invalidate_certificates_for(ZoneId zone) {
+  require_initialized("invalidate_certificates_for");
+  cert_store_.invalidate_for(zone);
+
+  // If the zone was Ready (cert_id pointing at a now-removed entry), roll
+  // the state machine back to ResidentPrev. For Computing / Completed /
+  // later states the T4.7 commit hardening defines the abort path; T4.5
+  // limits itself to the cheap Ready case.
+  if (zone < metas_.size() && metas_[zone].state == ZoneState::Ready) {
+    state_machine_.cert_invalidated(metas_[zone]);
+  }
+  last_progress_ = std::chrono::steady_clock::now();
+}
+
+void CausalWavefrontScheduler::invalidate_all_certificates(const std::string& reason) {
+  require_initialized("invalidate_all_certificates");
+  cert_store_.invalidate_all(reason);
+  for (auto& meta : metas_) {
+    if (meta.state == ZoneState::Ready) {
+      state_machine_.cert_invalidated(meta);
+    }
+  }
+  last_progress_ = std::chrono::steady_clock::now();
+}
+
+std::vector<ZoneTask> CausalWavefrontScheduler::select_ready_tasks() {
+  // T4.6 scope — M4 ready-task selection + I6 frontier guard. T4.5 returns
+  // empty so lifecycle-only callers compile and drive through refresh.
+  require_initialized("select_ready_tasks");
+  return {};
+}
+
+void CausalWavefrontScheduler::mark_computing(const ZoneTask& task) {
+  require_initialized("mark_computing");
+  state_machine_.mark_computing(metas_.at(task.zone_id));
+  last_progress_ = std::chrono::steady_clock::now();
+}
+
+void CausalWavefrontScheduler::mark_completed(const ZoneTask& task) {
+  require_initialized("mark_completed");
+  state_machine_.mark_completed(metas_.at(task.zone_id));
+  last_progress_ = std::chrono::steady_clock::now();
+}
+
+void CausalWavefrontScheduler::mark_packed(const ZoneTask& task) {
+  require_initialized("mark_packed");
+  state_machine_.mark_packed(metas_.at(task.zone_id));
+  last_progress_ = std::chrono::steady_clock::now();
+}
+
+void CausalWavefrontScheduler::mark_inflight(const ZoneTask& task) {
+  require_initialized("mark_inflight");
+  state_machine_.mark_inflight(metas_.at(task.zone_id));
+  last_progress_ = std::chrono::steady_clock::now();
+}
+
+void CausalWavefrontScheduler::mark_committed(const ZoneTask& task) {
+  require_initialized("mark_committed");
+  state_machine_.mark_committed(metas_.at(task.zone_id));
+  last_progress_ = std::chrono::steady_clock::now();
+}
+
+void CausalWavefrontScheduler::commit_completed() {
+  // Pattern 1 single-rank (D-M4-6): every Completed zone commits directly
+  // to ResidentPrev via the state machine's no-peer shortcut. T4.7 hardens
+  // this with retry semantics and peer-aware Phase B for M5.
+  require_initialized("commit_completed");
+  for (auto& meta : metas_) {
+    if (meta.state == ZoneState::Completed) {
+      state_machine_.commit_completed_no_peer(meta);
+    }
+  }
+  last_progress_ = std::chrono::steady_clock::now();
+}
+
+bool CausalWavefrontScheduler::finished() const {
+  // Fresh or shut-down scheduler has no pending work by definition — this
+  // matches the watchdog contract in §8.1: `not finished()` implies "real
+  // work is expected". Uninitialized = nothing expected.
+  if (!initialized_) {
+    return true;
+  }
+  for (const auto& meta : metas_) {
+    if (meta.time_level < target_time_level_) {
+      return false;
+    }
+  }
+  return true;
+}
+
+std::size_t CausalWavefrontScheduler::min_zones_per_rank() const {
+  return min_zones_per_rank_;
+}
+
+std::size_t CausalWavefrontScheduler::optimal_rank_count(std::size_t total_zones) const {
+  // Returns the cached plan value when the caller passes the plan's
+  // total_zones; otherwise falls back to `floor(total_zones /
+  // min_zones_per_rank)`. The SPEC doesn't specify the argument's role
+  // precisely — treating it as a "given this many zones, what's the
+  // optimum?" query is the shape M7 will use.
+  if (total_zones == total_zones_) {
+    return optimal_rank_count_cached_;
+  }
+  const auto min_zpr = min_zones_per_rank_ == 0 ? 1 : min_zones_per_rank_;
+  const auto result = total_zones / min_zpr;
+  return result == 0 ? 1 : result;
+}
+
+std::size_t CausalWavefrontScheduler::current_pipeline_depth() const {
+  if (!initialized_ || metas_.empty()) {
+    return 0;
+  }
+  return static_cast<std::size_t>(local_frontier_max() - local_frontier_min());
+}
+
+TimeLevel CausalWavefrontScheduler::local_frontier_min() const {
+  if (!initialized_ || metas_.empty()) {
+    return 0;
+  }
+  TimeLevel m = metas_[0].time_level;
+  for (std::size_t i = 1; i < metas_.size(); ++i) {
+    m = std::min(m, metas_[i].time_level);
+  }
+  return m;
+}
+
+TimeLevel CausalWavefrontScheduler::local_frontier_max() const {
+  if (!initialized_ || metas_.empty()) {
+    return 0;
+  }
+  TimeLevel m = metas_[0].time_level;
+  for (std::size_t i = 1; i < metas_.size(); ++i) {
+    m = std::max(m, metas_[i].time_level);
+  }
+  return m;
+}
+
+void CausalWavefrontScheduler::on_zone_data_arrived(ZoneId zone, TimeLevel step, Version version) {
+  require_initialized("on_zone_data_arrived");
+  auto& meta = metas_.at(zone);
+  state_machine_.on_zone_data_arrived(meta);  // Empty → ResidentPrev (throws otherwise)
+  meta.time_level = step;
+  meta.version = version;
+  last_progress_ = std::chrono::steady_clock::now();
+}
+
+void CausalWavefrontScheduler::on_halo_arrived(std::uint32_t /*peer_subdomain*/,
+                                               TimeLevel /*step*/) {
+  // Pattern 2 only; M4 Pattern 1 has no halo peers (D-M4-2). Recording
+  // progress would be misleading — ignore entirely.
+}
+
+void CausalWavefrontScheduler::on_neighbor_rebuild_completed(const std::vector<ZoneId>& affected) {
+  require_initialized("on_neighbor_rebuild_completed");
+  for (const auto zone : affected) {
+    cert_store_.invalidate_for(zone);
+    if (zone < metas_.size() && metas_[zone].state == ZoneState::Ready) {
+      state_machine_.cert_invalidated(metas_[zone]);
+    }
+  }
+  last_progress_ = std::chrono::steady_clock::now();
+}
+
+void CausalWavefrontScheduler::check_deadlock(std::chrono::milliseconds /*t_watchdog*/) {
+  // T4.8 scope — full watchdog + diagnostic dump. T4.5 is a placeholder
+  // that records progress without evaluating the predicate; tests that
+  // want the M4 semantics will arrive in T4.8.
+}
+
+// --- Extension surface ----------------------------------------------------
+
+const std::vector<ZoneId>& CausalWavefrontScheduler::canonical_order() const noexcept {
+  return canonical_order_;
+}
+
+ZoneDepMask CausalWavefrontScheduler::spatial_dep_mask(ZoneId zone) const {
+  if (zone >= spatial_dep_mask_.size()) {
+    throw std::out_of_range("CausalWavefrontScheduler::spatial_dep_mask: zone out of range");
+  }
+  return spatial_dep_mask_[zone];
+}
+
+const ZoneMeta& CausalWavefrontScheduler::zone_meta(ZoneId zone) const {
+  return metas_.at(zone);
+}
+
+std::size_t CausalWavefrontScheduler::total_zones() const noexcept {
+  return total_zones_;
+}
+
+const CertificateStore& CausalWavefrontScheduler::cert_store() const noexcept {
+  return cert_store_;
+}
+
+const SchedulerPolicy& CausalWavefrontScheduler::policy() const noexcept {
+  return policy_;
+}
+
+bool CausalWavefrontScheduler::initialized() const noexcept {
+  return initialized_;
+}
+
+OuterSdCoordinator* CausalWavefrontScheduler::outer_coordinator() const noexcept {
+  return outer_coord_;
+}
+
+void CausalWavefrontScheduler::set_certificate_input_source(
+    const CertificateInputSource* src) noexcept {
+  cert_source_ = src;
+}
+
+void CausalWavefrontScheduler::set_target_time_level(TimeLevel target) noexcept {
+  target_time_level_ = target;
+}
+
+TimeLevel CausalWavefrontScheduler::target_time_level() const noexcept {
+  return target_time_level_;
+}
+
+}  // namespace tdmd::scheduler
