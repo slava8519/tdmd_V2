@@ -77,9 +77,19 @@ TEST_CASE("T1 differential: Al FCC Morse NVE 500 atoms 100 steps vs LAMMPS",
 
   // Runtime preconditions. Missing LAMMPS is a SKIP (Option A: public CI has
   // no LAMMPS; harness is run locally pre-push), not a FAIL.
+  //
+  // Exit directly with the SKIP_RETURN_CODE value rather than routing through
+  // Catch2's SKIP() macro — Catch2 v3.5 returns a non-zero exit code when the
+  // only test case is skipped (it treats "no test actually ran" as an error),
+  // which then fails CTest's SKIP_RETURN_CODE match. A hard exit bypasses the
+  // session's aggregate-return logic and hands CTest exactly the 77 it expects.
   if (!fs::exists(lammps_bin)) {
-    SKIP("LAMMPS oracle missing at " << lammps_bin.string()
-                                     << " — run tools/build_lammps.sh locally pre-push.");
+    std::fprintf(stderr,
+                 "[test_t1_differential] SKIP: LAMMPS oracle missing at %s — run "
+                 "tools/build_lammps.sh locally pre-push.\n",
+                 lammps_bin.string().c_str());
+    std::fflush(stderr);
+    std::exit(kExitSkip);
   }
 
   const char* tdmd_bin = std::getenv("TDMD_CLI_BIN");
