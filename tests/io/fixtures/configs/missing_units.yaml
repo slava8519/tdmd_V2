@@ -1,0 +1,24 @@
+# Expect: YamlParseError — `simulation.units` is the master spec §14 M1 gate
+# and must be explicit; no hidden defaults.
+
+simulation:
+  seed: 42
+
+atoms:
+  source: lammps_data
+  path: ../al_fcc_small.data
+
+potential:
+  style: morse
+  params:
+    D: 0.2703
+    alpha: 1.1646
+    r0: 3.253
+    cutoff: 8.0
+
+integrator:
+  style: velocity_verlet
+  dt: 0.001
+
+run:
+  n_steps: 100

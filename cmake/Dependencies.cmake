@@ -29,7 +29,39 @@ if(TDMD_BUILD_TESTS)
 endif()
 
 # ------------------------------------------------------------------------------
-# Future deps (uncomment when milestones require): - yaml-cpp (M1 — CLI config parsing) - HDF5 (M3 —
-# trajectory output) - nlohmann_json (M3 — threshold registry, manifest) - fmt (M1 — structured
-# logging; or rely on C++23 std::print once available) - MPI (M5 — multi-rank comm layer)
+# yaml-cpp — tdmd.yaml parsing (M1/T1.4). Pinned tag; static-only to match the rest of TDMD's build
+# shape; SYSTEM so its own headers do not trip our warning budget. Tests / install / contrib are all
+# off — we only need the library.
+# ------------------------------------------------------------------------------
+set(YAML_BUILD_SHARED_LIBS
+    OFF
+    CACHE BOOL "" FORCE)
+set(YAML_CPP_BUILD_TESTS
+    OFF
+    CACHE BOOL "" FORCE)
+set(YAML_CPP_BUILD_CONTRIB
+    OFF
+    CACHE BOOL "" FORCE)
+set(YAML_CPP_BUILD_TOOLS
+    OFF
+    CACHE BOOL "" FORCE)
+set(YAML_CPP_INSTALL
+    OFF
+    CACHE BOOL "" FORCE)
+set(YAML_CPP_FORMAT_SOURCE
+    OFF
+    CACHE BOOL "" FORCE)
+
+fetchcontent_declare(
+  yaml-cpp
+  GIT_REPOSITORY https://github.com/jbeder/yaml-cpp.git
+  GIT_TAG 0.8.0
+  GIT_SHALLOW TRUE
+  SYSTEM)
+fetchcontent_makeavailable(yaml-cpp)
+
+# ------------------------------------------------------------------------------
+# Future deps (uncomment when milestones require): - HDF5 (M3 — trajectory output) - nlohmann_json
+# (M3 — threshold registry, manifest) - fmt (M1 — structured logging; or rely on C++23 std::print
+# once available) - MPI (M5 — multi-rank comm layer)
 # ------------------------------------------------------------------------------

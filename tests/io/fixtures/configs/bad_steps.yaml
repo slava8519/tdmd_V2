@@ -1,0 +1,23 @@
+# Expect: preflight Error on `run.n_steps` (must be >= 1).
+
+simulation:
+  units: metal
+
+atoms:
+  source: lammps_data
+  path: ../al_fcc_small.data
+
+potential:
+  style: morse
+  params:
+    D: 0.2703
+    alpha: 1.1646
+    r0: 3.253
+    cutoff: 8.0
+
+integrator:
+  style: velocity_verlet
+  dt: 0.001
+
+run:
+  n_steps: 0

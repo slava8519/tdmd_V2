@@ -1,0 +1,142 @@
+#include "tdmd/io/preflight.hpp"
+
+#include <algorithm>
+#include <cmath>
+#include <filesystem>
+#include <string>
+#include <string_view>
+#include <utility>
+
+namespace tdmd::io {
+
+namespace {
+
+void push(std::vector<PreflightError>& out,
+          PreflightSeverity severity,
+          std::string_view key_path,
+          std::string message) {
+  out.push_back(PreflightError{severity, std::string(key_path), std::move(message)});
+}
+
+// Guards against NaN / ±Inf in user-supplied floats. We never accept these:
+// no physics field in M1 has a meaningful infinite value, and silently
+// propagating NaN makes downstream failures opaque.
+[[nodiscard]] bool is_finite_positive(double v) noexcept {
+  return std::isfinite(v) && v > 0.0;
+}
+
+void check_atoms(const AtomsBlock& atoms, std::vector<PreflightError>& out) {
+  namespace fs = std::filesystem;
+  // `source` is always `lammps_data` after parse (M1 enum). Only the file
+  // itself can fail here.
+  if (atoms.path.empty()) {
+    // parse_yaml_config already enforces non-empty; keep as a defensive catch
+    // so a directly constructed YamlConfig does not sneak past preflight.
+    push(out, PreflightSeverity::Error, "atoms.path", "atoms.path is empty");
+    return;
+  }
+  std::error_code ec;
+  const bool exists = fs::exists(atoms.path, ec);
+  if (ec || !exists) {
+    push(out,
+         PreflightSeverity::Error,
+         "atoms.path",
+         "file '" + atoms.path + "' does not exist or is not readable");
+    return;
+  }
+  const bool is_regular = fs::is_regular_file(atoms.path, ec);
+  if (ec || !is_regular) {
+    push(out,
+         PreflightSeverity::Error,
+         "atoms.path",
+         "atoms.path '" + atoms.path + "' is not a regular file");
+  }
+}
+
+void check_potential(const PotentialBlock& pot, std::vector<PreflightError>& out) {
+  // M1 only has Morse. If/when the enum grows, switch on pot.style.
+  const auto& m = pot.morse;
+  if (!is_finite_positive(m.D)) {
+    push(out,
+         PreflightSeverity::Error,
+         "potential.params.D",
+         "Morse well depth D must be finite and > 0 (got " + std::to_string(m.D) + ")");
+  }
+  if (!is_finite_positive(m.alpha)) {
+    push(out,
+         PreflightSeverity::Error,
+         "potential.params.alpha",
+         "Morse alpha must be finite and > 0 (got " + std::to_string(m.alpha) + ")");
+  }
+  if (!is_finite_positive(m.r0)) {
+    push(out,
+         PreflightSeverity::Error,
+         "potential.params.r0",
+         "Morse equilibrium distance r0 must be finite and > 0 (got " + std::to_string(m.r0) + ")");
+  }
+  if (!is_finite_positive(m.cutoff)) {
+    push(out,
+         PreflightSeverity::Error,
+         "potential.params.cutoff",
+         "Morse cutoff must be finite and > 0 (got " + std::to_string(m.cutoff) + ")");
+  } else if (std::isfinite(m.r0) && m.cutoff <= m.r0) {
+    // Only meaningful when both are finite; avoids a spurious second error when
+    // r0 was already rejected as non-finite.
+    push(out,
+         PreflightSeverity::Error,
+         "potential.params.cutoff",
+         "Morse cutoff (" + std::to_string(m.cutoff) + ") must be strictly greater than r0 (" +
+             std::to_string(m.r0) + ")");
+  }
+}
+
+void check_integrator(const IntegratorBlock& integ, std::vector<PreflightError>& out) {
+  if (!is_finite_positive(integ.dt)) {
+    push(out,
+         PreflightSeverity::Error,
+         "integrator.dt",
+         "integrator.dt must be finite and > 0 (got " + std::to_string(integ.dt) + ")");
+  }
+}
+
+void check_neighbor(const NeighborBlock& nb, std::vector<PreflightError>& out) {
+  if (!is_finite_positive(nb.skin)) {
+    push(out,
+         PreflightSeverity::Error,
+         "neighbor.skin",
+         "neighbor.skin must be finite and > 0 (got " + std::to_string(nb.skin) + ")");
+  }
+}
+
+void check_run(const RunBlock& run, std::vector<PreflightError>& out) {
+  if (run.n_steps == 0) {
+    push(out,
+         PreflightSeverity::Error,
+         "run.n_steps",
+         "run.n_steps must be >= 1 (got 0 — nothing to simulate)");
+  }
+}
+
+}  // namespace
+
+std::vector<PreflightError> preflight(const YamlConfig& config) {
+  std::vector<PreflightError> out;
+  // Ordering: simulation → atoms → potential → integrator → neighbor → run.
+  // Chosen to match the top-to-bottom layout of io/SPEC §3.1 so error output
+  // reads in source order. Any future block must insert at the matching
+  // position.
+  check_atoms(config.atoms, out);
+  check_potential(config.potential, out);
+  check_integrator(config.integrator, out);
+  check_neighbor(config.neighbor, out);
+  check_run(config.run, out);
+  return out;
+}
+
+bool preflight_passes(const std::vector<PreflightError>& errors) noexcept {
+  return std::none_of(errors.begin(), errors.end(), [](const PreflightError& e) {
+    return e.severity == PreflightSeverity::Error;
+  });
+}
+
+}  // namespace tdmd::io
