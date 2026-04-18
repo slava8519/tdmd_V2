@@ -7,9 +7,17 @@ add_executable(
   test_select_ready_tasks.cpp
   test_commit_protocol.cpp
   test_retry_canonical.cpp
-  test_deadlock_watchdog.cpp)
+  test_deadlock_watchdog.cpp
+  test_determinism_same_seed.cpp
+  test_queue_ordering_determinism.cpp)
 
-target_link_libraries(test_scheduler PRIVATE tdmd::scheduler tdmd::zoning Catch2::Catch2WithMain)
+target_link_libraries(test_scheduler PRIVATE tdmd::scheduler tdmd::zoning tdmd::runtime tdmd::io
+                                             Catch2::Catch2WithMain)
+
+# test_determinism_same_seed.cpp reuses the same io fixtures as tests/runtime/ (shrunken Morse on
+# 32-atom Al FCC).
+target_compile_definitions(test_scheduler
+                           PRIVATE TDMD_IO_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/io/fixtures")
 
 add_test(NAME test_scheduler COMMAND test_scheduler)
 

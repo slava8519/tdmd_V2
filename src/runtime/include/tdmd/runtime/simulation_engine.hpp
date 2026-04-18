@@ -128,6 +128,14 @@ public:
   [[nodiscard]] std::uint64_t thermo_every() const noexcept { return thermo_every_; }
   [[nodiscard]] std::uint64_t current_step() const noexcept { return current_step_; }
 
+  // T4.10 test hook: exposes the TD scheduler (or nullptr when `td_mode: false`)
+  // so determinism tests can snapshot the event log across two engine runs.
+  // Not part of the stable public API — keep test-only callers explicit.
+  [[nodiscard]] const scheduler::CausalWavefrontScheduler* td_scheduler_for_testing()
+      const noexcept {
+    return td_scheduler_.get();
+  }
+
   // Emit a LAMMPS-ish header row (`# step temp pe ke etotal press`) to `out`.
   // Idempotent / free function — also used by tests that reconstruct a row
   // stream without invoking the engine.

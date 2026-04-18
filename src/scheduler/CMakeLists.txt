@@ -11,7 +11,8 @@ add_library(
   zone_state_machine.cpp
   zone_dag.cpp
   causal_wavefront_scheduler.cpp
-  diagnostic_dump.cpp)
+  diagnostic_dump.cpp
+  event_log.cpp)
 add_library(tdmd::scheduler ALIAS tdmd_scheduler)
 
 target_include_directories(

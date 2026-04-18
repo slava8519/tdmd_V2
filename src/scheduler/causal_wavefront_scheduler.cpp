@@ -75,8 +75,7 @@ void CausalWavefrontScheduler::initialize(const tdmd::zoning::ZoningPlan& plan) 
   initialized_ = true;
   last_progress_ = std::chrono::steady_clock::now();
   last_frontier_min_ = local_frontier_min();
-  event_ring_head_ = 0;
-  event_ring_count_ = 0;
+  events_.clear();
   record_event(SchedulerEvent::Initialize,
                0xFFFFFFFFU,
                0,
@@ -109,8 +108,7 @@ void CausalWavefrontScheduler::shutdown() {
   min_zones_per_rank_ = 1;
   optimal_rank_count_cached_ = 1;
   last_frontier_min_ = 0;
-  event_ring_head_ = 0;
-  event_ring_count_ = 0;
+  events_.clear();
   initialized_ = false;
 }
 
@@ -535,16 +533,7 @@ void CausalWavefrontScheduler::record_event(SchedulerEvent kind,
                                             ZoneId zone_id,
                                             TimeLevel time_level,
                                             std::uint32_t count) {
-  EventRecord& slot = event_ring_[event_ring_head_];
-  slot.timestamp = std::chrono::steady_clock::now();
-  slot.kind = kind;
-  slot.zone_id = zone_id;
-  slot.time_level = time_level;
-  slot.count = count;
-  event_ring_head_ = (event_ring_head_ + 1) % kEventRingCapacity;
-  if (event_ring_count_ < kEventRingCapacity) {
-    ++event_ring_count_;
-  }
+  events_.push(kind, zone_id, time_level, count);
 }
 
 void CausalWavefrontScheduler::maybe_update_frontier_progress() {
@@ -578,15 +567,8 @@ DiagnosticReport CausalWavefrontScheduler::make_diagnostic_report() const {
     }
   }
 
-  // Oldest → newest walk: the next write slot is at head; the oldest
-  // live entry is at (head - count) mod capacity, i.e. head when full.
-  report.recent_events.reserve(event_ring_count_);
-  const std::size_t start =
-      (event_ring_head_ + kEventRingCapacity - event_ring_count_) % kEventRingCapacity;
-  for (std::size_t i = 0; i < event_ring_count_; ++i) {
-    const std::size_t idx = (start + i) % kEventRingCapacity;
-    report.recent_events.push_back(event_ring_[idx]);
-  }
+  // SPEC §8.3: dump reports the last 100 events regardless of buffer depth.
+  report.recent_events = events_.snapshot_last(100);
   return report;
 }
 

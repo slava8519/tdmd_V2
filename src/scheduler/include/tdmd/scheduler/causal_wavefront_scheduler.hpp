@@ -24,6 +24,7 @@
 #include "tdmd/scheduler/certificate_input_source.hpp"
 #include "tdmd/scheduler/certificate_store.hpp"
 #include "tdmd/scheduler/diagnostic_dump.hpp"
+#include "tdmd/scheduler/event_log.hpp"
 #include "tdmd/scheduler/policy.hpp"
 #include "tdmd/scheduler/retry_state.hpp"
 #include "tdmd/scheduler/safety_certificate.hpp"
@@ -33,7 +34,6 @@
 #include "tdmd/scheduler/zone_meta.hpp"
 #include "tdmd/scheduler/zone_state_machine.hpp"
 
-#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -106,10 +106,15 @@ public:
   [[nodiscard]] const RetryTracker& retry_tracker() const noexcept;
 
   // Compose a DiagnosticReport from the current state (zone histogram,
-  // frontier, retry budget, last kEventRingCapacity events). Callers
-  // typically don't need this — the watchdog invokes it internally —
-  // but T4.10/T4.11 acceptance tests assert fields directly.
+  // frontier, retry budget, last 100 events from the EventLog tail).
+  // Callers typically don't need this — the watchdog invokes it
+  // internally — but T4.10/T4.11 acceptance tests assert fields directly.
   [[nodiscard]] DiagnosticReport make_diagnostic_report() const;
+
+  // Full event history. T4.10 determinism tests snapshot this to compare
+  // two runs byte-for-byte. Buffer holds up to EventLog::kCapacity (1024)
+  // events; diagnostic dumps surface only the last 100 per SPEC §8.3.
+  [[nodiscard]] const EventLog& event_log() const noexcept { return events_; }
 
   // Configuration hooks. T4.9 (SimulationEngine wiring) uses these; tests
   // use them to stub physics inputs and drive finished().
@@ -158,17 +163,14 @@ private:
   std::chrono::steady_clock::time_point last_progress_{std::chrono::steady_clock::now()};
   TimeLevel last_frontier_min_{0};
 
-  // Event ring buffer for diagnostic_dump. kEventRingCapacity matches
-  // SPEC §8.3's "last 100 events". Implemented as a fixed array + head
-  // pointer to avoid allocations during steady-state scheduling.
-  static constexpr std::size_t kEventRingCapacity = 100;
-  std::array<EventRecord, kEventRingCapacity> event_ring_{};
-  std::size_t event_ring_head_ = 0;   // next write slot
-  std::size_t event_ring_count_ = 0;  // live entries, capped at capacity
+  // Event log (EventLog::kCapacity = 1024, per OQ-M4-4). DiagnosticReport
+  // surfaces only the last 100 — the extra buffer is headroom for T4.10
+  // determinism tests and post-mortem tooling.
+  EventLog events_{};
 
-  // Record an event into the ring. Oldest-first order is reconstructed at
-  // dump time by walking from (head - count) mod capacity. All scheduler
-  // event handlers funnel through this helper.
+  // Record an event via the EventLog. All scheduler event handlers funnel
+  // through this helper so cross-run byte-exactness is a property of the
+  // call sequence alone (timestamps excepted — ignored by determinism tests).
   void record_event(SchedulerEvent kind,
                     ZoneId zone_id = 0xFFFFFFFFU,
                     TimeLevel time_level = 0,
