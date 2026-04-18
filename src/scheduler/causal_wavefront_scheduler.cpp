@@ -4,6 +4,7 @@
 
 #include "tdmd/scheduler/causal_wavefront_scheduler.hpp"
 
+#include "tdmd/scheduler/queues.hpp"
 #include "tdmd/zoning/zoning.hpp"
 
 #include <algorithm>
@@ -146,10 +147,135 @@ void CausalWavefrontScheduler::invalidate_all_certificates(const std::string& re
 }
 
 std::vector<ZoneTask> CausalWavefrontScheduler::select_ready_tasks() {
-  // T4.6 scope — M4 ready-task selection + I6 frontier guard. T4.5 returns
-  // empty so lifecycle-only callers compile and drive through refresh.
+  // SPEC §5.1 pseudocode; §5.2 tie-break; §5.3 max_tasks_per_iteration.
+  // Pure-filter + tie-break ordering + capped prefix; the selected zones
+  // are then transitioned ResidentPrev → Ready via state_machine.mark_ready
+  // inside the cap loop (so callers can go straight to mark_computing).
   require_initialized("select_ready_tasks");
-  return {};
+
+  if (total_zones_ == 0) {
+    return {};
+  }
+
+  const TimeLevel frontier_min_t = local_frontier_min();
+  const std::uint64_t k_max = policy_.k_max_pipeline_depth;
+
+  // Map ZoneId → canonical-order position for the Reference tie-break
+  // (SPEC §5.2). Cached per call rather than at initialize() — total_zones_
+  // is ≤ 64 in M4 (OQ-M4-1) so this is O(Z) and keeps the header free of
+  // std::vector fields dedicated to an occasional hot-path helper.
+  std::vector<std::size_t> canonical_index(total_zones_);
+  for (std::size_t i = 0; i < canonical_order_.size(); ++i) {
+    canonical_index[canonical_order_[i]] = i;
+  }
+
+  std::vector<TaskCandidate> cands;
+  cands.reserve(total_zones_);
+
+  for (const ZoneId z : canonical_order_) {
+    const auto& meta = metas_[z];
+    // Only ResidentPrev is selectable. Ready already has a cert locked in;
+    // Computing/Completed/... are in flight. Empty has no data.
+    if (meta.state != ZoneState::ResidentPrev) {
+      continue;
+    }
+
+    const TimeLevel min_level = meta.time_level + 1;
+    const TimeLevel k_span = k_max == 0 ? 0 : k_max - 1;
+    const TimeLevel max_level_by_pipeline = min_level + k_span;
+    const TimeLevel max_level_by_frontier = frontier_min_t + k_max;
+    const TimeLevel max_level = std::min(max_level_by_pipeline, max_level_by_frontier);
+
+    if (min_level > max_level) {
+      continue;  // I6 frontier guard shuts this zone out at the current level
+    }
+
+    for (TimeLevel t = min_level; t <= max_level; ++t) {
+      // Cert presence + safety (SPEC §4.1).
+      const auto* cert = cert_store_.get(z, t);
+      if (cert == nullptr || !cert->safe) {
+        continue;
+      }
+      // Neighbor validity window (SPEC §4.2, §5.1 bullet 5).
+      if (cert->neighbor_valid_until_step < t) {
+        continue;
+      }
+
+      // Spatial peer readiness: every peer must be at or past t-1 and
+      // must have actual data (state ≠ Empty). Pure read; no mutation.
+      const ZoneDepMask dm = spatial_dep_mask_[z];
+      bool peers_ok = true;
+      if (dm != 0) {
+        for (ZoneId p = 0; p < total_zones_; ++p) {
+          if ((dm & (ZoneDepMask{1} << p)) == 0) {
+            continue;
+          }
+          const auto& pm = metas_[p];
+          if (pm.state == ZoneState::Empty) {
+            peers_ok = false;
+            break;
+          }
+          if (t > 0 && pm.time_level + 1 < t) {  // pm.time_level < t - 1
+            peers_ok = false;
+            break;
+          }
+        }
+      }
+      if (!peers_ok) {
+        continue;
+      }
+
+      // Pattern 2 boundary gate — M4 is Pattern 1 only (D-M4-2); a
+      // non-null outer_coord_ is accepted for M7 test doubles but never
+      // consulted here.
+      // if (outer_coord_ != nullptr && is_boundary_zone(z) &&
+      //     !outer_coord_->can_advance_boundary_zone(z, t)) continue;
+
+      TaskCandidate tc{};
+      tc.zone_id = z;
+      tc.time_level = t;
+      tc.canonical_index = canonical_index[z];
+      tc.version = meta.version;
+      tc.cert_id = cert->cert_id;
+      cands.push_back(tc);
+      break;  // §5.1: one task per zone per iteration
+    }
+  }
+
+  // §5.2 Reference tie-break: (time_level_asc, canonical_index_asc,
+  // version_asc). std::sort is stable for strict-weak orderings; the
+  // candidate list is already in canonical order by construction but may
+  // mix time_levels, so sort is required for byte-stability.
+  std::sort(cands.begin(), cands.end(), ReferenceTaskCompare{});
+
+  // §5.3 cap.
+  const std::size_t cap = std::min<std::size_t>(cands.size(), policy_.max_tasks_per_iteration);
+
+  std::vector<ZoneTask> out;
+  out.reserve(cap);
+  for (std::size_t i = 0; i < cap; ++i) {
+    const auto& c = cands[i];
+    auto& meta = metas_[c.zone_id];
+
+    // ResidentPrev → Ready. I2 (cert_id ≠ 0) is enforced by mark_ready;
+    // our cert_id was allocated from the store so it is always nonzero.
+    state_machine_.mark_ready(meta, c.cert_id);
+
+    ZoneTask task{};
+    task.zone_id = c.zone_id;
+    task.time_level = c.time_level;
+    task.local_state_version = meta.version;
+    task.dep_mask = spatial_dep_mask_[c.zone_id];
+    task.certificate_version = c.cert_id;
+    task.priority = 0;
+    task.mode_policy_tag = static_cast<std::uint32_t>(policy_.mode_policy_tag);
+    out.push_back(task);
+  }
+
+  if (!out.empty()) {
+    last_progress_ = std::chrono::steady_clock::now();
+  }
+  return out;
 }
 
 void CausalWavefrontScheduler::mark_computing(const ZoneTask& task) {
