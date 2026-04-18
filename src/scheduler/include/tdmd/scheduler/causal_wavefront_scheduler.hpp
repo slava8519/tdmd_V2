@@ -24,6 +24,7 @@
 #include "tdmd/scheduler/certificate_input_source.hpp"
 #include "tdmd/scheduler/certificate_store.hpp"
 #include "tdmd/scheduler/policy.hpp"
+#include "tdmd/scheduler/retry_state.hpp"
 #include "tdmd/scheduler/safety_certificate.hpp"
 #include "tdmd/scheduler/td_scheduler.hpp"
 #include "tdmd/scheduler/types.hpp"
@@ -100,6 +101,7 @@ public:
   [[nodiscard]] const SchedulerPolicy& policy() const noexcept;
   [[nodiscard]] bool initialized() const noexcept;
   [[nodiscard]] OuterSdCoordinator* outer_coordinator() const noexcept;
+  [[nodiscard]] const RetryTracker& retry_tracker() const noexcept;
 
   // Configuration hooks. T4.9 (SimulationEngine wiring) uses these; tests
   // use them to stub physics inputs and drive finished().
@@ -107,12 +109,19 @@ public:
   void set_target_time_level(TimeLevel target) noexcept;
   [[nodiscard]] TimeLevel target_time_level() const noexcept;
 
+  // Release every Committed zone back to Empty — the engine's cycle reset
+  // between Phase B (commit_completed) and the next `on_zone_data_arrived`.
+  // Kept out of the abstract interface because the engine loop (T4.9) owns
+  // this orchestration; tests call it to drive synthetic lifecycles.
+  void release_committed();
+
 private:
   void require_initialized(const char* op) const;
 
   SchedulerPolicy policy_;
   ZoneStateMachine state_machine_;
   CertificateStore cert_store_;
+  RetryTracker retry_tracker_;
 
   // Populated by initialize(); cleared by shutdown().
   bool initialized_ = false;

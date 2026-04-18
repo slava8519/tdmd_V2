@@ -55,9 +55,12 @@ public:
   // InFlight → Committed. Clears in_inflight_queue.
   void mark_committed(ZoneMeta& m) const;
 
-  // Completed → ResidentPrev (Pattern 1 commit path). Called by the
-  // scheduler's commit phase when no peer needs the zone's data — the
-  // Pattern 1 single-rank case at M4.
+  // Completed → Committed (Pattern 1 commit short-circuit, SPEC §6.2 bullet 2).
+  // Called by the scheduler's Phase-B when no peer needs the zone's data —
+  // the Pattern 1 single-rank case at M4. Clears cert_id; leaves
+  // in_inflight_queue at its prior value (false — no InFlight was visited).
+  // The engine must call `release` + `on_zone_data_arrived` to start the next
+  // time step.
   void commit_completed_no_peer(ZoneMeta& m) const;
 
   // Ready → ResidentPrev. Rollback when the cert is invalidated before

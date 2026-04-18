@@ -22,10 +22,11 @@
 // — I2: state == Computing ⇒ cert_id ≠ 0.
 // — I3: NOT (in_ready_queue AND in_inflight_queue).
 // — I4: in_ready_queue true only at state == Ready (zone-level dedup).
-// — I5: transitions out of Completed go only to PackedForSend (M5 path) or
-//   ResidentPrev (Pattern 1 path) — NEVER directly to Committed. This is
-//   enforced by mark_committed's state check — the fuzzer asserts that
-//   any attempt to mark_committed outside InFlight raises.
+// — I5: Completed → Committed is never a side-effect of mark_completed. The
+//   only two exits from Completed are: PackedForSend (M5 peer path) and
+//   Committed via commit_completed_no_peer (Pattern 1 short-circuit, SPEC §6.2
+//   bullet 2). mark_committed is reachable only from InFlight — the fuzzer
+//   asserts any attempt to mark_committed outside InFlight raises.
 //
 // Total cost: 500 000 sequences × 100 events = 5×10⁷ events. Each event
 // is ~20 ns (throw-path included). Runs well under 60s CI budget per
@@ -167,11 +168,13 @@ TEST_CASE("ZoneStateMachine — I1-I5 property fuzzer (500k × 60 events)",
         if (m.in_inflight_queue) {
           REQUIRE(m.state == ts::ZoneState::InFlight);
         }
-        // I5 (indirect): the only way state becomes Committed is a prior
-        // InFlight (never direct from Completed). Enforced by mark_committed's
-        // state check; if we land on Committed, state_before MUST be InFlight.
+        // I5 (indirect): state becomes Committed via exactly one of two
+        // legal predecessors — InFlight (mark_committed, peer path) OR
+        // Completed (commit_completed_no_peer, Pattern 1 short-circuit per
+        // SPEC §6.2 bullet 2). Never Ready/Computing/ResidentPrev/etc.
         if (m.state == ts::ZoneState::Committed && state_before != ts::ZoneState::Committed) {
-          REQUIRE(state_before == ts::ZoneState::InFlight);
+          REQUIRE((state_before == ts::ZoneState::InFlight ||
+                   state_before == ts::ZoneState::Completed));
         }
         // I1 analogue: Ready is entered ONLY from ResidentPrev (never
         // directly from Committed). No Committed→Ready shortcut.

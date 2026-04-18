@@ -116,13 +116,15 @@ TEST_CASE("legal — InFlight → Committed", "[scheduler][state][legal]") {
   REQUIRE_FALSE(m.in_inflight_queue);
 }
 
-TEST_CASE("legal — Completed → ResidentPrev (Pattern 1 commit, no peer)",
+TEST_CASE("legal — Completed → Committed (Pattern 1 commit, no peer)",
           "[scheduler][state][legal]") {
   ts::ZoneStateMachine sm;
   ts::ZoneMeta m = drive_to(ts::ZoneState::Completed);
   sm.commit_completed_no_peer(m);
-  REQUIRE(m.state == ts::ZoneState::ResidentPrev);
+  REQUIRE(m.state == ts::ZoneState::Committed);
   REQUIRE(m.cert_id == 0);
+  REQUIRE_FALSE(m.in_inflight_queue);
+  REQUIRE_FALSE(m.in_ready_queue);
 }
 
 TEST_CASE("legal — Ready → ResidentPrev (cert_invalidated rollback)", "[scheduler][state][legal]") {
@@ -300,7 +302,8 @@ TEST_CASE("illegal — commit_completed_no_peer outside Completed", "[scheduler]
 // Full cycle walk — one complete lifecycle Pattern 1 and Pattern 2 path
 // ----------------------------------------------------------------------------
 
-TEST_CASE("full cycle — Pattern 1 (no peer): Empty → ResidentPrev", "[scheduler][state][cycle]") {
+TEST_CASE("full cycle — Pattern 1 (no peer): Empty → Committed → release → Empty",
+          "[scheduler][state][cycle]") {
   ts::ZoneStateMachine sm;
   ts::ZoneMeta m;
 
@@ -310,11 +313,15 @@ TEST_CASE("full cycle — Pattern 1 (no peer): Empty → ResidentPrev", "[schedu
   sm.mark_completed(m);
   sm.commit_completed_no_peer(m);
 
-  REQUIRE(m.state == ts::ZoneState::ResidentPrev);
+  REQUIRE(m.state == ts::ZoneState::Committed);
   REQUIRE(m.version == 1);
   REQUIRE(m.cert_id == 0);
   REQUIRE_FALSE(m.in_ready_queue);
   REQUIRE_FALSE(m.in_inflight_queue);
+
+  // Engine closes the cycle with a release, re-enabling on_zone_data_arrived.
+  sm.release(m);
+  REQUIRE(m.state == ts::ZoneState::Empty);
 }
 
 TEST_CASE("full cycle — Pattern 2 (peer path): Empty → Empty via release",

@@ -14,7 +14,11 @@
 namespace tdmd::scheduler {
 
 CausalWavefrontScheduler::CausalWavefrontScheduler(SchedulerPolicy policy)
-    : policy_(std::move(policy)), cert_store_(policy_.mode_policy_tag) {}
+    : policy_(std::move(policy)),
+      cert_store_(policy_.mode_policy_tag),
+      retry_tracker_(static_cast<std::uint32_t>(policy_.max_retries_per_task == 0
+                                                    ? RetryTracker::kDefaultMaxRetries
+                                                    : policy_.max_retries_per_task)) {}
 
 CausalWavefrontScheduler::~CausalWavefrontScheduler() = default;
 
@@ -83,6 +87,7 @@ void CausalWavefrontScheduler::shutdown() {
   // Idempotent: a shutdown on an uninitialized scheduler is a no-op, not
   // an error — mirrors how SimulationEngine drivers pair RAII guards.
   cert_store_.invalidate_all("shutdown");
+  retry_tracker_.clear();
   metas_.clear();
   canonical_order_.clear();
   spatial_dep_mask_.clear();
@@ -126,11 +131,14 @@ void CausalWavefrontScheduler::invalidate_certificates_for(ZoneId zone) {
   cert_store_.invalidate_for(zone);
 
   // If the zone was Ready (cert_id pointing at a now-removed entry), roll
-  // the state machine back to ResidentPrev. For Computing / Completed /
-  // later states the T4.7 commit hardening defines the abort path; T4.5
-  // limits itself to the cheap Ready case.
+  // the state machine back to ResidentPrev and charge a retry against
+  // (zone, target_level) per SPEC §7.2. D-M4-1 fixes K=1 so the target is
+  // always meta.time_level + 1 at the moment of cert_invalidated; future
+  // K>1 support will read the target from the invalidated cert directly.
   if (zone < metas_.size() && metas_[zone].state == ZoneState::Ready) {
+    const TimeLevel target = metas_[zone].time_level + 1;
     state_machine_.cert_invalidated(metas_[zone]);
+    retry_tracker_.increment(zone, target);  // throws RetryExhaustedError on overflow
   }
   last_progress_ = std::chrono::steady_clock::now();
 }
@@ -138,9 +146,12 @@ void CausalWavefrontScheduler::invalidate_certificates_for(ZoneId zone) {
 void CausalWavefrontScheduler::invalidate_all_certificates(const std::string& reason) {
   require_initialized("invalidate_all_certificates");
   cert_store_.invalidate_all(reason);
-  for (auto& meta : metas_) {
+  for (ZoneId z = 0; z < metas_.size(); ++z) {
+    auto& meta = metas_[z];
     if (meta.state == ZoneState::Ready) {
+      const TimeLevel target = meta.time_level + 1;
       state_machine_.cert_invalidated(meta);
+      retry_tracker_.increment(z, target);  // throws RetryExhaustedError on overflow
     }
   }
   last_progress_ = std::chrono::steady_clock::now();
@@ -287,6 +298,11 @@ void CausalWavefrontScheduler::mark_computing(const ZoneTask& task) {
 void CausalWavefrontScheduler::mark_completed(const ZoneTask& task) {
   require_initialized("mark_completed");
   state_machine_.mark_completed(metas_.at(task.zone_id));
+  // Phase A success → this (zone, time_level) consumed no further retry
+  // slot; drop the counter so the budget resets cleanly for the next
+  // level. Counter for (zone, task.time_level) may not exist if this is
+  // the first attempt; reset() is a no-op in that case.
+  retry_tracker_.reset(task.zone_id, task.time_level);
   last_progress_ = std::chrono::steady_clock::now();
 }
 
@@ -309,13 +325,31 @@ void CausalWavefrontScheduler::mark_committed(const ZoneTask& task) {
 }
 
 void CausalWavefrontScheduler::commit_completed() {
-  // Pattern 1 single-rank (D-M4-6): every Completed zone commits directly
-  // to ResidentPrev via the state machine's no-peer shortcut. T4.7 hardens
-  // this with retry semantics and peer-aware Phase B for M5.
+  // Phase B (SPEC §6.2). In M4 Pattern 1 single-rank (D-M4-6) every zone
+  // is internal with no downstream peer, so each Completed zone commits
+  // via the no-peer short-circuit (SPEC §6.2 bullet 2) → Committed. Peer
+  // path (mark_packed → mark_inflight → mark_committed) arrives in M5.
+  //
+  // I5: this is the ONLY legal entry point for Completed → Committed —
+  // mark_completed is Phase A and cannot set Committed as a side-effect.
   require_initialized("commit_completed");
   for (auto& meta : metas_) {
     if (meta.state == ZoneState::Completed) {
       state_machine_.commit_completed_no_peer(meta);
+    }
+  }
+  last_progress_ = std::chrono::steady_clock::now();
+}
+
+void CausalWavefrontScheduler::release_committed() {
+  require_initialized("release_committed");
+  for (ZoneId z = 0; z < metas_.size(); ++z) {
+    auto& meta = metas_[z];
+    if (meta.state == ZoneState::Committed) {
+      state_machine_.release(meta);
+      // time_level is preserved as a historical counter — the engine
+      // bumps it on the next on_zone_data_arrived. Retry budget is
+      // cleared when the zone re-enters ResidentPrev.
     }
   }
   last_progress_ = std::chrono::steady_clock::now();
@@ -389,6 +423,9 @@ void CausalWavefrontScheduler::on_zone_data_arrived(ZoneId zone, TimeLevel step,
   state_machine_.on_zone_data_arrived(meta);  // Empty → ResidentPrev (throws otherwise)
   meta.time_level = step;
   meta.version = version;
+  // Fresh cycle — drop any stale retry budget for this zone. Canonical
+  // per SPEC §7.2: a new time step starts with full retry budget.
+  retry_tracker_.reset_for(zone);
   last_progress_ = std::chrono::steady_clock::now();
 }
 
@@ -403,7 +440,9 @@ void CausalWavefrontScheduler::on_neighbor_rebuild_completed(const std::vector<Z
   for (const auto zone : affected) {
     cert_store_.invalidate_for(zone);
     if (zone < metas_.size() && metas_[zone].state == ZoneState::Ready) {
+      const TimeLevel target = metas_[zone].time_level + 1;
       state_machine_.cert_invalidated(metas_[zone]);
+      retry_tracker_.increment(zone, target);  // throws RetryExhaustedError on overflow
     }
   }
   last_progress_ = std::chrono::steady_clock::now();
@@ -450,6 +489,10 @@ bool CausalWavefrontScheduler::initialized() const noexcept {
 
 OuterSdCoordinator* CausalWavefrontScheduler::outer_coordinator() const noexcept {
   return outer_coord_;
+}
+
+const RetryTracker& CausalWavefrontScheduler::retry_tracker() const noexcept {
+  return retry_tracker_;
 }
 
 void CausalWavefrontScheduler::set_certificate_input_source(

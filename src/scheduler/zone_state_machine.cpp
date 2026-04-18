@@ -123,10 +123,14 @@ void ZoneStateMachine::commit_completed_no_peer(ZoneMeta& m) const {
   if (m.state != ZoneState::Completed) {
     reject("commit_completed_no_peer: expected Completed, got " + state_name(m.state));
   }
-  // Pattern 1 short-circuit: zone data is stable for its own next step;
-  // cert is stale because version bumped at mark_completed, so clear it.
+  // Pattern 1 Phase-B short-circuit (SPEC §6.2 bullet 2): an internal zone
+  // with no downstream peer goes Completed → Committed directly — skipping
+  // the PackedForSend → InFlight pair that's only meaningful when a peer
+  // needs the buffer. The cert is stale (version bumped at mark_completed),
+  // so clear it; the engine releases the zone and re-arms data_arrived for
+  // the next time step.
   m.cert_id = 0;
-  m.state = ZoneState::ResidentPrev;
+  m.state = ZoneState::Committed;
 }
 
 void ZoneStateMachine::cert_invalidated(ZoneMeta& m) const {
