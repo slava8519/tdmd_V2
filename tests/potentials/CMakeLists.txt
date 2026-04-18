@@ -10,3 +10,12 @@ add_executable(test_tabulated test_tabulated.cpp)
 target_link_libraries(test_tabulated PRIVATE tdmd::potentials Catch2::Catch2WithMain)
 
 add_test(NAME test_tabulated COMMAND test_tabulated)
+
+add_executable(test_eam_file test_eam_file.cpp)
+
+target_link_libraries(test_eam_file PRIVATE tdmd::potentials Catch2::Catch2WithMain)
+
+target_compile_definitions(test_eam_file
+                           PRIVATE TDMD_TEST_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures")
+
+add_test(NAME test_eam_file COMMAND test_eam_file)
