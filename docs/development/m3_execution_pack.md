@@ -589,6 +589,7 @@ End-to-end (< 10s, CI-integrated) exercising the M3 user surface: `tdmd explain 
 - **OQ-M3-2 — `validate_manual_plan` in M3?** SPEC §2.3 lists it; M3 scope §4 doesn't strictly require. **Decision at T3.2:** declare pure-virtual; default implementation throws "not implemented" — stubbed for M9+ (SPEC §10 OQ-5).
 - **OQ-M3-3 — Zoning subdomain box in M3?** `ZoningPlan::subdomain_box = nullopt` per §7.1; do we even expose it? **Decision at T3.2:** yes, shape-only, always nullopt in M3 (Pattern 1 only); M7 (Pattern 2) will populate.
 - **OQ-M3-4 — Neighbor rebuild protocol backward compatibility.** After T3.8, can M1 T1.7 engine callsite still call old inline skin-check? **Decision at T3.8:** no; the old callsite is migrated in the same PR — tracked as a "no public API break" since M1 neighbor wasn't public surface.
+- **OQ-M3-5 — Decomp2D N_min formula vs §8.3 16×5 anchor.** SPEC §3.2 gives `N_min = 2·(N_inner + 1)` → for 2D 16×5 (80 zones) this yields `N_min=12, n_opt=6`; SPEC §8.3 anchor table claims `n_opt=13` (implied `N_min=6`, independent of box dim). Discrepancy surfaced at T3.4. **Decision deferred to T3.7:** choose between (a) SPEC delta updating §8.3 anchor to match formula, or (b) re-reading dissertation eq. 45 to extract a corrected formula (likely "constant ring-width N_min = 2·ring + 2 ≈ 6" independent of N_inner). T3.4 test tagged `[!mayfail]` on the 13-value check so the eventual fix lands as a single pointed edit.
 
 ---
 
