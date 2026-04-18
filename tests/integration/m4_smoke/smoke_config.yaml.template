@@ -1,0 +1,45 @@
+# M4 integration-smoke TDMD config — Ni-Al EAM/alloy NVE, 10 steps, TD mode.
+#
+# Exec pack: docs/development/m4_execution_pack.md §T4.11.
+# SPEC: docs/specs/scheduler/SPEC.md §12.3 (determinism), master spec §14 M4.
+#
+# This config is byte-for-byte the M3 smoke config with a single addition:
+# `scheduler.td_mode: true`. That one flag is the entire M4 user surface in
+# K=1 single-rank (D-M4-1, D-M4-11) — the scheduler wraps the legacy step in
+# its zone lifecycle but invokes forces + integrator identically, so the
+# resulting thermo stream must match the M3 golden byte-for-byte (D-M4-9).
+#
+# The harness substitutes {{ATOMS_PATH}} and {{EAM_PATH}} at smoke-run time.
+
+simulation:
+  units: metal
+  seed: 12345              # matches T4 / unused at ingest, kept for symmetry
+
+atoms:
+  source: lammps_data
+  path: "{{ATOMS_PATH}}"   # verify/benchmarks/t4_nial_alloy/setup.data (LFS)
+
+potential:
+  style: eam/alloy
+  params:
+    file: "{{EAM_PATH}}"   # verify/third_party/potentials/NiAl_Mishin_2004.eam.alloy
+
+integrator:
+  style: velocity_verlet
+  dt: 0.001                # ps — identical to M2 / M3 smokes
+
+neighbor:
+  skin: 0.05               # Å — forces mid-run rebuild, same as M3 smoke
+
+thermo:
+  every: 1                 # capture every step so the golden covers the full trace
+
+run:
+  n_steps: 10
+
+# M4 addition: opt-in deterministic TD scheduler (D-M4-11). In K=1 the
+# scheduler observes the legacy physics sequence; all force / integrator /
+# neighbor calls are identical. If this flag flips the thermo bits, that's
+# a D-M4-9 acceptance-gate failure — not a tolerance question.
+scheduler:
+  td_mode: true

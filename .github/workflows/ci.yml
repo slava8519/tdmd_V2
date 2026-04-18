@@ -126,6 +126,9 @@ jobs:
       - name: M3 smoke (zoning plan + mid-run neighbor rebuild, 10 steps)
         run: tests/integration/m3_smoke/run_m3_zoning_smoke.sh --tdmd build_cpu/src/cli/tdmd
 
+      - name: M4 smoke (TD scheduler K=1, byte-exact to M3, 10 steps)
+        run: tests/integration/m4_smoke/run_m4_td_smoke.sh --tdmd build_cpu/src/cli/tdmd
+
       - name: Upload compile_commands.json
         if: matrix.compiler == 'clang-17'
         uses: actions/upload-artifact@v4

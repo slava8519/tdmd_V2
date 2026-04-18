@@ -160,3 +160,64 @@ TEST_CASE("T4.10 (a) — event log not bound by diagnostic window", "[scheduler]
 
   engine.finalize();
 }
+
+TEST_CASE("T4.11 — TD scheduler counter sanity in K=1 single-rank",
+          "[scheduler][td-mode][counters]") {
+  // T4.11 acceptance proxy for "scheduler telemetry counters match expected":
+  //   - every zone commits once per step → count(CommitCompleted) ≥ n_steps
+  //   - no cert-invalidation rollbacks (always-safe stub — can't trip)
+  //   - no deadlock events fired
+  //   - K=1: current_pipeline_depth() == 1 after init (D-M4-1)
+  constexpr std::uint64_t kSteps = 5;
+
+  tdmd::SimulationEngine engine;
+  engine.init(load_td_config(), valid_config_dir());
+  std::ostringstream sink;
+  (void) engine.run(kSteps, &sink);
+
+  const auto* sched = engine.td_scheduler_for_testing();
+  REQUIRE(sched != nullptr);
+
+  // CommitCompleted is emitted once per commit_completed() call with
+  // `count` carrying the batch size. Sum the counts across all events
+  // of that kind and assert ≥ kSteps × total_zones committed overall.
+  // (Each step in K=1 drives a full Ready → Committed sweep.)
+  const auto events = sched->event_log().snapshot();
+  std::size_t commit_events = 0;
+  std::uint64_t total_committed = 0;
+  std::size_t deadlock_events = 0;
+  std::size_t rollback_events = 0;
+  for (const auto& e : events) {
+    switch (e.kind) {
+      case tdmd::scheduler::SchedulerEvent::CommitCompleted:
+        ++commit_events;
+        total_committed += e.count;
+        break;
+      case tdmd::scheduler::SchedulerEvent::DeadlockFired:
+        ++deadlock_events;
+        break;
+      case tdmd::scheduler::SchedulerEvent::CertInvalidatedRollback:
+        ++rollback_events;
+        break;
+      default:
+        break;
+    }
+  }
+
+  // Single-rank K=1: every step commits the full set of resident zones,
+  // so total_committed == total_zones × kSteps. We assert ≥ to tolerate
+  // the extra commit that may fire at initialize() priming.
+  CHECK(commit_events >= kSteps);
+  CHECK(total_committed >= kSteps * sched->total_zones());
+
+  CHECK(deadlock_events == 0);  // SPEC §8.1 watchdog must NOT trip in happy path
+  CHECK(rollback_events == 0);  // AlwaysSafeCertificateInputSource → no invalidations
+
+  // D-M4-1: pipeline depth is 1 in M4. `current_pipeline_depth()`
+  // reports frontier_max - frontier_min; after init+N steps with all
+  // zones advanced uniformly, the depth is 0 when quiesced and ≤ 1
+  // when one arrival has happened without a matching commit.
+  CHECK(sched->current_pipeline_depth() <= 1u);
+
+  engine.finalize();
+}

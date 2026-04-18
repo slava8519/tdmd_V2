@@ -787,3 +787,26 @@ NVTX ranges для Nsight:
 ---
 
 *Конец scheduler/SPEC.md v1.0, дата: 2026-04-16.*
+
+---
+
+## 16. Change log
+
+- **2026-04-19** — **M4 landed (Reference, K=1 single-rank)**. T4.1–T4.11
+  implemented the full Reference realization of the scheduler: zone state
+  machine + I1–I5 fuzzer (T4.4), SafetyCertificate + CertificateStore + I7
+  monotonicity fuzzer (T4.3), `CausalWavefrontScheduler` with DAG +
+  refresh + select + I6 frontier fuzzer (T4.5–T4.6), two-phase commit +
+  retry semantics (T4.7), deadlock watchdog + DiagnosticReport (T4.8),
+  `SimulationEngine` TD-mode wiring behind opt-in `scheduler.td_mode`
+  YAML flag (T4.9), bitwise determinism tests — same-seed atom SoA + event
+  log byte-exact, 10⁴×100 queue-ordering trials (T4.10), M4 integration
+  smoke + CI gate (T4.11). D-M4-9 byte-exact acceptance: `td_mode: true`
+  on the M3 Ni-Al EAM smoke produces thermo bit-identical to the legacy
+  path; the M4 golden IS the M3 golden, copied verbatim.
+  - Pattern 1 only (D-M4-2); Pattern 2 and multi-rank remain M5+.
+  - `AlwaysSafeCertificateInputSource` stub ships certificates with
+    generous safe bounds so every zone is selectable every step; a
+    live-state adapter lands with Pattern 2 in M7+.
+  - `EventLog::kCapacity = 1024` resolves OQ-M4-4; DiagnosticReport still
+    surfaces the last 100 events per §8.3.
