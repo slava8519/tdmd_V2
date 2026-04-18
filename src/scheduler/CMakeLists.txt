@@ -5,7 +5,8 @@
 # T4.2 only lands types + abstract interface + PolicyFactory::for_reference.
 # Concrete CausalWavefrontScheduler and state machine arrive in T4.3+.
 
-add_library(tdmd_scheduler STATIC scheduler.cpp policy.cpp)
+add_library(tdmd_scheduler STATIC scheduler.cpp policy.cpp safety_certificate.cpp
+                                  certificate_store.cpp)
 add_library(tdmd::scheduler ALIAS tdmd_scheduler)
 
 target_include_directories(
