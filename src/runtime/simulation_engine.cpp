@@ -8,6 +8,7 @@
 #include "tdmd/runtime/physical_constants.hpp"
 #include "tdmd/runtime/unit_converter.hpp"
 #include "tdmd/state/lj_reference.hpp"
+#include "tdmd/telemetry/telemetry.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -203,12 +204,16 @@ ThermoRow SimulationEngine::run(std::uint64_t n_steps, std::ostream* thermo_out)
     integrator_->pre_force_step(atoms_, species_, dt_);
 
     // Neighbor rebuild check — based on displacements since the last build.
-    displacement_tracker_.update(atoms_, box_);
-    if (displacement_tracker_.needs_rebuild()) {
-      rebuild_neighbors();
+    {
+      telemetry::ScopedSection neigh(telemetry_, "Neigh");
+      displacement_tracker_.update(atoms_, box_);
+      if (displacement_tracker_.needs_rebuild()) {
+        rebuild_neighbors();
+      }
     }
 
-    // New forces at drifted positions.
+    // New forces at drifted positions. `recompute_forces` already wraps the
+    // pair-potential call in a "Pair" scope, so no extra wrapper here.
     recompute_forces();
 
     // Post-force: half-kick.
@@ -217,6 +222,7 @@ ThermoRow SimulationEngine::run(std::uint64_t n_steps, std::ostream* thermo_out)
     current_step_ = s;
 
     if (s % thermo_every_ == 0 || s == n_steps) {
+      telemetry::ScopedSection output(telemetry_, "Output");
       last_row = snapshot_thermo(s);
       if (thermo_out != nullptr) {
         write_thermo_row(*thermo_out, last_row);
@@ -325,6 +331,7 @@ void SimulationEngine::rebuild_neighbors() {
 }
 
 void SimulationEngine::recompute_forces() {
+  telemetry::ScopedSection pair(telemetry_, "Pair");
   zero_forces();
   const auto result = potential_->compute(atoms_, neighbor_list_, box_);
   last_potential_energy_ = result.potential_energy;

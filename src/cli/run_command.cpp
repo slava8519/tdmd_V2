@@ -3,6 +3,7 @@
 #include "tdmd/io/preflight.hpp"
 #include "tdmd/io/yaml_config.hpp"
 #include "tdmd/runtime/simulation_engine.hpp"
+#include "tdmd/telemetry/telemetry.hpp"
 
 #include <cstddef>
 #include <cxxopts.hpp>
@@ -33,6 +34,12 @@ cxxopts::Options make_run_options_spec() {
           cxxopts::value<std::string>())
       ("quiet", "Suppress non-thermo stdout messages",
           cxxopts::value<bool>()->default_value("false"))
+      ("timing", "Print a LAMMPS-format timing breakdown to stderr at "
+                 "end-of-run (telemetry/SPEC §4.2)",
+          cxxopts::value<bool>()->default_value("false"))
+      ("telemetry-jsonl", "Write a one-line JSONL telemetry snapshot to "
+                          "<file> at end-of-run",
+          cxxopts::value<std::string>())
       ("config", "Path to tdmd YAML config",
           cxxopts::value<std::string>());
   // clang-format on
@@ -119,6 +126,12 @@ RunParseResult parse_run_options(const std::vector<std::string>& argv,
     out_options.dump_path.clear();
   }
   out_options.quiet = parsed["quiet"].as<bool>();
+  out_options.timing = parsed["timing"].as<bool>();
+  if (parsed.count("telemetry-jsonl") > 0) {
+    out_options.telemetry_jsonl_path = parsed["telemetry-jsonl"].as<std::string>();
+  } else {
+    out_options.telemetry_jsonl_path.clear();
+  }
 
   return result;
 }
@@ -180,9 +193,22 @@ int run_command(const RunOptions& options, const RunStreams& streams) {
   // --- Drive the engine. Path resolution already happened above, so we hand
   // the engine an empty config_dir to prevent a second (incorrect) rewrite.
   SimulationEngine engine;
+  telemetry::Telemetry telemetry;
+  const bool telemetry_enabled = options.timing || !options.telemetry_jsonl_path.empty();
   try {
+    // Setup (config parse, .data load, initial force warm-up) is not counted.
+    // Telemetry is attached only after init() so the wall-clock window and
+    // section accumulators both bracket just the run loop — matches LAMMPS's
+    // `run` command timing convention.
     engine.init(config, /*config_dir=*/"");
+    if (telemetry_enabled) {
+      engine.set_telemetry(&telemetry);
+      telemetry.begin_run();
+    }
     (void) engine.run(config.run.n_steps, thermo_out);
+    if (telemetry_enabled) {
+      telemetry.end_run();
+    }
     if (!options.dump_path.empty()) {
       std::ofstream dump_file(options.dump_path);
       if (!dump_file.is_open()) {
@@ -195,6 +221,20 @@ int run_command(const RunOptions& options, const RunStreams& streams) {
   } catch (const std::exception& e) {
     err << "runtime error: " << e.what() << '\n';
     return 1;
+  }
+
+  // --- Emit telemetry artifacts (after finalize, before the success banner).
+  if (options.timing) {
+    telemetry.write_lammps_format(err, config.run.n_steps, config.integrator.dt);
+  }
+  if (!options.telemetry_jsonl_path.empty()) {
+    std::ofstream jsonl_file(options.telemetry_jsonl_path);
+    if (!jsonl_file.is_open()) {
+      err << "failed to open telemetry-jsonl file '" << options.telemetry_jsonl_path
+          << "' for writing\n";
+      return 1;
+    }
+    telemetry.write_jsonl(jsonl_file);
   }
 
   if (!options.quiet) {

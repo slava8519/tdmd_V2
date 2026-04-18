@@ -24,14 +24,19 @@ namespace tdmd::cli {
 // Options recognised by `tdmd run`. Populated by `parse_run_options` or filled
 // directly in tests.
 struct RunOptions {
-  std::string config_path;  // positional: path to tdmd.yaml
-  std::string thermo_path;  // optional --thermo <file>; empty = stdout
-  std::string dump_path;    // optional --dump <file>; emits LAMMPS-compatible
-                            // `ITEM: ATOMS id type x y z fx fy fz` after the
-                            // final step. Empty = no dump. Used by the T2.8
-                            // DifferentialRunner to compare per-atom forces
-                            // against LAMMPS.
-  bool quiet = false;       // --quiet suppresses non-thermo stdout
+  std::string config_path;           // positional: path to tdmd.yaml
+  std::string thermo_path;           // optional --thermo <file>; empty = stdout
+  std::string dump_path;             // optional --dump <file>; emits LAMMPS-compatible
+                                     // `ITEM: ATOMS id type x y z fx fy fz` after the
+                                     // final step. Empty = no dump. Used by the T2.8
+                                     // DifferentialRunner to compare per-atom forces
+                                     // against LAMMPS.
+  bool quiet = false;                // --quiet suppresses non-thermo stdout
+  bool timing = false;               // --timing writes LAMMPS-format breakdown to err
+                                     // at end-of-run (telemetry/SPEC §4.2).
+  std::string telemetry_jsonl_path;  // --telemetry-jsonl <file>; empty = off.
+                                     // Writes a single JSONL snapshot line
+                                     // per run (per-step streaming is M3+).
 };
 
 // Streams the CLI layer writes into. Tests inject std::ostringstream here so

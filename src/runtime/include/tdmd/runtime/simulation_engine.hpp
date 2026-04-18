@@ -29,6 +29,7 @@
 #include "tdmd/state/atom_soa.hpp"
 #include "tdmd/state/box.hpp"
 #include "tdmd/state/species.hpp"
+#include "tdmd/telemetry/telemetry.hpp"
 
 #include <array>
 #include <cstdint>
@@ -92,6 +93,11 @@ public:
   // M1: no persistent state to flush. Defined so the callsite matches the
   // SPEC §2.2 init → run → finalize contract.
   void finalize();
+
+  // Optional telemetry sink. Ownership stays with the caller; pass nullptr
+  // (default) to disable timing. Must be set before `run()` to take effect.
+  // Single-thread only (M2); M3+ will layer a ring-buffered async sink.
+  void set_telemetry(telemetry::Telemetry* sink) noexcept { telemetry_ = sink; }
 
   // Read-only accessors — useful for tests that build an engine in-process
   // without invoking the CLI layer.
@@ -161,6 +167,9 @@ private:
   // Cached from the most recent force evaluation so thermo rows are cheap.
   double last_potential_energy_ = 0.0;
   std::array<double, 6> last_virial_{};
+
+  // Optional per-section timing sink. Non-owning pointer; nullptr = off.
+  telemetry::Telemetry* telemetry_ = nullptr;
 
   State state_ = State::Constructed;
 
