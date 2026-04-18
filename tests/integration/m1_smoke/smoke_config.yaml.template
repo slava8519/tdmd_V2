@@ -1,0 +1,38 @@
+# M1 integration-smoke TDMD config (template — {{ATOMS_PATH}} substituted at
+# smoke-run time). See tests/integration/m1_smoke/README.md for what this
+# exercises; see docs/development/m1_execution_pack.md §T1.12 for the scope.
+#
+# Identical physical setup to verify/benchmarks/t1_al_morse_500 (Al FCC 500,
+# Morse Girifalco-Weizer, NVE). Step count is clipped to 10 to stay under the
+# 10-second smoke budget while still exercising integrator + neighbor + pair
+# + thermo in a full VV cycle.
+
+simulation:
+  units: metal
+  seed: 12345
+
+atoms:
+  source: lammps_data
+  path: "{{ATOMS_PATH}}"
+
+potential:
+  style: morse
+  params:
+    D: 0.2703        # eV
+    alpha: 1.1646    # 1/Å
+    r0: 3.253        # Å
+    cutoff: 6.0      # Å
+    cutoff_strategy: hard_cutoff
+
+integrator:
+  style: velocity_verlet
+  dt: 0.001          # ps
+
+neighbor:
+  skin: 0.3          # Å
+
+thermo:
+  every: 1
+
+run:
+  n_steps: 10

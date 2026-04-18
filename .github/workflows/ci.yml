@@ -115,6 +115,9 @@ jobs:
       - name: Test
         run: ctest --test-dir build_cpu --output-on-failure
 
+      - name: M1 smoke (Al FCC Morse NVE, 10 steps)
+        run: tests/integration/m1_smoke/run_al_morse_smoke.sh --tdmd build_cpu/src/cli/tdmd
+
       - name: Upload compile_commands.json
         if: matrix.compiler == 'clang-17'
         uses: actions/upload-artifact@v4
