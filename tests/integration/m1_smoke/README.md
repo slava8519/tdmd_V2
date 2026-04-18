@@ -97,7 +97,7 @@ temperature) changes. The procedure matches T1:
 WORKDIR=$(mktemp -d)
 LD_LIBRARY_PATH=verify/third_party/lammps/install_tdmd/lib \
   verify/third_party/lammps/install_tdmd/bin/lmp \
-    -in verify/benchmarks/t1_al_morse_500/lammps_script.in \
+    -in verify/benchmarks/t1_al_morse_500/lammps_script_metal.in \
     -var workdir "$WORKDIR" \
     -log "$WORKDIR/lammps.log" -screen none
 cp "$WORKDIR/setup.data" tests/integration/m1_smoke/setup.data

@@ -1,0 +1,62 @@
+# T1 differential benchmark — TDMD config, lj variant (identity reference).
+#
+# Paired with `config_metal.yaml` to prove D-M1-6: `UnitConverter` is
+# transparent, i.e. the downstream force/integrator pipeline produces
+# identical results whether the config arrives in `metal` or in `lj` units.
+# With identity reference (sigma = epsilon = mass = 1) the two configs
+# describe the SAME physical system, and TDMD's thermo writer emits metal
+# units regardless of input — so a bitwise (1e-10 rel) diff of the two
+# runs' thermo logs is the cross-check.
+#
+# All numbers here are the lj-unit equivalents of the metal values:
+#
+#   length   : x_lj = x_metal / sigma = x_metal             (identity)
+#   energy   : E_lj = E_metal / epsilon = E_metal           (identity)
+#   alpha    : a_lj = a_metal * sigma = a_metal             (identity inverse length)
+#   mass     : m_lj = m_metal / m_ref = m_metal             (identity)
+#   timestep : dt_lj = dt_metal / sqrt(mvv2e_metal)         (1/sqrt(1.0364269e-4))
+#   velocity : v_lj = v_metal *  sqrt(mvv2e_metal)          (handled in harness)
+#
+# The `dt` factor reflects the LAMMPS-metal `mvv2e = 1.0364269e-4`
+# coupling between the KE and velocity unit systems — the same constant
+# that UnitConverter::time_from_lj uses (see src/runtime/unit_converter.cpp
+# "LJ_TIME and LJ_VEL" block, which computes `metal = lj * sqrt(mvv2e)`).
+# Under identity sigma=epsilon=mass=1 all OTHER conversion factors collapse
+# to 1, so only dt (and paired v) carries the sqrt(mvv2e) scaling.
+
+simulation:
+  units: lj
+  reference:
+    sigma: 1.0
+    epsilon: 1.0
+    mass: 1.0
+  seed: 12345              # unused in M1 (ingest from .data), kept for symmetry.
+
+atoms:
+  source: lammps_data
+  path: setup.data         # LAMMPS-metal produces this file; identity reference
+                           # means its numerical content is valid lj input too.
+
+potential:
+  style: morse
+  params:
+    D: 0.2703
+    alpha: 1.1646
+    r0: 3.253
+    cutoff: 6.0
+    cutoff_strategy: hard_cutoff
+
+integrator:
+  style: velocity_verlet
+  # dt_metal = 0.001 ps. Divide by sqrt(1.0364269e-4) ≈ 0.01018051; the
+  # round-trip dt_lj · sqrt(mvv2e) is bitwise 0.001 (verified in harness).
+  dt: 0.09822695059540948
+
+neighbor:
+  skin: 0.3
+
+thermo:
+  every: 10
+
+run:
+  n_steps: 100

@@ -96,6 +96,10 @@ TEST_CASE("T1 differential: Al FCC Morse NVE 500 atoms 100 steps vs LAMMPS",
   REQUIRE(tdmd_bin != nullptr);
   REQUIRE(fs::exists(tdmd_bin));
 
+  // `--variant both` runs TDMD-metal + TDMD-lj (identity reference) against
+  // the same LAMMPS-metal oracle, and additionally cross-checks the two TDMD
+  // runs at `benchmarks.t1_al_morse_500.cross_unit_relative` (1e-10 rel) —
+  // the D-M1-6 invariant (UnitConverter transparent).
   std::ostringstream cmd;
   cmd << "python3 " << harness                 //
       << " --benchmark " << benchmark_dir      //
@@ -103,6 +107,7 @@ TEST_CASE("T1 differential: Al FCC Morse NVE 500 atoms 100 steps vs LAMMPS",
       << " --lammps " << lammps_bin            //
       << " --lammps-libdir " << lammps_libdir  //
       << " --thresholds " << thresholds        //
+      << " --variant both"                     //
       << " 2>&1";
 
   std::string captured;

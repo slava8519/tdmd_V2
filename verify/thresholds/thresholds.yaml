@@ -80,6 +80,13 @@ tolerances:
       thermo_kinetic_energy_relative: 1.0e-10
       thermo_total_energy_relative: 1.0e-10
       thermo_pressure_relative: 1.0e-8
+      # D-M1-6 transparency check: TDMD-metal ≡ TDMD-lj (identity reference).
+      # Exercised only when `--variant both` is passed to run_differential.py.
+      # Both sides emit metal-unit thermo, so residual is bounded by FP
+      # round-trip of the sqrt(mvv2e_metal) factor in dt and v — a handful of
+      # ulps per conversion, amplified over 100 VV steps. 1e-10 rel is a
+      # generous bound; measured residual at M2 is <1e-12 on x86_64+gcc-13.
+      cross_unit_relative: 1.0e-10
       rationale: |
         Al FCC 5x5x5 (500 atoms), Morse (Girifalco-Weizer), NVE, 100 steps,
         dt=0.001 ps, Strategy A cutoff on both sides (LAMMPS default == TDMD

@@ -51,12 +51,13 @@ deferred to a later milestone.
 
 ## Files in this directory
 
-| File                | Role                                                |
-|---------------------|-----------------------------------------------------|
-| `README.md`         | This document                                       |
-| `config.yaml`       | TDMD config (points at `setup.data` produced by LAMMPS) |
-| `lammps_script.in`  | LAMMPS input: build lattice, assign velocities, emit `setup.data`, run, emit thermo + `final.data` |
-| `checks.yaml`       | Which thresholds (from `verify/thresholds/thresholds.yaml`) this benchmark exercises |
+| File                        | Role                                                |
+|-----------------------------|-----------------------------------------------------|
+| `README.md`                 | This document                                       |
+| `config_metal.yaml`         | TDMD config, `units: metal` (points at `setup.data` produced by LAMMPS) |
+| `config_lj.yaml`            | TDMD config, `units: lj` + identity reference — paired with `config_metal.yaml` for the D-M1-6 cross-check (see `verify/SPEC.md` §4.5.1) |
+| `lammps_script_metal.in`    | LAMMPS input: build lattice, assign velocities, emit `setup.data`, run, emit thermo + `final.data` |
+| `checks.yaml`               | Which thresholds (from `verify/thresholds/thresholds.yaml`) this benchmark exercises |
 
 ## How to run locally
 
@@ -68,13 +69,30 @@ python3 verify/t1/run_differential.py \
     --tdmd build_cpu/src/cli/tdmd \
     --lammps verify/third_party/lammps/install_tdmd/bin/lmp \
     --lammps-libdir verify/third_party/lammps/install_tdmd/lib \
-    --thresholds verify/thresholds/thresholds.yaml
+    --thresholds verify/thresholds/thresholds.yaml \
+    --variant both          # metal + lj cross-check (default: metal only)
 ```
 
 The harness exits 0 on pass, non-zero on any threshold violation. When the
 LAMMPS binary is missing the harness prints a clear SKIP message and exits
 with the dedicated skip code (77) — consumed by the Catch2 wrapper to
 translate into a CI-skip (not a failure).
+
+## lj cross-check (M2, T2.4)
+
+`--variant both` additionally runs TDMD with `config_lj.yaml` (identity
+reference σ=ε=m_ref=1). The harness pre-scales the Velocities block of the
+LAMMPS-produced `setup.data` by `sqrt(mvv2e_metal) ≈ 0.01018` so the lj→metal
+conversion inside `UnitConverter::velocity_from_lj` recovers the original
+Å/ps magnitudes — `dt_lj = 0.001 / sqrt(mvv2e)` does the same for time.
+Length/mass/energy columns pass through untouched (identity multiply-by-1).
+
+Since both TDMD runs emit metal-unit thermo regardless of input, the
+cross-diff is a direct column-by-column comparison at
+`benchmarks.t1_al_morse_500.cross_unit_relative = 1.0e-10`. The measured
+residual is `0.0` on every column at every step — the D-M1-6 transparency
+invariant is closed bit-exactly. See `verify/SPEC.md` §4.5.1 for the full
+rationale.
 
 ## Comparison scope (M1)
 

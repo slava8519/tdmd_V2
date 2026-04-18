@@ -1,6 +1,6 @@
 # T1 differential benchmark — TDMD config.
 #
-# Pairs with `lammps_script.in` in the same directory. The LAMMPS side emits
+# Pairs with `lammps_script_metal.in` in the same directory. The LAMMPS side emits
 # `setup.data` (initial lattice + velocities) which this config then ingests,
 # so both engines start from bit-identical initial state.
 #

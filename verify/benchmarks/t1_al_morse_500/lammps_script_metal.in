@@ -4,7 +4,7 @@
 #   workdir  — output directory; `setup.data`, `final.data`, and `thermo.log`
 #              are written here.
 #
-# Matches verify/benchmarks/t1_al_morse_500/config.yaml bit-for-bit:
+# Matches verify/benchmarks/t1_al_morse_500/config_metal.yaml bit-for-bit:
 #   - Girifalco-Weizer Morse parameters
 #   - hard-truncation cutoff at 6.0 Å (LAMMPS `pair_style morse` default
 #     behaviour, matches TDMD `cutoff_strategy: hard_cutoff`)

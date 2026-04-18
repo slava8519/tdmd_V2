@@ -444,10 +444,11 @@ T3 не просто benchmark — это **existence proof** проекта. И
 - Seed 12345, initial T = 300 K via `velocity create ... loop geom dist gaussian` (LAMMPS
   writes the resulting atoms+velocities via `write_data ... nocoeff`, TDMD reads the same file).
 
-**Layout:** `verify/benchmarks/t1_al_morse_500/{README.md, config.yaml, lammps_script.in, checks.yaml}`.
+**Layout:** `verify/benchmarks/t1_al_morse_500/{README.md, config_metal.yaml, config_lj.yaml, lammps_script_metal.in, checks.yaml}`.
 Ground-state data file is produced by LAMMPS at harness run-time rather than committed
 as a golden artifact — keeps the benchmark self-regenerating and avoids a 500-atom binary
-blob in-tree.
+blob in-tree. The `_metal` / `_lj` suffix pattern distinguishes the two unit variants —
+see the **lj variant** subsection below.
 
 **Residual budget (measured at M1 on x86_64 + gcc-13):**
 
@@ -478,6 +479,57 @@ full pipeline end-to-end (compile harness, run driver) but the LAMMPS submodule 
 fetched on the public runner (Option A policy), so the Catch2 wrapper detects the absent
 oracle binary and exits `77` (`SKIP_RETURN_CODE`). Oracle-gated validation is part of the
 local pre-push protocol until an isolated runner lands (revisit at M6).
+
+#### 4.5.1. lj variant — D-M1-6 cross-check (landed at M2, T2.4)
+
+**Purpose.** Prove `UnitConverter` is numerically transparent — i.e. the same
+physical system expressed in `units: lj` (with identity reference σ=ε=m_ref=1)
+and in `units: metal` produces bit-identical thermo through the full
+force/integrator pipeline over 100 NVE steps. This closes invariant D-M1-6
+(`verify/SPEC.md` §2.2) and gates any future `UnitConverter` refactor.
+
+**How it works.** `run_differential.py --variant both` runs LAMMPS-metal once
+(produces `setup.data` + oracle thermo), then two TDMD passes:
+
+1. **TDMD-metal** ingests `setup.data` directly with `config_metal.yaml` (existing
+   M1 flow, renamed from `config.yaml`).
+2. **TDMD-lj** reads `config_lj.yaml`. Because TDMD's `velocity_from_lj`
+   multiplies by `1/sqrt(mvv2e_metal) ≈ 98.23` on ingest (see
+   `src/runtime/unit_converter.cpp` "LJ_TIME and LJ_VEL" block), the harness
+   pre-scales the Velocities block of `setup.data` by `sqrt(mvv2e_metal)
+   ≈ 0.01018` and writes `setup_lj.data`. Length/mass/energy columns are
+   untouched — σ=ε=m_ref=1 makes them valid lj numerics bit-for-bit. The lj
+   `dt` field carries the inverse scaling: `dt_lj = 0.001 / sqrt(mvv2e) =
+   0.09822695059540948` (round-trips to `dt_metal = 0.001` exactly).
+
+Both TDMD runs emit metal-unit thermo (internal representation is always metal,
+master spec §5.3), so the cross-diff is a direct column-by-column comparison
+at `benchmarks.t1_al_morse_500.cross_unit_relative = 1.0e-10`.
+
+**Residual budget (measured at M2 on x86_64 + gcc-13):**
+
+| Check | Threshold | Measured residual |
+|---|---|---|
+| TDMD-metal vs LAMMPS | same as §4.5 table above | same as §4.5 |
+| TDMD-lj    vs LAMMPS | same as §4.5 table above | same as §4.5 |
+| TDMD-metal ≡ TDMD-lj | 1.0e-10 rel per column    | **0.0 (bit-exact) on every column at every step** |
+
+The bit-exact cross-check is not coincidence: with identity reference every
+non-dt/non-v conversion is a multiply-by-1, and the sqrt(mvv2e) round-trip
+through dt and velocity scaling hits exactly the same floating-point pattern
+UnitConverter uses internally, so the two code paths reduce to the same
+byte-level state immediately after ingest. The 1e-10 threshold is a generous
+safety margin — a future refactor that drifts even a single ulp per step would
+show up as ~1e-14 rel residual, still comfortably passing but detectable in
+the `max_rel` column of the harness report.
+
+**Not exercised by this variant (deliberate scope).** LAMMPS's own `units lj`
+path is NOT validated here — that would test LAMMPS, not TDMD. A full
+TDMD-lj vs LAMMPS-lj differential requires LAMMPS-lj to produce a `setup.data`
+with equivalent initial conditions (same seed under `units lj` draws
+differently) and `compare.py` to handle lj→metal thermo conversion on the
+oracle side. Scheduled for T5 (post-M2) if a future benchmark needs it;
+D-M1-6 is already fully closed without it.
 
 ### 4.6. Adding new benchmark
 
