@@ -3,8 +3,11 @@
 #include "tdmd/io/lammps_data_reader.hpp"
 #include "tdmd/io/yaml_config.hpp"
 #include "tdmd/runtime/physical_constants.hpp"
+#include "tdmd/runtime/unit_converter.hpp"
+#include "tdmd/state/lj_reference.hpp"
 
 #include <cmath>
+#include <cstddef>
 #include <filesystem>
 #include <iomanip>
 #include <iostream>
@@ -38,6 +41,49 @@ std::string resolve_atoms_path(const std::string& atoms_path, const std::string&
   return (fs::path(config_dir) / p).lexically_normal().string();
 }
 
+// Convert every raw-from-LAMMPS value in `atoms`, `box`, and `species` from
+// lj units into native metal, in place. Called only when `units=lj` in the
+// config; preflight has already guaranteed that `ref` exists and that
+// (σ, ε, m) are finite-positive, so `UnitConverter::*_from_lj` cannot throw.
+//
+// The transform is a pure scaling per dimension:
+//   positions   — length:   l_metal = l_lj · σ
+//   velocities  — velocity: v_metal = v_lj · sqrt(ε/m) · kLjVelocityFactor
+//   box bounds  — length (same as positions)
+//   masses      — mass:     m_metal = m_lj · m_ref
+// Forces are NOT scaled (the force array is zeroed and recomputed after this
+// helper returns, so any transient lj values there are discarded).
+//
+// SpeciesRegistry is immutable-after-init by contract (state/SPEC §5.1), so
+// we rebuild it with converted masses rather than mutating entries in place.
+void convert_state_lj_to_metal(AtomSoA& atoms,
+                               Box& box,
+                               SpeciesRegistry& species,
+                               const LjReference& ref) {
+  const std::size_t n = atoms.size();
+  for (std::size_t i = 0; i < n; ++i) {
+    atoms.x[i] = UnitConverter::length_from_lj(atoms.x[i], ref).metal_angstroms;
+    atoms.y[i] = UnitConverter::length_from_lj(atoms.y[i], ref).metal_angstroms;
+    atoms.z[i] = UnitConverter::length_from_lj(atoms.z[i], ref).metal_angstroms;
+    atoms.vx[i] = UnitConverter::velocity_from_lj(atoms.vx[i], ref).metal_A_per_ps;
+    atoms.vy[i] = UnitConverter::velocity_from_lj(atoms.vy[i], ref).metal_A_per_ps;
+    atoms.vz[i] = UnitConverter::velocity_from_lj(atoms.vz[i], ref).metal_A_per_ps;
+  }
+  box.xlo = UnitConverter::length_from_lj(box.xlo, ref).metal_angstroms;
+  box.xhi = UnitConverter::length_from_lj(box.xhi, ref).metal_angstroms;
+  box.ylo = UnitConverter::length_from_lj(box.ylo, ref).metal_angstroms;
+  box.yhi = UnitConverter::length_from_lj(box.yhi, ref).metal_angstroms;
+  box.zlo = UnitConverter::length_from_lj(box.zlo, ref).metal_angstroms;
+  box.zhi = UnitConverter::length_from_lj(box.zhi, ref).metal_angstroms;
+  SpeciesRegistry rebuilt;
+  for (std::size_t t = 0; t < species.count(); ++t) {
+    SpeciesInfo info = species.get_info(static_cast<SpeciesId>(t));
+    info.mass = UnitConverter::mass_from_lj(info.mass, ref).metal_g_per_mol;
+    (void) rebuilt.register_species(info);
+  }
+  species = std::move(rebuilt);
+}
+
 }  // namespace
 
 SimulationEngine::SimulationEngine() = default;
@@ -49,28 +95,51 @@ void SimulationEngine::init(const io::YamlConfig& config, const std::string& con
   }
 
   // --- Load atoms / box / species from the referenced LAMMPS .data file.
+  // The reader is unit-agnostic: values are stored exactly as they appear in
+  // the file. Lj → metal conversion happens below, once, at this ingest
+  // boundary — master spec §5.3 "UnitConverter is called at I/O boundary,
+  // every other module works in metal".
+  const bool is_lj = config.simulation.units == io::UnitsKind::Lj;
   const std::string atoms_path = resolve_atoms_path(config.atoms.path, config_dir);
   io::LammpsDataImportOptions opts{};
-  // io::UnitSystem and tdmd::UnitSystem are the same type (runtime-owned) — only
-  // Metal is supported in M1 (both parser and preflight reject `lj`).
-  opts.units = UnitSystem::Metal;
+  opts.units = is_lj ? UnitSystem::Lj : UnitSystem::Metal;
   atoms_ = AtomSoA{};
   box_ = Box{};
   species_ = SpeciesRegistry{};
   (void) io::read_lammps_data_file(atoms_path, opts, atoms_, box_, species_);
 
-  // --- Build the Morse potential from YAML.
+  // Optional in-place lj → metal conversion. Preflight has already checked
+  // that `config.simulation.reference` is present and well-formed, so the
+  // `.value()` call cannot throw.
+  LjReference lj_ref{};
+  if (is_lj) {
+    lj_ref = config.simulation.reference.value();
+    convert_state_lj_to_metal(atoms_, box_, species_, lj_ref);
+  }
+
+  // --- Build the Morse potential. The YAML block carries Morse parameters in
+  // the same unit system as `simulation.units`, so we convert them here when
+  // the user wrote lj. `alpha` is inverse length; its metal value is
+  // alpha_lj / σ (no dedicated converter — it's a pure scaling).
   const auto& mp = config.potential.morse;
   MorsePotential::PairParams pp{.D = mp.D, .alpha = mp.alpha, .r0 = mp.r0, .cutoff = mp.cutoff};
+  if (is_lj) {
+    pp.D = UnitConverter::energy_from_lj(mp.D, lj_ref).metal_eV;
+    pp.alpha = mp.alpha / lj_ref.sigma;
+    pp.r0 = UnitConverter::length_from_lj(mp.r0, lj_ref).metal_angstroms;
+    pp.cutoff = UnitConverter::length_from_lj(mp.cutoff, lj_ref).metal_angstroms;
+  }
   potential_ = std::make_unique<MorsePotential>(pp, to_morse_strategy(mp.cutoff_strategy));
-  cutoff_ = mp.cutoff;
+  cutoff_ = pp.cutoff;
 
   // --- Build the integrator.
   integrator_ = std::make_unique<VelocityVerletIntegrator>();
-  dt_ = config.integrator.dt;
+  dt_ = is_lj ? UnitConverter::time_from_lj(config.integrator.dt, lj_ref).metal_ps
+              : config.integrator.dt;
 
   // --- Neighbor pipeline.
-  skin_ = config.neighbor.skin;
+  skin_ = is_lj ? UnitConverter::length_from_lj(config.neighbor.skin, lj_ref).metal_angstroms
+                : config.neighbor.skin;
   thermo_every_ = std::max<std::uint64_t>(config.thermo.every, 1U);
   cell_grid_.build(box_, cutoff_, skin_);
   cell_grid_.bin(atoms_);

@@ -31,6 +31,8 @@
 //     deliberately do NOT fail-fast on semantics so users see every issue in
 //     one pass.
 
+#include "tdmd/state/lj_reference.hpp"
+
 #include <cstdint>
 #include <optional>
 #include <stdexcept>
@@ -44,7 +46,8 @@ namespace tdmd::io {
 // on values, not on typo-prone literals.
 enum class UnitsKind : std::uint8_t {
   Metal,
-  // Lj — reserved for M2 once UnitConverter::*_from_lj is wired in.
+  Lj,  // LAMMPS `units lj` — dimensionless relative to (σ, ε, m); requires
+       // `simulation.reference`. Ingest path converts to metal internally.
 };
 
 enum class AtomsSource : std::uint8_t {
@@ -78,6 +81,10 @@ struct MorseParams {
 struct SimulationBlock {
   UnitsKind units = UnitsKind::Metal;
   std::uint64_t seed = 12345;
+  // (σ, ε, m) reference for `units: lj`. Parser populates this iff the user
+  // supplied a `simulation.reference` block; preflight rejects its absence
+  // when `units=lj` and warns about its presence when `units=metal`.
+  std::optional<LjReference> reference;
 };
 
 struct AtomsBlock {

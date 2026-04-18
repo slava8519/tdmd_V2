@@ -106,6 +106,13 @@ void write_summary(std::ostream& out, const io::YamlConfig& config) {
     case io::UnitsKind::Metal:
       out << "metal";
       break;
+    case io::UnitsKind::Lj:
+      out << "lj";
+      if (config.simulation.reference.has_value()) {
+        const auto& r = config.simulation.reference.value();
+        out << " (σ=" << r.sigma << ", ε=" << r.epsilon << ", m=" << r.mass << ")";
+      }
+      break;
   }
   out << "\n  atoms:       "
       << (config.atoms.source == io::AtomsSource::LammpsData ? "lammps_data" : "<unknown>")

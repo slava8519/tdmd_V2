@@ -423,10 +423,17 @@ LammpsDataImportResult read_lammps_data(std::istream& in,
                                         AtomSoA& out_atoms,
                                         Box& out_box,
                                         SpeciesRegistry& out_species) {
-  if (options.units != UnitSystem::Metal) {
+  // Reader is unit-agnostic: positions, masses, and velocities are stored
+  // verbatim as written in the `.data` file. The caller (runtime/
+  // SimulationEngine) is responsible for lj→metal conversion via
+  // UnitConverter when `options.units == Lj`. `Real`/`Cgs`/`Si` are rejected
+  // here because TDMD has no converter for them (master spec §5.3).
+  if (options.units == UnitSystem::Real || options.units == UnitSystem::Cgs ||
+      options.units == UnitSystem::Si) {
     throw_parse(0,
-                "only UnitSystem::Metal is supported in M1 (T1.3); "
-                "lj/real/cgs/si are reserved for later milestones");
+                "only UnitSystem::Metal and UnitSystem::Lj are supported; "
+                "real/cgs/si are reserved for later milestones "
+                "(master spec §5.3)");
   }
   if (!out_atoms.empty()) {
     throw_parse(0,

@@ -303,7 +303,9 @@ TEST_CASE("LammpsDataReader: Velocities before Atoms is rejected", "[io][lammps]
   REQUIRE_THROWS_AS(parse_from_string(input, sink), tdmd::io::LammpsDataParseError);
 }
 
-TEST_CASE("LammpsDataReader: non-Metal UnitSystem is rejected in M1", "[io][lammps][units]") {
+TEST_CASE("LammpsDataReader: Metal and Lj are accepted, Real/Cgs/Si rejected",
+          "[io][lammps][units]") {
+  // Minimal 1-atom fixture reused across unit-system probes.
   const std::string input =
       "LAMMPS data file via tdmd-test-writer\n"
       "\n"
@@ -321,10 +323,31 @@ TEST_CASE("LammpsDataReader: non-Metal UnitSystem is rejected in M1", "[io][lamm
       "Atoms # atomic\n"
       "\n"
       "1 1 0.0 0.0 0.0\n";
-  ParseSink sink;
-  tdmd::io::LammpsDataImportOptions opts;
-  opts.units = tdmd::UnitSystem::Lj;
-  REQUIRE_THROWS_AS(parse_from_string(input, sink, opts), tdmd::io::LammpsDataParseError);
+
+  // Metal — accepted (M1 baseline).
+  {
+    ParseSink sink;
+    tdmd::io::LammpsDataImportOptions opts;
+    opts.units = tdmd::UnitSystem::Metal;
+    REQUIRE_NOTHROW(parse_from_string(input, sink, opts));
+  }
+
+  // Lj — accepted as of M2/T2.2 (reader is unit-agnostic; conversion happens
+  // in runtime/SimulationEngine at the ingest boundary).
+  {
+    ParseSink sink;
+    tdmd::io::LammpsDataImportOptions opts;
+    opts.units = tdmd::UnitSystem::Lj;
+    REQUIRE_NOTHROW(parse_from_string(input, sink, opts));
+  }
+
+  // Real / Cgs / Si — still rejected (TDMD has no converter for them).
+  for (auto bad : {tdmd::UnitSystem::Real, tdmd::UnitSystem::Cgs, tdmd::UnitSystem::Si}) {
+    ParseSink sink;
+    tdmd::io::LammpsDataImportOptions opts;
+    opts.units = bad;
+    REQUIRE_THROWS_AS(parse_from_string(input, sink, opts), tdmd::io::LammpsDataParseError);
+  }
 }
 
 TEST_CASE("LammpsDataReader: round-trip bit-exact on random inputs (≥10³ cases)",

@@ -23,6 +23,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 
 #ifndef TDMD_IO_FIXTURES_DIR
 #error "TDMD_IO_FIXTURES_DIR must be defined by the build system"
@@ -197,4 +198,128 @@ TEST_CASE("SimulationEngine: accessors reflect loaded config", "[runtime][engine
   (void) engine.run(3, nullptr);
   REQUIRE(engine.current_step() == 3U);
   engine.finalize();
+}
+
+// ---------------------------------------------------------------------------
+// T2.2 — lj ingest integration: identity-reference round-trip.
+//
+// With LjReference{σ=1, ε=1, m=1}, every lj→metal scaling factor for LENGTH,
+// ENERGY, MASS collapses to 1.0 exactly. Since the fixture has no velocities
+// (vx/vy/vz all zero) and identity velocity conversion multiplies zero by the
+// factor, velocities also come out bitwise zero. The post-ingest state
+// (atoms, box, species masses) must therefore be bitwise identical to the
+// metal path. This locks in the invariant that the lj branch doesn't drift
+// numerically when the reference is the physical identity.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("SimulationEngine: metal ↔ lj identity-reference round-trip (positions/box/mass)",
+          "[runtime][engine][lj]") {
+  // Mirror the metal config as lj with identity (σ=ε=m=1). For LENGTH, ENERGY,
+  // and MASS the conversion collapses to 1.0 exactly, so positions, box
+  // bounds, and species masses are bitwise identical. Velocities and time are
+  // NOT bitwise identical — even with σ=ε=m=1 the velocity factor carries a
+  // 1/sqrt(mvv2e) ≈ 98.23 scaling (LAMMPS `metal` mvv2e is a pure numerical
+  // constant, not a dimensional σ/ε/m combination). So the bitwise claim only
+  // holds for the pure-scalar dimensions — this is the test's scope.
+  auto metal_cfg = load_valid_config();
+  auto lj_cfg = metal_cfg;
+  lj_cfg.simulation.units = tdmd::io::UnitsKind::Lj;
+  lj_cfg.simulation.reference = tdmd::LjReference{.sigma = 1.0, .epsilon = 1.0, .mass = 1.0};
+
+  tdmd::SimulationEngine metal_engine;
+  metal_engine.init(metal_cfg, valid_config_dir());
+  tdmd::SimulationEngine lj_engine;
+  lj_engine.init(lj_cfg, valid_config_dir());
+
+  REQUIRE(metal_engine.atoms().size() == lj_engine.atoms().size());
+  const auto& ma = metal_engine.atoms();
+  const auto& la = lj_engine.atoms();
+  for (std::size_t i = 0; i < ma.size(); ++i) {
+    REQUIRE(ma.x[i] == la.x[i]);
+    REQUIRE(ma.y[i] == la.y[i]);
+    REQUIRE(ma.z[i] == la.z[i]);
+    REQUIRE(ma.type[i] == la.type[i]);
+  }
+
+  const auto& mb = metal_engine.box();
+  const auto& lb = lj_engine.box();
+  REQUIRE(mb.xlo == lb.xlo);
+  REQUIRE(mb.xhi == lb.xhi);
+  REQUIRE(mb.ylo == lb.ylo);
+  REQUIRE(mb.yhi == lb.yhi);
+  REQUIRE(mb.zlo == lb.zlo);
+  REQUIRE(mb.zhi == lb.zhi);
+
+  REQUIRE(metal_engine.species().count() == lj_engine.species().count());
+  for (std::size_t t = 0; t < metal_engine.species().count(); ++t) {
+    const auto id = static_cast<tdmd::SpeciesId>(t);
+    REQUIRE(metal_engine.species().get_info(id).mass == lj_engine.species().get_info(id).mass);
+  }
+
+  metal_engine.finalize();
+  lj_engine.finalize();
+}
+
+TEST_CASE("SimulationEngine: lj non-identity reference scales positions by σ",
+          "[runtime][engine][lj]") {
+  // With σ=2.0, every lj position `p` in the .data file becomes `2p` in
+  // internal metal representation. To keep both engines physically
+  // constructable on the same underlying .data file we halve the lj-config
+  // cutoff / r0 / skin so their post-conversion metal values match the metal
+  // baseline (and the cell-grid 3-cells-per-axis constraint is satisfied on
+  // both sides — the lj-engine metal box is σ · metal_box = 16.2 Å, which
+  // comfortably fits 3·(2.5+0.1) = 7.8 Å). Because the lj-engine uses a
+  // different (larger) box, its cell-grid stable-reorder permutation can
+  // differ from the metal baseline's, so we look up atoms by `AtomId` — those
+  // IDs are preserved through reorder and uniquely identify the same
+  // physical atom.
+  auto metal_cfg = load_valid_config();
+  auto lj_cfg = metal_cfg;
+  lj_cfg.simulation.units = tdmd::io::UnitsKind::Lj;
+  lj_cfg.simulation.reference = tdmd::LjReference{.sigma = 2.0, .epsilon = 1.0, .mass = 1.0};
+  lj_cfg.potential.morse.cutoff *= 0.5;  // converted metal cutoff == metal baseline cutoff
+  lj_cfg.potential.morse.r0 *= 0.5;
+  lj_cfg.neighbor.skin *= 0.5;
+
+  tdmd::SimulationEngine metal_engine;
+  metal_engine.init(metal_cfg, valid_config_dir());
+  tdmd::SimulationEngine lj_engine;
+  lj_engine.init(lj_cfg, valid_config_dir());
+
+  REQUIRE(metal_engine.atoms().size() == lj_engine.atoms().size());
+  const auto& ma = metal_engine.atoms();
+  const auto& la = lj_engine.atoms();
+
+  // Build id → index maps; the two engines may have been reordered
+  // independently (different box size → different cell grid).
+  std::unordered_map<tdmd::AtomId, std::size_t> m_idx;
+  std::unordered_map<tdmd::AtomId, std::size_t> l_idx;
+  m_idx.reserve(ma.size());
+  l_idx.reserve(la.size());
+  for (std::size_t i = 0; i < ma.size(); ++i) {
+    m_idx.emplace(ma.id[i], i);
+  }
+  for (std::size_t i = 0; i < la.size(); ++i) {
+    l_idx.emplace(la.id[i], i);
+  }
+  REQUIRE(m_idx.size() == ma.size());
+  REQUIRE(l_idx.size() == la.size());
+
+  for (const auto& [id, mi] : m_idx) {
+    const auto it = l_idx.find(id);
+    REQUIRE(it != l_idx.end());
+    const std::size_t li = it->second;
+    REQUIRE(la.x[li] == ma.x[mi] * 2.0);
+    REQUIRE(la.y[li] == ma.y[mi] * 2.0);
+    REQUIRE(la.z[li] == ma.z[mi] * 2.0);
+  }
+
+  const auto& mb = metal_engine.box();
+  const auto& lb = lj_engine.box();
+  REQUIRE(lb.xhi == mb.xhi * 2.0);
+  REQUIRE(lb.yhi == mb.yhi * 2.0);
+  REQUIRE(lb.zhi == mb.zhi * 2.0);
+
+  metal_engine.finalize();
+  lj_engine.finalize();
 }

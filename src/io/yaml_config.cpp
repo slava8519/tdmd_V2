@@ -130,16 +130,29 @@ UnitsKind parse_units(const YAML::Node& node, std::string_view key_path) {
     return UnitsKind::Metal;
   }
   if (raw == "lj") {
-    throw_parse_error(node,
-                      key_path,
-                      "'lj' units are not yet supported in M1 — metal only "
-                      "(see master spec §14 M1; UnitConverter::*_from_lj "
-                      "lands in M2)");
+    // M2: lj requires a sibling `reference` block (checked by preflight,
+    // not here — the schema layer stays independent of cross-field rules).
+    return UnitsKind::Lj;
   }
-  throw_parse_error(
-      node,
-      key_path,
-      "unsupported units literal '" + raw + "' — accepted: metal (lj reserved for M2)");
+  throw_parse_error(node,
+                    key_path,
+                    "unsupported units literal '" + raw +
+                        "' — accepted: metal, lj (real/cgs/si are not supported)");
+}
+
+// Parses a `simulation.reference: { sigma, epsilon, mass }` sub-block into
+// `LjReference`. We do NOT enforce σ/ε/m > 0 here — malformed values are a
+// *semantic* concern (preflight), not a schema concern, matching the Morse
+// params convention where parse_morse_params only checks types.
+LjReference parse_reference_block(const YAML::Node& node) {
+  constexpr std::string_view path = "simulation.reference";
+  reject_unknown_keys(node, path, {"sigma", "epsilon", "mass"});
+  LjReference out{};
+  out.sigma = as_scalar<double>(require_child(node, path, "sigma"), "simulation.reference.sigma");
+  out.epsilon =
+      as_scalar<double>(require_child(node, path, "epsilon"), "simulation.reference.epsilon");
+  out.mass = as_scalar<double>(require_child(node, path, "mass"), "simulation.reference.mass");
+  return out;
 }
 
 AtomsSource parse_atoms_source(const YAML::Node& node, std::string_view key_path) {
@@ -196,11 +209,14 @@ IntegratorStyle parse_integrator_style(const YAML::Node& node, std::string_view 
 
 SimulationBlock parse_simulation_block(const YAML::Node& node) {
   constexpr std::string_view path = "simulation";
-  reject_unknown_keys(node, path, {"units", "seed"});
+  reject_unknown_keys(node, path, {"units", "seed", "reference"});
   SimulationBlock out{};
   out.units = parse_units(require_child(node, path, "units"), "simulation.units");
   if (const auto seed = node["seed"]; seed) {
     out.seed = as_scalar<std::uint64_t>(seed, "simulation.seed");
+  }
+  if (const auto ref = node["reference"]; ref) {
+    out.reference = parse_reference_block(ref);
   }
   return out;
 }

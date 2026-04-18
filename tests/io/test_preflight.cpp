@@ -199,3 +199,74 @@ TEST_CASE("preflight: passes on the T1.3 al_fcc_small.data path", "[io][prefligh
   CHECK(std::filesystem::exists(cfg.atoms.path));
   CHECK(tdmd::io::preflight(cfg).empty());
 }
+
+// ---------------------------------------------------------------------------
+// T2.2 — lj / reference preflight rules.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("preflight: units=lj without reference rejects", "[io][preflight][lj]") {
+  auto cfg = valid_cfg();
+  cfg.simulation.units = tdmd::io::UnitsKind::Lj;
+  cfg.simulation.reference.reset();
+  const auto errs = tdmd::io::preflight(cfg);
+  REQUIRE(!errs.empty());
+  CHECK(errs[0].severity == tdmd::io::PreflightSeverity::Error);
+  CHECK(errs[0].key_path == "simulation.reference");
+  CHECK_FALSE(tdmd::io::preflight_passes(errs));
+}
+
+TEST_CASE("preflight: units=lj with valid reference passes", "[io][preflight][lj]") {
+  auto cfg = valid_cfg();
+  cfg.simulation.units = tdmd::io::UnitsKind::Lj;
+  cfg.simulation.reference = tdmd::LjReference{.sigma = 3.405, .epsilon = 0.0104, .mass = 39.948};
+  const auto errs = tdmd::io::preflight(cfg);
+  REQUIRE(errs.empty());
+}
+
+TEST_CASE("preflight: units=lj with sigma<=0 rejects", "[io][preflight][lj]") {
+  auto cfg = valid_cfg();
+  cfg.simulation.units = tdmd::io::UnitsKind::Lj;
+  cfg.simulation.reference = tdmd::LjReference{.sigma = 0.0, .epsilon = 1.0, .mass = 1.0};
+  const auto errs = tdmd::io::preflight(cfg);
+  CHECK(has_single_error_at(errs, "simulation.reference.sigma"));
+
+  cfg.simulation.reference->sigma = -3.0;
+  CHECK(has_single_error_at(tdmd::io::preflight(cfg), "simulation.reference.sigma"));
+}
+
+TEST_CASE("preflight: units=lj with epsilon<=0 rejects", "[io][preflight][lj]") {
+  auto cfg = valid_cfg();
+  cfg.simulation.units = tdmd::io::UnitsKind::Lj;
+  cfg.simulation.reference = tdmd::LjReference{.sigma = 1.0, .epsilon = 0.0, .mass = 1.0};
+  const auto errs = tdmd::io::preflight(cfg);
+  CHECK(has_single_error_at(errs, "simulation.reference.epsilon"));
+}
+
+TEST_CASE("preflight: units=lj with mass<=0 rejects", "[io][preflight][lj]") {
+  auto cfg = valid_cfg();
+  cfg.simulation.units = tdmd::io::UnitsKind::Lj;
+  cfg.simulation.reference = tdmd::LjReference{.sigma = 1.0, .epsilon = 1.0, .mass = -0.5};
+  const auto errs = tdmd::io::preflight(cfg);
+  CHECK(has_single_error_at(errs, "simulation.reference.mass"));
+}
+
+TEST_CASE("preflight: units=lj with NaN sigma rejects (finite guard)", "[io][preflight][lj]") {
+  auto cfg = valid_cfg();
+  cfg.simulation.units = tdmd::io::UnitsKind::Lj;
+  cfg.simulation.reference = tdmd::LjReference{.sigma = std::nan(""), .epsilon = 1.0, .mass = 1.0};
+  const auto errs = tdmd::io::preflight(cfg);
+  CHECK(has_single_error_at(errs, "simulation.reference.sigma"));
+}
+
+TEST_CASE("preflight: units=metal with reference block warns (not rejects)",
+          "[io][preflight][lj]") {
+  auto cfg = valid_cfg();
+  cfg.simulation.units = tdmd::io::UnitsKind::Metal;
+  cfg.simulation.reference = tdmd::LjReference{.sigma = 1.0, .epsilon = 1.0, .mass = 1.0};
+  const auto errs = tdmd::io::preflight(cfg);
+  REQUIRE(errs.size() == 1);
+  CHECK(errs[0].severity == tdmd::io::PreflightSeverity::Warning);
+  CHECK(errs[0].key_path == "simulation.reference");
+  // Warning doesn't block `tdmd run`.
+  CHECK(tdmd::io::preflight_passes(errs));
+}

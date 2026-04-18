@@ -25,6 +25,51 @@ void push(std::vector<PreflightError>& out,
   return std::isfinite(v) && v > 0.0;
 }
 
+void check_simulation(const SimulationBlock& sim, std::vector<PreflightError>& out) {
+  // Cross-field rules tying `units` to the `reference` block. Schema layer
+  // (parse_yaml_config) accepts either shape — preflight enforces the mutual
+  // constraint so users see a clear `"units=lj requires reference"` message
+  // instead of a cryptic converter error deeper in the ingest path.
+  if (sim.units == UnitsKind::Lj) {
+    if (!sim.reference.has_value()) {
+      push(out,
+           PreflightSeverity::Error,
+           "simulation.reference",
+           "units=lj requires a simulation.reference block with { sigma, "
+           "epsilon, mass } (all > 0)");
+      return;
+    }
+    const auto& r = sim.reference.value();
+    if (!is_finite_positive(r.sigma)) {
+      push(out,
+           PreflightSeverity::Error,
+           "simulation.reference.sigma",
+           "simulation.reference.sigma must be finite and > 0 (got " + std::to_string(r.sigma) +
+               ")");
+    }
+    if (!is_finite_positive(r.epsilon)) {
+      push(out,
+           PreflightSeverity::Error,
+           "simulation.reference.epsilon",
+           "simulation.reference.epsilon must be finite and > 0 (got " + std::to_string(r.epsilon) +
+               ")");
+    }
+    if (!is_finite_positive(r.mass)) {
+      push(out,
+           PreflightSeverity::Error,
+           "simulation.reference.mass",
+           "simulation.reference.mass must be finite and > 0 (got " + std::to_string(r.mass) + ")");
+    }
+  } else {  // Metal (only other supported kind in M2).
+    if (sim.reference.has_value()) {
+      push(out,
+           PreflightSeverity::Warning,
+           "simulation.reference",
+           "simulation.reference is ignored when units=metal — remove it or switch units to lj");
+    }
+  }
+}
+
 void check_atoms(const AtomsBlock& atoms, std::vector<PreflightError>& out) {
   namespace fs = std::filesystem;
   // `source` is always `lammps_data` after parse (M1 enum). Only the file
@@ -125,6 +170,7 @@ std::vector<PreflightError> preflight(const YamlConfig& config) {
   // Chosen to match the top-to-bottom layout of io/SPEC §3.1 so error output
   // reads in source order. Any future block must insert at the matching
   // position.
+  check_simulation(config.simulation, out);
   check_atoms(config.atoms, out);
   check_potential(config.potential, out);
   check_integrator(config.integrator, out);

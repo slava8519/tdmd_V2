@@ -20,6 +20,7 @@
 // pressure factors pinned to the same numerical constants the integrator
 // uses internally (`integrator/velocity_verlet.hpp`, LAMMPS `metal`).
 
+#include "tdmd/state/lj_reference.hpp"
 #include "tdmd/state/unit_system.hpp"
 
 #include <cstdint>
@@ -64,17 +65,12 @@ struct TemperatureQ {
   double metal_K = 0.0;
 };
 
-// Reference parameters required for LJ ↔ metal conversion (LAMMPS convention:
-// length = sigma·Å, energy = epsilon·eV, mass = mass·g/mol). Default value is
-// the identity reference (σ=ε=m=1), which makes lj ↔ metal a no-op scaling
-// for length / energy / mass and a pure conversion-factor operation for the
-// derived dimensions. All fields must be strictly positive; converter methods
-// throw `std::invalid_argument` otherwise.
-struct LjReference {
-  double sigma = 1.0;    // Å
-  double epsilon = 1.0;  // eV
-  double mass = 1.0;     // g/mol
-};
+// `LjReference` — the (σ, ε, m) parameter bundle required for LAMMPS
+// `units lj` conversion — now lives in `state/lj_reference.hpp` so that io/
+// (which parses the YAML block) can reuse it without pulling the whole
+// converter interface. The conversion formulas themselves stay here; each
+// method validates the reference (σ, ε, m all > 0) and throws
+// `std::invalid_argument` on a malformed reference.
 
 // Thrown on dimensional violations we cannot catch at compile time (e.g.
 // runtime-selected unit systems that don't apply to the requested quantity).

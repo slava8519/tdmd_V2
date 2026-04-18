@@ -163,17 +163,10 @@ run: {}
                  "run.n_steps");
 }
 
-TEST_CASE("parse_yaml_config: unsupported units literals reject", "[io][yaml]") {
-  constexpr const char* tmpl = R"(
-simulation: {{ units: {} }}
-atoms: {{ source: lammps_data, path: ./a.data }}
-potential: {{ style: morse, params: {{ D: 0.1, alpha: 1.0, r0: 3.0, cutoff: 7.0 }} }}
-integrator: {{ style: velocity_verlet, dt: 0.001 }}
-run: {{ n_steps: 1 }}
-)";
-  (void) tmpl;
-
-  // `lj` — reserved for M2.
+TEST_CASE("parse_yaml_config: units=lj parses (schema layer is permissive)", "[io][yaml]") {
+  // Schema-layer test: lj is now a valid literal (M2). Cross-field rules
+  // (lj requires reference, etc.) live in preflight, not here — so a config
+  // with `units: lj` and no reference parses cleanly and fails preflight.
   constexpr std::string_view yaml_lj = R"(
 simulation: { units: lj }
 atoms: { source: lammps_data, path: ./a.data }
@@ -181,15 +174,57 @@ potential: { style: morse, params: { D: 0.1, alpha: 1.0, r0: 3.0, cutoff: 7.0 } 
 integrator: { style: velocity_verlet, dt: 0.001 }
 run: { n_steps: 1 }
 )";
-  REQUIRE_THROWS_AS(parse_string(yaml_lj), tdmd::io::YamlParseError);
-  try {
-    parse_string(yaml_lj);
-  } catch (const tdmd::io::YamlParseError& e) {
-    CHECK_THAT(std::string(e.what()), Catch::Matchers::ContainsSubstring("lj"));
-    CHECK_THAT(std::string(e.what()), Catch::Matchers::ContainsSubstring("M1"));
-  }
+  const auto cfg = parse_string(yaml_lj);
+  CHECK(cfg.simulation.units == tdmd::io::UnitsKind::Lj);
+  CHECK_FALSE(cfg.simulation.reference.has_value());
+}
 
-  // garbage literal.
+TEST_CASE("parse_yaml_config: simulation.reference block populates LjReference", "[io][yaml]") {
+  constexpr std::string_view yaml = R"(
+simulation:
+  units: lj
+  reference:
+    sigma: 3.405
+    epsilon: 0.0104
+    mass: 39.948
+atoms: { source: lammps_data, path: ./a.data }
+potential: { style: morse, params: { D: 0.1, alpha: 1.0, r0: 3.0, cutoff: 7.0 } }
+integrator: { style: velocity_verlet, dt: 0.001 }
+run: { n_steps: 1 }
+)";
+  const auto cfg = parse_string(yaml);
+  REQUIRE(cfg.simulation.reference.has_value());
+  CHECK(cfg.simulation.reference->sigma == 3.405);
+  CHECK(cfg.simulation.reference->epsilon == 0.0104);
+  CHECK(cfg.simulation.reference->mass == 39.948);
+}
+
+TEST_CASE("parse_yaml_config: simulation.reference missing sub-keys reject", "[io][yaml]") {
+  // Every field in `reference` is required at the schema layer (LjReference
+  // has no partial form). Dropping any one must raise YamlParseError.
+  const auto make_yaml = [](std::string_view ref_body) {
+    return std::string(R"(
+simulation:
+  units: lj
+  reference:
+)") + std::string(ref_body) +
+           R"(
+atoms: { source: lammps_data, path: ./a.data }
+potential: { style: morse, params: { D: 0.1, alpha: 1.0, r0: 3.0, cutoff: 7.0 } }
+integrator: { style: velocity_verlet, dt: 0.001 }
+run: { n_steps: 1 }
+)";
+  };
+  REQUIRE_THROWS_AS(parse_string(make_yaml("    epsilon: 0.0104\n    mass: 39.948")),
+                    tdmd::io::YamlParseError);
+  REQUIRE_THROWS_AS(parse_string(make_yaml("    sigma: 3.405\n    mass: 39.948")),
+                    tdmd::io::YamlParseError);
+  REQUIRE_THROWS_AS(parse_string(make_yaml("    sigma: 3.405\n    epsilon: 0.0104")),
+                    tdmd::io::YamlParseError);
+}
+
+TEST_CASE("parse_yaml_config: unsupported units literals reject", "[io][yaml]") {
+  // Garbage literal — not metal, not lj.
   constexpr std::string_view yaml_garbage = R"(
 simulation: { units: furlongs }
 atoms: { source: lammps_data, path: ./a.data }

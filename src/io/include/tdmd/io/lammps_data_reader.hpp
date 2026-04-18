@@ -7,12 +7,14 @@
 // Populates `AtomSoA`, `Box`, and `SpeciesRegistry` from a header + sections
 // stream (`Masses`, `Atoms`, and optionally `Velocities`).
 //
-// Scope (exec pack T1.3):
-// - atom_style `atomic` only (M2 will add `charge`, `full`, `molecular`);
+// Scope:
+// - atom_style `atomic` only (M2+ will add `charge`, `full`, `molecular`);
 // - orthogonal box only (triclinic tilt `xy xz yz` is a hard reject);
 // - units parameterized via `Options::units` (default `Metal` per master spec
-//   §5.3 native representation). Only `Metal` is accepted in M1 — `Lj` et al.
-//   are reserved for M2 once `UnitConverter::*_from_lj` is implemented.
+//   §5.3 native representation). `Metal` and `Lj` are both accepted as of
+//   M2/T2.2 — the reader is unit-agnostic and stores raw numbers; the caller
+//   (runtime/SimulationEngine) converts lj → metal at the ingest boundary via
+//   UnitConverter. `Real`/`Cgs`/`Si` remain rejected.
 // - streaming parse: never slurps the full file.
 //
 // Round-trip invariant: `parse → dump → parse` is bit-exact when the same
