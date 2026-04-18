@@ -7,8 +7,13 @@
 #include "tdmd/potentials/morse.hpp"
 #include "tdmd/runtime/physical_constants.hpp"
 #include "tdmd/runtime/unit_converter.hpp"
+#include "tdmd/scheduler/causal_wavefront_scheduler.hpp"
+#include "tdmd/scheduler/certificate_input_source.hpp"
+#include "tdmd/scheduler/policy.hpp"
 #include "tdmd/state/lj_reference.hpp"
 #include "tdmd/telemetry/telemetry.hpp"
+#include "tdmd/zoning/default_planner.hpp"
+#include "tdmd/zoning/zoning.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -17,6 +22,8 @@
 #include <filesystem>
 #include <iomanip>
 #include <iostream>
+#include <limits>
+#include <memory>
 #include <ostream>
 #include <sstream>
 #include <stdexcept>
@@ -90,6 +97,34 @@ void convert_state_lj_to_metal(AtomSoA& atoms,
   }
   species = std::move(rebuilt);
 }
+
+// T4.9 — CertificateInputSource stub for K=1 single-rank TD mode.
+//
+// In K=1 the scheduler runs all zones through their full lifecycle in
+// lockstep, advancing once per physics step. We don't gate dispatch on
+// per-zone safety (the legacy path is what actually produces forces;
+// scheduler is an observer). Populate conservative always-safe inputs
+// so select_ready_tasks promotes every ResidentPrev zone to Ready
+// every step. Multi-rank Pattern 2 (M7+) will replace this with a
+// state-+-neighbor-backed adapter that computes per-zone v_max / a_max
+// / skin_remaining from live state.
+class AlwaysSafeCertificateInputSource final : public scheduler::CertificateInputSource {
+public:
+  void fill_inputs(scheduler::ZoneId zone,
+                   scheduler::TimeLevel time_level,
+                   scheduler::CertificateInputs& out) const override {
+    out.zone_id = zone;
+    out.time_level = time_level;
+    out.v_max_zone = 0.0;
+    out.a_max_zone = 0.0;
+    out.dt_candidate = 1.0;    // unused in K=1 (scheduler doesn't dispatch)
+    out.buffer_width = 1.0e6;  // generous margins → always safe
+    out.skin_remaining = 1.0e6;
+    out.frontier_margin = 1.0e6;
+    out.neighbor_valid_until_step = time_level + 1'000'000;
+    out.halo_valid_until_step = time_level + 1'000'000;
+  }
+};
 
 }  // namespace
 
@@ -181,6 +216,14 @@ void SimulationEngine::init(const io::YamlConfig& config, const std::string& con
   // --- Initial force / energy / virial snapshot.
   recompute_forces();
 
+  // --- T4.9: opt-in TD scheduler wiring (D-M4-11). Legacy path is the
+  // default; td_mode_ stays false and td_scheduler_ stays null when not
+  // requested by YAML.
+  td_mode_ = config.scheduler.td_mode;
+  if (td_mode_) {
+    td_initialize_scheduler();
+  }
+
   state_ = State::Initialised;
   current_step_ = 0;
 }
@@ -200,27 +243,33 @@ ThermoRow SimulationEngine::run(std::uint64_t n_steps, std::ostream* thermo_out)
   }
 
   for (std::uint64_t s = 1; s <= n_steps; ++s) {
-    // Pre-force: half-kick + drift.
-    integrator_->pre_force_step(atoms_, species_, dt_);
+    if (td_mode_) {
+      // TD mode wraps the same physics calls in scheduler lifecycle events;
+      // force / integrator reduction order is identical (D-M4-9 byte-exact).
+      td_step(s, s);
+    } else {
+      // Pre-force: half-kick + drift.
+      integrator_->pre_force_step(atoms_, species_, dt_);
 
-    // Neighbor rebuild check — based on displacements since the last build.
-    {
-      telemetry::ScopedSection neigh(telemetry_, "Neigh");
-      displacement_tracker_.update_displacement(atoms_, box_);
-      if (displacement_tracker_.skin_exceeded()) {
-        displacement_tracker_.request_rebuild("skin exceeded");
+      // Neighbor rebuild check — based on displacements since the last build.
+      {
+        telemetry::ScopedSection neigh(telemetry_, "Neigh");
+        displacement_tracker_.update_displacement(atoms_, box_);
+        if (displacement_tracker_.skin_exceeded()) {
+          displacement_tracker_.request_rebuild("skin exceeded");
+        }
+        if (displacement_tracker_.rebuild_pending()) {
+          rebuild_neighbors();
+        }
       }
-      if (displacement_tracker_.rebuild_pending()) {
-        rebuild_neighbors();
-      }
+
+      // New forces at drifted positions. `recompute_forces` already wraps the
+      // pair-potential call in a "Pair" scope, so no extra wrapper here.
+      recompute_forces();
+
+      // Post-force: half-kick.
+      integrator_->post_force_step(atoms_, species_, dt_);
     }
-
-    // New forces at drifted positions. `recompute_forces` already wraps the
-    // pair-potential call in a "Pair" scope, so no extra wrapper here.
-    recompute_forces();
-
-    // Post-force: half-kick.
-    integrator_->post_force_step(atoms_, species_, dt_);
 
     current_step_ = s;
 
@@ -375,6 +424,94 @@ ThermoRow SimulationEngine::snapshot_thermo(std::uint64_t step) const {
   }
 
   return row;
+}
+
+// --- T4.9 TD-mode scheduler wiring --------------------------------------
+
+void SimulationEngine::td_initialize_scheduler() {
+  // Build a ZoningPlan from the current box/cutoff/skin. The default
+  // planner selects Linear1D for nearly-cubic single-rank boxes and
+  // produces a canonical_order permutation the scheduler consumes
+  // verbatim (D-M4-4). 1-rank single-subdomain target (D-M4-2) — no
+  // subdomain_box, no halo peers.
+  zoning::DefaultZoningPlanner planner;
+  zoning::PerformanceHint hint{};
+  hint.preferred_K_pipeline = 1;
+  td_plan_ =
+      std::make_unique<zoning::ZoningPlan>(planner.plan(box_, cutoff_, skin_, /*n_ranks=*/1, hint));
+
+  scheduler::SchedulerPolicy policy = scheduler::PolicyFactory::for_reference();
+  policy.k_max_pipeline_depth = 1;  // D-M4-1
+  policy.max_tasks_per_iteration =  // drain all ready zones
+      static_cast<std::uint32_t>(td_plan_->total_zones());
+
+  td_scheduler_ = std::make_unique<scheduler::CausalWavefrontScheduler>(policy);
+  td_scheduler_->initialize(*td_plan_);
+  td_scheduler_->attach_outer_coordinator(nullptr);  // Pattern 1 (D-M4-2)
+
+  td_cert_source_ = std::make_unique<AlwaysSafeCertificateInputSource>();
+  td_scheduler_->set_certificate_input_source(td_cert_source_.get());
+
+  // Prime every zone into ResidentPrev at step 0. select_ready_tasks will
+  // then find them selectable on the first td_step() iteration.
+  const std::uint64_t total = td_plan_->total_zones();
+  for (std::uint64_t z = 0; z < total; ++z) {
+    td_scheduler_->on_zone_data_arrived(static_cast<scheduler::ZoneId>(z),
+                                        /*step=*/0,
+                                        /*version=*/0);
+  }
+
+  // Target set when run() is called — temporarily point to a large horizon
+  // so finished() returns false during early event bookkeeping.
+  td_scheduler_->set_target_time_level(std::numeric_limits<scheduler::TimeLevel>::max());
+}
+
+void SimulationEngine::td_step(std::uint64_t step, std::uint64_t next_version) {
+  // ------------ Phase A: refresh certs + select tasks + mark_computing.
+  // In K=1 with the always-safe cert source every ResidentPrev zone lands
+  // in `tasks`, so after this block the scheduler has one Computing zone
+  // per active zone.
+  td_scheduler_->refresh_certificates();
+  auto tasks = td_scheduler_->select_ready_tasks();
+  for (const auto& t : tasks) {
+    td_scheduler_->mark_computing(t);
+  }
+
+  // ------------ Physics — byte-for-byte identical to legacy loop.
+  integrator_->pre_force_step(atoms_, species_, dt_);
+  {
+    telemetry::ScopedSection neigh(telemetry_, "Neigh");
+    displacement_tracker_.update_displacement(atoms_, box_);
+    if (displacement_tracker_.skin_exceeded()) {
+      displacement_tracker_.request_rebuild("skin exceeded");
+    }
+    if (displacement_tracker_.rebuild_pending()) {
+      rebuild_neighbors();
+    }
+  }
+  recompute_forces();
+  integrator_->post_force_step(atoms_, species_, dt_);
+
+  // ------------ Phase A epilogue: mark_completed.
+  for (const auto& t : tasks) {
+    td_scheduler_->mark_completed(t);
+  }
+
+  // ------------ Phase B: commit_completed (Pattern 1 internal zones go
+  // Completed → Committed directly per SPEC §6.2 bullet 2), then release
+  // Committed → Empty, then re-arrive at the new step number to put every
+  // zone at ResidentPrev for the next iteration. This is the "observed"
+  // single-rank cycle — the scheduler sees a coherent lifecycle per step
+  // without actually gating the physics work.
+  td_scheduler_->commit_completed();
+  td_scheduler_->release_committed();
+
+  const std::uint64_t total = td_plan_->total_zones();
+  for (std::uint64_t z = 0; z < total; ++z) {
+    td_scheduler_->on_zone_data_arrived(static_cast<scheduler::ZoneId>(z),
+                                        static_cast<scheduler::TimeLevel>(step),
+                                        static_cast<scheduler::Version>(next_version));
+  }
 }
 
 }  // namespace tdmd

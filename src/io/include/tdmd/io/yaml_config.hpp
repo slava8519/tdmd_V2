@@ -128,6 +128,16 @@ struct RunBlock {
   std::uint64_t n_steps = 0;  // required; zero default caught by preflight.
 };
 
+// SPEC: scheduler/SPEC.md §10, master spec §14 M4 (D-M4-11).
+// Opt-in TD scheduler wiring. Default `td_mode=false` keeps M1/M2/M3 smokes
+// and regression gates running on the legacy NVE loop bit-for-bit; when set
+// true, SimulationEngine::run() drives the K=1 single-rank CausalWavefront
+// scheduler around the same physics calls, byte-exact thermo expected
+// (D-M4-9 acceptance gate).
+struct SchedulerBlock {
+  bool td_mode = false;
+};
+
 // Aggregate. Parser produces this, preflight inspects it.
 struct YamlConfig {
   SimulationBlock simulation{};
@@ -137,6 +147,7 @@ struct YamlConfig {
   NeighborBlock neighbor{};
   ThermoBlock thermo{};
   RunBlock run{};
+  SchedulerBlock scheduler{};
 };
 
 // Thrown by `parse_yaml_config` on syntactic / schema violations. `line` is the

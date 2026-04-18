@@ -318,6 +318,16 @@ RunBlock parse_run_block(const YAML::Node& node) {
   return out;
 }
 
+SchedulerBlock parse_scheduler_block(const YAML::Node& node) {
+  constexpr std::string_view path = "scheduler";
+  reject_unknown_keys(node, path, {"td_mode"});
+  SchedulerBlock out{};
+  if (const auto td = node["td_mode"]; td) {
+    out.td_mode = as_scalar<bool>(td, "scheduler.td_mode");
+  }
+  return out;
+}
+
 // Top-level dispatch. Required blocks: simulation, atoms, potential,
 // integrator, run. Optional blocks: neighbor, thermo. Any other top-level key
 // is rejected so M2's new blocks land with a visible SPEC bump instead of
@@ -331,7 +341,7 @@ YamlConfig parse_root(const YAML::Node& root) {
   reject_unknown_keys(
       root,
       "",
-      {"simulation", "atoms", "potential", "integrator", "run", "neighbor", "thermo"});
+      {"simulation", "atoms", "potential", "integrator", "run", "neighbor", "thermo", "scheduler"});
 
   YamlConfig cfg{};
   cfg.simulation = parse_simulation_block(require_child(root, "", "simulation"));
@@ -344,6 +354,9 @@ YamlConfig parse_root(const YAML::Node& root) {
   }
   if (const auto t = root["thermo"]; t) {
     cfg.thermo = parse_thermo_block(t);
+  }
+  if (const auto s = root["scheduler"]; s) {
+    cfg.scheduler = parse_scheduler_block(s);
   }
   return cfg;
 }

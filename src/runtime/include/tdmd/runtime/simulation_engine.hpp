@@ -38,6 +38,17 @@
 #include <stdexcept>
 #include <string>
 
+// Forward declarations for T4.9 TD-mode wiring. The scheduler + zoning
+// dependency is private to simulation_engine.cpp; this header stays lean.
+namespace tdmd::scheduler {
+class CausalWavefrontScheduler;
+class CertificateInputSource;
+}  // namespace tdmd::scheduler
+
+namespace tdmd::zoning {
+struct ZoningPlan;
+}  // namespace tdmd::zoning
+
 namespace tdmd::io {
 struct YamlConfig;
 }  // namespace tdmd::io
@@ -182,11 +193,29 @@ private:
 
   State state_ = State::Constructed;
 
+  // M4 / T4.9 — TD scheduler wiring. Inactive (and nullptr) unless
+  // `scheduler.td_mode: true` in YAML. In K=1 single-rank (D-M4-1, D-M4-6)
+  // the scheduler *observes* the canonical legacy step: forces and integrator
+  // are invoked identically to the legacy loop, preserving neighbor-list
+  // reduction order so thermo output is byte-exact across modes (D-M4-9).
+  // The scheduler transitions zones through their full lifecycle per step
+  // for diagnostic + determinism signal, but does not dispatch physics.
+  bool td_mode_ = false;
+  std::unique_ptr<zoning::ZoningPlan> td_plan_;
+  std::unique_ptr<scheduler::CausalWavefrontScheduler> td_scheduler_;
+  std::unique_ptr<scheduler::CertificateInputSource> td_cert_source_;
+
   // Internal helpers.
   void zero_forces();
   void rebuild_neighbors();
   void recompute_forces();  // zero + potential::compute, refresh cached PE/virial.
   [[nodiscard]] ThermoRow snapshot_thermo(std::uint64_t step) const;
+
+  // T4.9: once per step in TD mode — wraps legacy physics in scheduler
+  // lifecycle events (refresh / select / mark_computing / mark_completed /
+  // commit / release / arrive).
+  void td_step(std::uint64_t step, std::uint64_t next_version);
+  void td_initialize_scheduler();
 };
 
 }  // namespace tdmd
