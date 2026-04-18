@@ -6,6 +6,7 @@
 // per-subcommand parser stays scoped to a single file.
 
 #include "tdmd/cli/run_command.hpp"
+#include "tdmd/cli/validate_command.hpp"
 
 #include <exception>
 #include <iostream>
@@ -19,8 +20,9 @@ void print_top_level_usage(std::ostream& out) {
   out << "Usage: tdmd <command> [options]\n"
       << "\n"
       << "Commands:\n"
-      << "  run <config.yaml>   Run a simulation from a YAML config\n"
-      << "  --help, -h          Print this message\n"
+      << "  run <config.yaml>        Run a simulation from a YAML config\n"
+      << "  validate <config.yaml>   Parse + preflight a config without running\n"
+      << "  --help, -h               Print this message\n"
       << "\n"
       << "Run 'tdmd <command> --help' for per-command options.\n";
 }
@@ -63,6 +65,26 @@ int main(int argc, char** argv) {
     tdmd::cli::RunStreams streams{&std::cout, &std::cerr};
     try {
       return tdmd::cli::run_command(options, streams);
+    } catch (const std::exception& e) {
+      std::cerr << "unexpected error: " << e.what() << '\n';
+      return 1;
+    }
+  }
+
+  if (cmd == "validate") {
+    tdmd::cli::ValidateOptions options;
+    auto parse = tdmd::cli::parse_validate_options(rest, options, std::cout);
+    if (parse.help_requested) {
+      return 0;
+    }
+    if (!parse.error.empty()) {
+      std::cerr << "tdmd validate: " << parse.error << "\n\n";
+      std::cerr << "Run 'tdmd validate --help' for usage.\n";
+      return 2;
+    }
+    tdmd::cli::ValidateStreams streams{&std::cout, &std::cerr};
+    try {
+      return tdmd::cli::validate_command(options, streams);
     } catch (const std::exception& e) {
       std::cerr << "unexpected error: " << e.what() << '\n';
       return 1;

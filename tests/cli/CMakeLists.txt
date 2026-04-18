@@ -1,4 +1,4 @@
-add_executable(test_cli test_run_command.cpp)
+add_executable(test_cli test_run_command.cpp test_validate_command.cpp)
 
 target_link_libraries(test_cli PRIVATE tdmd::cli Catch2::Catch2WithMain)
 
