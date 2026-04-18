@@ -8,6 +8,7 @@
 #include "tdmd/zoning/zoning.hpp"
 
 #include <algorithm>
+#include <cstdint>
 #include <stdexcept>
 #include <utility>
 
@@ -73,6 +74,13 @@ void CausalWavefrontScheduler::initialize(const tdmd::zoning::ZoningPlan& plan) 
 
   initialized_ = true;
   last_progress_ = std::chrono::steady_clock::now();
+  last_frontier_min_ = local_frontier_min();
+  event_ring_head_ = 0;
+  event_ring_count_ = 0;
+  record_event(SchedulerEvent::Initialize,
+               0xFFFFFFFFU,
+               0,
+               static_cast<std::uint32_t>(total_zones_));
 }
 
 void CausalWavefrontScheduler::attach_outer_coordinator(OuterSdCoordinator* coord) {
@@ -86,6 +94,9 @@ void CausalWavefrontScheduler::attach_outer_coordinator(OuterSdCoordinator* coor
 void CausalWavefrontScheduler::shutdown() {
   // Idempotent: a shutdown on an uninitialized scheduler is a no-op, not
   // an error — mirrors how SimulationEngine drivers pair RAII guards.
+  if (initialized_) {
+    record_event(SchedulerEvent::Shutdown);
+  }
   cert_store_.invalidate_all("shutdown");
   retry_tracker_.clear();
   metas_.clear();
@@ -97,6 +108,9 @@ void CausalWavefrontScheduler::shutdown() {
   target_time_level_ = 0;
   min_zones_per_rank_ = 1;
   optimal_rank_count_cached_ = 1;
+  last_frontier_min_ = 0;
+  event_ring_head_ = 0;
+  event_ring_count_ = 0;
   initialized_ = false;
 }
 
@@ -123,12 +137,19 @@ void CausalWavefrontScheduler::refresh_certificates() {
     (void) cert_store_.build(in);
   }
 
-  last_progress_ = std::chrono::steady_clock::now();
+  // SPEC §8.2: cert refresh by itself is not a progress event. Record
+  // for diagnostic context but don't reset the watchdog timer — a retry
+  // storm that only refreshes and re-invalidates should still stall.
+  record_event(SchedulerEvent::RefreshCertificates,
+               0xFFFFFFFFU,
+               0,
+               static_cast<std::uint32_t>(total_zones_));
 }
 
 void CausalWavefrontScheduler::invalidate_certificates_for(ZoneId zone) {
   require_initialized("invalidate_certificates_for");
   cert_store_.invalidate_for(zone);
+  record_event(SchedulerEvent::InvalidateCertificatesFor, zone);
 
   // If the zone was Ready (cert_id pointing at a now-removed entry), roll
   // the state machine back to ResidentPrev and charge a retry against
@@ -139,22 +160,31 @@ void CausalWavefrontScheduler::invalidate_certificates_for(ZoneId zone) {
     const TimeLevel target = metas_[zone].time_level + 1;
     state_machine_.cert_invalidated(metas_[zone]);
     retry_tracker_.increment(zone, target);  // throws RetryExhaustedError on overflow
+    record_event(SchedulerEvent::CertInvalidatedRollback, zone, target);
   }
-  last_progress_ = std::chrono::steady_clock::now();
+  // SPEC §8.2: invalidations are failure paths, not progress. Intentionally
+  // leave last_progress_ untouched so a retry-storm without completion
+  // still trips the watchdog.
 }
 
 void CausalWavefrontScheduler::invalidate_all_certificates(const std::string& reason) {
   require_initialized("invalidate_all_certificates");
+  (void) reason;
   cert_store_.invalidate_all(reason);
+  record_event(SchedulerEvent::InvalidateAllCertificates,
+               0xFFFFFFFFU,
+               0,
+               static_cast<std::uint32_t>(metas_.size()));
   for (ZoneId z = 0; z < metas_.size(); ++z) {
     auto& meta = metas_[z];
     if (meta.state == ZoneState::Ready) {
       const TimeLevel target = meta.time_level + 1;
       state_machine_.cert_invalidated(meta);
       retry_tracker_.increment(z, target);  // throws RetryExhaustedError on overflow
+      record_event(SchedulerEvent::CertInvalidatedRollback, z, target);
     }
   }
-  last_progress_ = std::chrono::steady_clock::now();
+  // Not a progress event — same reasoning as invalidate_certificates_for.
 }
 
 std::vector<ZoneTask> CausalWavefrontScheduler::select_ready_tasks() {
@@ -285,6 +315,10 @@ std::vector<ZoneTask> CausalWavefrontScheduler::select_ready_tasks() {
 
   if (!out.empty()) {
     last_progress_ = std::chrono::steady_clock::now();
+    record_event(SchedulerEvent::SelectReadyTasks,
+                 0xFFFFFFFFU,
+                 0,
+                 static_cast<std::uint32_t>(out.size()));
   }
   return out;
 }
@@ -292,7 +326,9 @@ std::vector<ZoneTask> CausalWavefrontScheduler::select_ready_tasks() {
 void CausalWavefrontScheduler::mark_computing(const ZoneTask& task) {
   require_initialized("mark_computing");
   state_machine_.mark_computing(metas_.at(task.zone_id));
+  // SPEC §8.2 bullet 1: Ready → Computing is canonical dispatch progress.
   last_progress_ = std::chrono::steady_clock::now();
+  record_event(SchedulerEvent::MarkComputing, task.zone_id, task.time_level);
 }
 
 void CausalWavefrontScheduler::mark_completed(const ZoneTask& task) {
@@ -304,24 +340,29 @@ void CausalWavefrontScheduler::mark_completed(const ZoneTask& task) {
   // the first attempt; reset() is a no-op in that case.
   retry_tracker_.reset(task.zone_id, task.time_level);
   last_progress_ = std::chrono::steady_clock::now();
+  record_event(SchedulerEvent::MarkCompleted, task.zone_id, task.time_level);
 }
 
 void CausalWavefrontScheduler::mark_packed(const ZoneTask& task) {
   require_initialized("mark_packed");
   state_machine_.mark_packed(metas_.at(task.zone_id));
   last_progress_ = std::chrono::steady_clock::now();
+  record_event(SchedulerEvent::MarkPacked, task.zone_id, task.time_level);
 }
 
 void CausalWavefrontScheduler::mark_inflight(const ZoneTask& task) {
   require_initialized("mark_inflight");
   state_machine_.mark_inflight(metas_.at(task.zone_id));
   last_progress_ = std::chrono::steady_clock::now();
+  record_event(SchedulerEvent::MarkInflight, task.zone_id, task.time_level);
 }
 
 void CausalWavefrontScheduler::mark_committed(const ZoneTask& task) {
   require_initialized("mark_committed");
   state_machine_.mark_committed(metas_.at(task.zone_id));
+  // SPEC §8.2 bullet 2: inflight → Committed is progress.
   last_progress_ = std::chrono::steady_clock::now();
+  record_event(SchedulerEvent::MarkCommitted, task.zone_id, task.time_level);
 }
 
 void CausalWavefrontScheduler::commit_completed() {
@@ -333,26 +374,36 @@ void CausalWavefrontScheduler::commit_completed() {
   // I5: this is the ONLY legal entry point for Completed → Committed —
   // mark_completed is Phase A and cannot set Committed as a side-effect.
   require_initialized("commit_completed");
+  std::uint32_t committed = 0;
   for (auto& meta : metas_) {
     if (meta.state == ZoneState::Completed) {
       state_machine_.commit_completed_no_peer(meta);
+      ++committed;
     }
   }
-  last_progress_ = std::chrono::steady_clock::now();
+  if (committed > 0) {
+    last_progress_ = std::chrono::steady_clock::now();
+  }
+  record_event(SchedulerEvent::CommitCompleted, 0xFFFFFFFFU, 0, committed);
 }
 
 void CausalWavefrontScheduler::release_committed() {
   require_initialized("release_committed");
+  std::uint32_t released = 0;
   for (ZoneId z = 0; z < metas_.size(); ++z) {
     auto& meta = metas_[z];
     if (meta.state == ZoneState::Committed) {
       state_machine_.release(meta);
+      ++released;
       // time_level is preserved as a historical counter — the engine
       // bumps it on the next on_zone_data_arrived. Retry budget is
       // cleared when the zone re-enters ResidentPrev.
     }
   }
-  last_progress_ = std::chrono::steady_clock::now();
+  if (released > 0) {
+    last_progress_ = std::chrono::steady_clock::now();
+  }
+  record_event(SchedulerEvent::ReleaseCommitted, 0xFFFFFFFFU, 0, released);
 }
 
 bool CausalWavefrontScheduler::finished() const {
@@ -427,12 +478,15 @@ void CausalWavefrontScheduler::on_zone_data_arrived(ZoneId zone, TimeLevel step,
   // per SPEC §7.2: a new time step starts with full retry budget.
   retry_tracker_.reset_for(zone);
   last_progress_ = std::chrono::steady_clock::now();
+  record_event(SchedulerEvent::ZoneDataArrived, zone, step);
+  maybe_update_frontier_progress();
 }
 
-void CausalWavefrontScheduler::on_halo_arrived(std::uint32_t /*peer_subdomain*/,
-                                               TimeLevel /*step*/) {
-  // Pattern 2 only; M4 Pattern 1 has no halo peers (D-M4-2). Recording
-  // progress would be misleading — ignore entirely.
+void CausalWavefrontScheduler::on_halo_arrived(std::uint32_t peer_subdomain, TimeLevel step) {
+  // Pattern 2 only; M4 Pattern 1 has no halo peers (D-M4-2). We still
+  // record the event for diagnostic context — a halo arriving on a
+  // single-rank scheduler is itself a bug worth seeing in the dump.
+  record_event(SchedulerEvent::HaloArrived, static_cast<ZoneId>(peer_subdomain), step);
 }
 
 void CausalWavefrontScheduler::on_neighbor_rebuild_completed(const std::vector<ZoneId>& affected) {
@@ -443,15 +497,97 @@ void CausalWavefrontScheduler::on_neighbor_rebuild_completed(const std::vector<Z
       const TimeLevel target = metas_[zone].time_level + 1;
       state_machine_.cert_invalidated(metas_[zone]);
       retry_tracker_.increment(zone, target);  // throws RetryExhaustedError on overflow
+      record_event(SchedulerEvent::CertInvalidatedRollback, zone, target);
     }
   }
   last_progress_ = std::chrono::steady_clock::now();
+  record_event(SchedulerEvent::NeighborRebuildCompleted,
+               0xFFFFFFFFU,
+               0,
+               static_cast<std::uint32_t>(affected.size()));
+  maybe_update_frontier_progress();
 }
 
-void CausalWavefrontScheduler::check_deadlock(std::chrono::milliseconds /*t_watchdog*/) {
-  // T4.8 scope — full watchdog + diagnostic dump. T4.5 is a placeholder
-  // that records progress without evaluating the predicate; tests that
-  // want the M4 semantics will arrive in T4.8.
+void CausalWavefrontScheduler::check_deadlock(std::chrono::milliseconds t_watchdog) {
+  // SPEC §8.1: the watchdog fires when the scheduler has pending work
+  // (!finished()) but no progress has occurred for longer than t_watchdog.
+  // An uninitialized or finished scheduler can't deadlock by definition.
+  if (!initialized_ || finished()) {
+    return;
+  }
+  const auto now = std::chrono::steady_clock::now();
+  const auto idle = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_progress_);
+  if (idle > t_watchdog) {
+    record_event(SchedulerEvent::DeadlockFired,
+                 0xFFFFFFFFU,
+                 0,
+                 static_cast<std::uint32_t>(idle.count()));
+    auto report = make_diagnostic_report();
+    report.idle_duration = idle;
+    report.t_watchdog = t_watchdog;
+    throw DeadlockError(report.to_string());
+  }
+}
+
+// --- Diagnostic helpers ---------------------------------------------------
+
+void CausalWavefrontScheduler::record_event(SchedulerEvent kind,
+                                            ZoneId zone_id,
+                                            TimeLevel time_level,
+                                            std::uint32_t count) {
+  EventRecord& slot = event_ring_[event_ring_head_];
+  slot.timestamp = std::chrono::steady_clock::now();
+  slot.kind = kind;
+  slot.zone_id = zone_id;
+  slot.time_level = time_level;
+  slot.count = count;
+  event_ring_head_ = (event_ring_head_ + 1) % kEventRingCapacity;
+  if (event_ring_count_ < kEventRingCapacity) {
+    ++event_ring_count_;
+  }
+}
+
+void CausalWavefrontScheduler::maybe_update_frontier_progress() {
+  // SPEC §8.2 bullet 4: frontier_min advance is progress.
+  const TimeLevel fm = local_frontier_min();
+  if (fm > last_frontier_min_) {
+    last_progress_ = std::chrono::steady_clock::now();
+    last_frontier_min_ = fm;
+  }
+}
+
+DiagnosticReport CausalWavefrontScheduler::make_diagnostic_report() const {
+  DiagnosticReport report;
+  report.total_zones = total_zones_;
+  report.tracked_retry_counters = retry_tracker_.tracked_count();
+  report.frontier_min = local_frontier_min();
+  report.frontier_max = local_frontier_max();
+  report.idle_duration = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now() - last_progress_);
+
+  for (const auto& meta : metas_) {
+    const auto idx = static_cast<std::size_t>(meta.state);
+    if (idx < report.state_counts.size()) {
+      ++report.state_counts[idx];
+    }
+    if (meta.in_ready_queue) {
+      ++report.ready_queue_count;
+    }
+    if (meta.in_inflight_queue) {
+      ++report.inflight_queue_count;
+    }
+  }
+
+  // Oldest → newest walk: the next write slot is at head; the oldest
+  // live entry is at (head - count) mod capacity, i.e. head when full.
+  report.recent_events.reserve(event_ring_count_);
+  const std::size_t start =
+      (event_ring_head_ + kEventRingCapacity - event_ring_count_) % kEventRingCapacity;
+  for (std::size_t i = 0; i < event_ring_count_; ++i) {
+    const std::size_t idx = (start + i) % kEventRingCapacity;
+    report.recent_events.push_back(event_ring_[idx]);
+  }
+  return report;
 }
 
 // --- Extension surface ----------------------------------------------------

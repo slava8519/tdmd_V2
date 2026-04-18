@@ -6,7 +6,8 @@ add_executable(
   test_scheduler_core.cpp
   test_select_ready_tasks.cpp
   test_commit_protocol.cpp
-  test_retry_canonical.cpp)
+  test_retry_canonical.cpp
+  test_deadlock_watchdog.cpp)
 
 target_link_libraries(test_scheduler PRIVATE tdmd::scheduler tdmd::zoning Catch2::Catch2WithMain)
 

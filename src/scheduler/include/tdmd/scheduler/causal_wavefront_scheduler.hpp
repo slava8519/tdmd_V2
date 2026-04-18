@@ -23,6 +23,7 @@
 
 #include "tdmd/scheduler/certificate_input_source.hpp"
 #include "tdmd/scheduler/certificate_store.hpp"
+#include "tdmd/scheduler/diagnostic_dump.hpp"
 #include "tdmd/scheduler/policy.hpp"
 #include "tdmd/scheduler/retry_state.hpp"
 #include "tdmd/scheduler/safety_certificate.hpp"
@@ -32,6 +33,7 @@
 #include "tdmd/scheduler/zone_meta.hpp"
 #include "tdmd/scheduler/zone_state_machine.hpp"
 
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -103,6 +105,12 @@ public:
   [[nodiscard]] OuterSdCoordinator* outer_coordinator() const noexcept;
   [[nodiscard]] const RetryTracker& retry_tracker() const noexcept;
 
+  // Compose a DiagnosticReport from the current state (zone histogram,
+  // frontier, retry budget, last kEventRingCapacity events). Callers
+  // typically don't need this — the watchdog invokes it internally —
+  // but T4.10/T4.11 acceptance tests assert fields directly.
+  [[nodiscard]] DiagnosticReport make_diagnostic_report() const;
+
   // Configuration hooks. T4.9 (SimulationEngine wiring) uses these; tests
   // use them to stub physics inputs and drive finished().
   void set_certificate_input_source(const CertificateInputSource* src) noexcept;
@@ -140,10 +148,35 @@ private:
   std::uint64_t min_zones_per_rank_ = 1;
   std::uint64_t optimal_rank_count_cached_ = 1;
 
-  // Deadlock bookkeeping (T4.8 will grow this). The progress timestamp is
-  // advanced by mark_completed / commit_completed / refresh_certificates /
-  // on_zone_data_arrived / on_neighbor_rebuild_completed.
+  // Deadlock bookkeeping. SPEC §8.2 defines progress as exactly one of:
+  //   - dispatch (Ready → Computing, i.e. mark_computing)
+  //   - inflight → Committed (mark_committed) or Pattern 1 commit
+  //   - zone event processed (arrived / halo / neighbor_rebuild)
+  //   - frontier_min increase
+  // Cert refresh + invalidations deliberately do NOT bump the watchdog —
+  // a retry storm should trigger the watchdog just like any other stall.
   std::chrono::steady_clock::time_point last_progress_{std::chrono::steady_clock::now()};
+  TimeLevel last_frontier_min_{0};
+
+  // Event ring buffer for diagnostic_dump. kEventRingCapacity matches
+  // SPEC §8.3's "last 100 events". Implemented as a fixed array + head
+  // pointer to avoid allocations during steady-state scheduling.
+  static constexpr std::size_t kEventRingCapacity = 100;
+  std::array<EventRecord, kEventRingCapacity> event_ring_{};
+  std::size_t event_ring_head_ = 0;   // next write slot
+  std::size_t event_ring_count_ = 0;  // live entries, capped at capacity
+
+  // Record an event into the ring. Oldest-first order is reconstructed at
+  // dump time by walking from (head - count) mod capacity. All scheduler
+  // event handlers funnel through this helper.
+  void record_event(SchedulerEvent kind,
+                    ZoneId zone_id = 0xFFFFFFFFU,
+                    TimeLevel time_level = 0,
+                    std::uint32_t count = 0);
+
+  // If local_frontier_min() > last_frontier_min_, bump last_progress_ and
+  // update last_frontier_min_. Called after each event-processing entry.
+  void maybe_update_frontier_progress();
 };
 
 }  // namespace tdmd::scheduler
