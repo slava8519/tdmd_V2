@@ -26,6 +26,7 @@ option(TDMD_BUILD_CUDA "Enable CUDA targets (GPU build)" ON)
 option(TDMD_BUILD_TESTS "Build unit tests" ON)
 option(TDMD_BUILD_BENCHMARKS "Build microbenchmarks" OFF)
 option(TDMD_WARNINGS_AS_ERRORS "Treat warnings as errors (use ON in CI)" OFF)
+option(TDMD_ENABLE_MPI "Enable MPI-dependent comm backends (M5+)" ON)
 
 set(TDMD_BUILD_FLAVOR
     "Fp64ReferenceBuild"
@@ -99,6 +100,25 @@ include(cmake/BuildFlavors.cmake)
 include(cmake/Dependencies.cmake)
 
 message(STATUS "TDMD BuildFlavor: ${TDMD_BUILD_FLAVOR}")
+
+# ------------------------------------------------------------------------------
+# Optional MPI — concrete comm backends (M5+ MpiHostStaging, Ring) link to it. TDMD_ENABLE_MPI=OFF
+# disables those backends; the abstract CommBackend + types (T5.2) still compile and the rest of the
+# build stays green.
+# ------------------------------------------------------------------------------
+if(TDMD_ENABLE_MPI)
+  find_package(MPI COMPONENTS CXX)
+  if(NOT MPI_CXX_FOUND)
+    message(WARNING "TDMD_ENABLE_MPI=ON but MPI not found. Disabling MPI-dependent backends. "
+                    "Install an MPI implementation (OpenMPI 4.1+ or MPICH 4+) or configure with "
+                    "-DTDMD_ENABLE_MPI=OFF to silence this warning.")
+    set(TDMD_ENABLE_MPI OFF)
+  else()
+    message(STATUS "TDMD MPI: enabled, ${MPI_CXX_COMPILER} (version ${MPI_CXX_VERSION})")
+  endif()
+else()
+  message(STATUS "TDMD MPI: disabled (TDMD_ENABLE_MPI=OFF)")
+endif()
 
 # ------------------------------------------------------------------------------
 # Testing.
