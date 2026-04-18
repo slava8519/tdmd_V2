@@ -76,6 +76,14 @@ TEST_CASE("tdmd explain parser: --format captured", "[cli][explain][parse]") {
   REQUIRE(opts.format == "json");
 }
 
+TEST_CASE("tdmd explain parser: --zoning flag captured", "[cli][explain][parse]") {
+  tdmd::cli::ExplainOptions opts;
+  REQUIRE(parse_err({"cfg.yaml", "--zoning"}, opts).empty());
+  REQUIRE(opts.zoning);
+  REQUIRE_FALSE(opts.perf);
+  REQUIRE(opts.config_path == "cfg.yaml");
+}
+
 TEST_CASE("tdmd explain parser: --field makes positional optional", "[cli][explain][parse]") {
   tdmd::cli::ExplainOptions opts;
   REQUIRE(parse_err({"--field", "units"}, opts).empty());
@@ -108,10 +116,10 @@ TEST_CASE("tdmd explain parser: --help signals early return", "[cli][explain][pa
 }
 
 // -----------------------------------------------------------------------------
-// 2. Dispatch gating for M2.
+// 2. Dispatch gating for M3.
 // -----------------------------------------------------------------------------
 
-TEST_CASE("tdmd explain: missing --perf is rejected on M2", "[cli][explain][gate]") {
+TEST_CASE("tdmd explain: missing focus flag is rejected on M3", "[cli][explain][gate]") {
   tdmd::cli::ExplainOptions opts;
   opts.config_path = io_config("valid_nve_al.yaml");
 
@@ -120,9 +128,23 @@ TEST_CASE("tdmd explain: missing --perf is rejected on M2", "[cli][explain][gate
   const int rc = tdmd::cli::explain_command(opts, streams);
   REQUIRE(rc == 2);
   REQUIRE_THAT(err.str(), Catch::Matchers::ContainsSubstring("--perf"));
+  REQUIRE_THAT(err.str(), Catch::Matchers::ContainsSubstring("--zoning"));
 }
 
-TEST_CASE("tdmd explain: --runtime focus is deferred to M3+", "[cli][explain][gate]") {
+TEST_CASE("tdmd explain: --perf and --zoning are mutually exclusive", "[cli][explain][gate]") {
+  tdmd::cli::ExplainOptions opts;
+  opts.config_path = io_config("valid_nve_al.yaml");
+  opts.perf = true;
+  opts.zoning = true;
+
+  std::ostringstream out, err;
+  tdmd::cli::ExplainStreams streams{&out, &err};
+  const int rc = tdmd::cli::explain_command(opts, streams);
+  REQUIRE(rc == 2);
+  REQUIRE_THAT(err.str(), Catch::Matchers::ContainsSubstring("mutually exclusive"));
+}
+
+TEST_CASE("tdmd explain: --runtime focus is deferred to M4+", "[cli][explain][gate]") {
   tdmd::cli::ExplainOptions opts;
   opts.config_path = io_config("valid_nve_al.yaml");
   opts.runtime = true;
@@ -131,10 +153,10 @@ TEST_CASE("tdmd explain: --runtime focus is deferred to M3+", "[cli][explain][ga
   tdmd::cli::ExplainStreams streams{&out, &err};
   const int rc = tdmd::cli::explain_command(opts, streams);
   REQUIRE(rc == 2);
-  REQUIRE_THAT(err.str(), Catch::Matchers::ContainsSubstring("M3+"));
+  REQUIRE_THAT(err.str(), Catch::Matchers::ContainsSubstring("M4+"));
 }
 
-TEST_CASE("tdmd explain: --scheduler focus is deferred to M3+", "[cli][explain][gate]") {
+TEST_CASE("tdmd explain: --scheduler focus is deferred to M4+", "[cli][explain][gate]") {
   tdmd::cli::ExplainOptions opts;
   opts.config_path = io_config("valid_nve_al.yaml");
   opts.scheduler = true;
@@ -143,10 +165,10 @@ TEST_CASE("tdmd explain: --scheduler focus is deferred to M3+", "[cli][explain][
   tdmd::cli::ExplainStreams streams{&out, &err};
   const int rc = tdmd::cli::explain_command(opts, streams);
   REQUIRE(rc == 2);
-  REQUIRE_THAT(err.str(), Catch::Matchers::ContainsSubstring("M3+"));
+  REQUIRE_THAT(err.str(), Catch::Matchers::ContainsSubstring("M4+"));
 }
 
-TEST_CASE("tdmd explain: --format json is deferred to M3+", "[cli][explain][gate]") {
+TEST_CASE("tdmd explain: --format json is deferred to M4+", "[cli][explain][gate]") {
   tdmd::cli::ExplainOptions opts;
   opts.config_path = io_config("valid_nve_al.yaml");
   opts.perf = true;
@@ -156,7 +178,7 @@ TEST_CASE("tdmd explain: --format json is deferred to M3+", "[cli][explain][gate
   tdmd::cli::ExplainStreams streams{&out, &err};
   const int rc = tdmd::cli::explain_command(opts, streams);
   REQUIRE(rc == 2);
-  REQUIRE_THAT(err.str(), Catch::Matchers::ContainsSubstring("M3+"));
+  REQUIRE_THAT(err.str(), Catch::Matchers::ContainsSubstring("M4+"));
   REQUIRE_THAT(err.str(), Catch::Matchers::ContainsSubstring("human"));
 }
 
@@ -208,6 +230,109 @@ TEST_CASE("tdmd explain --perf: morse config emits Pattern 1 + Pattern 3 + M4 ca
     }
   }
   REQUIRE(line_count <= 40);
+}
+
+// -----------------------------------------------------------------------------
+// 3b. End-to-end zoning plan on a synthesised Morse config.
+// -----------------------------------------------------------------------------
+
+TEST_CASE("tdmd explain --zoning: cubic box picks Hilbert3D with correct N_min",
+          "[cli][explain][zoning][integration]") {
+  // Cubic 40 Å box with a Morse cutoff of 5 Å + 0.3 Å skin → 7 zones per
+  // axis (5.3 Å zone width). xy=49 ≥ 16, aspect=1 ≤ 3 → §3.4 cubic branch
+  // picks Hilbert3D; N_min = 4·max(7·7, 7·7, 7·7) = 196.
+  const auto data_path = unique_temp("zoning_cubic.data");
+  write_file(data_path,
+             "LAMMPS fixture for explain --zoning test\n"
+             "\n"
+             "1 atoms\n"
+             "1 atom types\n"
+             "0.0 40.0 xlo xhi\n"
+             "0.0 40.0 ylo yhi\n"
+             "0.0 40.0 zlo zhi\n"
+             "\n"
+             "Masses\n"
+             "\n"
+             "1 26.98\n"
+             "\n"
+             "Atoms\n"
+             "\n"
+             "1 1 0 0 0\n");
+
+  const auto config_path = unique_temp("zoning_cubic.yaml");
+  std::ostringstream yaml;
+  yaml << "simulation:\n  units: metal\n"
+       << "atoms:\n  source: lammps_data\n  path: " << data_path.string() << "\n"
+       << "potential:\n  style: morse\n  params:\n    D: 0.2703\n    alpha: 1.1646\n"
+       << "    r0: 3.253\n    cutoff: 5.0\n"
+       << "integrator:\n  style: velocity_verlet\n  dt: 0.001\n"
+       << "neighbor:\n  skin: 0.3\n"
+       << "run:\n  n_steps: 1\n";
+  write_file(config_path, yaml.str());
+
+  tdmd::cli::ExplainOptions opts;
+  opts.config_path = config_path.string();
+  opts.zoning = true;
+
+  std::ostringstream out, err;
+  tdmd::cli::ExplainStreams streams{&out, &err};
+  const int rc = tdmd::cli::explain_command(opts, streams);
+  INFO("stderr: " << err.str());
+  INFO("stdout: " << out.str());
+
+  REQUIRE(rc == 0);
+  REQUIRE(err.str().empty());
+  REQUIRE_THAT(out.str(), Catch::Matchers::ContainsSubstring("TDMD Zoning Plan"));
+  REQUIRE_THAT(out.str(), Catch::Matchers::ContainsSubstring("Scheme:    Hilbert3D"));
+  REQUIRE_THAT(out.str(), Catch::Matchers::ContainsSubstring("(7, 7, 7)"));
+  REQUIRE_THAT(out.str(), Catch::Matchers::ContainsSubstring("N_min per rank:    196"));
+  REQUIRE_THAT(out.str(), Catch::Matchers::ContainsSubstring("Canonical order:   343"));
+}
+
+TEST_CASE("tdmd explain --zoning: too-small box rejected with planner error",
+          "[cli][explain][zoning][error]") {
+  // 8.1 Å box with Morse cutoff 8.0 Å + skin 0.3 Å → 0 zones per axis
+  // → total < 3 → ZoningPlanError surfaces as exit code 2 with an
+  // actionable message naming the SD-vacuum fallback.
+  const auto data_path = unique_temp("zoning_tiny.data");
+  write_file(data_path,
+             "LAMMPS fixture for tiny-box rejection\n"
+             "\n"
+             "1 atoms\n"
+             "1 atom types\n"
+             "0.0 8.1 xlo xhi\n"
+             "0.0 8.1 ylo yhi\n"
+             "0.0 8.1 zlo zhi\n"
+             "\n"
+             "Masses\n"
+             "\n"
+             "1 26.98\n"
+             "\n"
+             "Atoms\n"
+             "\n"
+             "1 1 0 0 0\n");
+
+  const auto config_path = unique_temp("zoning_tiny.yaml");
+  std::ostringstream yaml;
+  yaml << "simulation:\n  units: metal\n"
+       << "atoms:\n  source: lammps_data\n  path: " << data_path.string() << "\n"
+       << "potential:\n  style: morse\n  params:\n    D: 0.2703\n    alpha: 1.1646\n"
+       << "    r0: 3.253\n    cutoff: 8.0\n"
+       << "integrator:\n  style: velocity_verlet\n  dt: 0.001\n"
+       << "run:\n  n_steps: 1\n";
+  write_file(config_path, yaml.str());
+
+  tdmd::cli::ExplainOptions opts;
+  opts.config_path = config_path.string();
+  opts.zoning = true;
+
+  std::ostringstream out, err;
+  tdmd::cli::ExplainStreams streams{&out, &err};
+  const int rc = tdmd::cli::explain_command(opts, streams);
+  INFO("stderr: " << err.str());
+
+  REQUIRE(rc == 2);
+  REQUIRE_THAT(err.str(), Catch::Matchers::ContainsSubstring("fewer than 3 zones"));
 }
 
 // -----------------------------------------------------------------------------

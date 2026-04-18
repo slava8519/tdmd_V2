@@ -1,0 +1,11 @@
+Scheme:    Decomp2D
+Chosen by: xy zones 9 < 16 — SPEC §3.4 thin-plate branch
+
+Zones (x, y, z):   (3, 3, 1)  = 9 total
+Zone size:         7.040 x 7.040 x 21.120 A
+N_min per rank:    8
+Optimal ranks:     1
+Canonical order:   9 entries
+
+Advisories:
+  (none)

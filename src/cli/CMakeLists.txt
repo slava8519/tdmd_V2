@@ -12,7 +12,7 @@ target_include_directories(tdmd_cli PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOU
 
 target_link_libraries(
   tdmd_cli
-  PUBLIC tdmd::io tdmd::runtime tdmd::perfmodel tdmd::telemetry
+  PUBLIC tdmd::io tdmd::runtime tdmd::perfmodel tdmd::telemetry tdmd::zoning
   PRIVATE cxxopts::cxxopts)
 
 target_compile_features(tdmd_cli PUBLIC cxx_std_20)

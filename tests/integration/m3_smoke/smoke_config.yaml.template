@@ -1,0 +1,36 @@
+# M3 integration-smoke TDMD config — Ni-Al EAM/alloy NVE, 10 steps.
+#
+# Exec pack: docs/development/m3_execution_pack.md §T3.9.
+# Mirrors the M2 smoke template (same T4 assets, same dt, same n_steps) but
+# uses a deliberately thin `neighbor.skin = 0.05 Å` to force at least one
+# mid-run rebuild in the 10-step span. On the T4 300 K thermalised
+# configuration this pushes Neigh time to ≈ 30 % of the total — confirming
+# the T3.8 displacement tracker is plumbed end-to-end through the run path.
+#
+# The harness substitutes {{ATOMS_PATH}} and {{EAM_PATH}} at smoke-run time.
+
+simulation:
+  units: metal
+  seed: 12345              # matches T4 / unused at ingest, kept for symmetry
+
+atoms:
+  source: lammps_data
+  path: "{{ATOMS_PATH}}"   # verify/benchmarks/t4_nial_alloy/setup.data (LFS)
+
+potential:
+  style: eam/alloy
+  params:
+    file: "{{EAM_PATH}}"   # verify/third_party/potentials/NiAl_Mishin_2004.eam.alloy
+
+integrator:
+  style: velocity_verlet
+  dt: 0.001                # ps — same profile as T1 / T4 / M2 smoke
+
+neighbor:
+  skin: 0.05               # Å — small enough to trigger mid-run rebuild (T3.8 gate)
+
+thermo:
+  every: 1                 # capture every step so the golden covers the full trace
+
+run:
+  n_steps: 10
