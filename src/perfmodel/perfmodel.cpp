@@ -1,0 +1,172 @@
+#include "tdmd/perfmodel/perfmodel.hpp"
+
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstdint>
+#include <limits>
+#include <stdexcept>
+#include <vector>
+
+namespace tdmd {
+
+namespace {
+
+// Halo / temporal-packet payload size per atom. SPEC §3.2 / §3.3 reference it
+// as `atom_record_size` without fixing a value; for M2 we use 32 bytes — 3
+// doubles of position plus a 4-byte type/tag header, which matches the Pattern
+// 3 ghost-atom record shipped across ranks. M6 revisits when GPU packs add
+// velocities to the halo for NH/NPT.
+constexpr double kAtomRecordBytes = 32.0;
+
+// SPEC §6.5a + exec pack T2.10 clamp: K swept only over {1, 2, 4, 8, 16}. The
+// analytic minimum from §3.3 is K_opt ≈ sqrt(T_p / T_c_startup) rounded to
+// power of 2; iterating the candidate set also captures the overlap clamp
+// `max(0, T_p/K - T_c)` which the pure sqrt formula elides.
+constexpr std::array<std::uint32_t, 5> kKCandidates = {1U, 2U, 4U, 8U, 16U};
+
+bool profile_is_sane(const HardwareProfile& hw) noexcept {
+  return std::isfinite(hw.cpu_flops_per_sec) && hw.cpu_flops_per_sec > 0.0 &&
+         std::isfinite(hw.intra_bw_bytes_per_sec) && hw.intra_bw_bytes_per_sec > 0.0 &&
+         std::isfinite(hw.inter_bw_bytes_per_sec) && hw.inter_bw_bytes_per_sec > 0.0 &&
+         std::isfinite(hw.scheduler_overhead_sec) && hw.scheduler_overhead_sec >= 0.0 &&
+         hw.n_ranks > 0U;
+}
+
+bool potential_is_sane(const PotentialCost& pc) noexcept {
+  return std::isfinite(pc.flops_per_pair) && pc.flops_per_pair > 0.0 &&
+         pc.n_neighbors_per_atom > 0U;
+}
+
+}  // namespace
+
+PerfModel::PerfModel(HardwareProfile hw, PotentialCost potential) : hw_(hw), potential_(potential) {
+  if (!profile_is_sane(hw_)) {
+    throw std::invalid_argument(
+        "PerfModel: HardwareProfile must have finite, positive FLOPS, bandwidths, "
+        "non-negative scheduler overhead, and n_ranks > 0");
+  }
+  if (!potential_is_sane(potential_)) {
+    throw std::invalid_argument(
+        "PerfModel: PotentialCost must have finite flops_per_pair > 0 and "
+        "n_neighbors_per_atom > 0");
+  }
+}
+
+double PerfModel::compute_time_sec(std::uint64_t n_atoms_per_rank) const noexcept {
+  // SPEC §3.1: T_c = (N_per_rank · C_force) / FLOPS_rank.
+  // C_force = flops_per_pair · N_neighbors (per atom per step).
+  const double c_force =
+      potential_.flops_per_pair * static_cast<double>(potential_.n_neighbors_per_atom);
+  return static_cast<double>(n_atoms_per_rank) * c_force / hw_.cpu_flops_per_sec;
+}
+
+PerfPrediction PerfModel::predict_pattern3(std::uint64_t n_atoms) const {
+  // Per-rank work decomposition (§3.1). Pattern 3: P_space = n_ranks, P_time = 1.
+  // Integer division matches the SPEC formula exactly — residual atoms fold
+  // into the trailing rank at M3+ when zoning plans the exact split.
+  const std::uint64_t n_per_rank = n_atoms / hw_.n_ranks;
+
+  const double t_c = compute_time_sec(n_per_rank);
+
+  // §3.2: T_halo_SD = 2 · N_per_rank^(2/3) · atom_record_size / B_inter.
+  // Single-rank (n_ranks == 1) has no halo — the cbrt factor is still
+  // N^(2/3) but there's no neighbor to send to, so halo time drops to 0.
+  const double t_halo = (hw_.n_ranks > 1U)
+                            ? 2.0 * std::pow(static_cast<double>(n_per_rank), 2.0 / 3.0) *
+                                  kAtomRecordBytes / hw_.inter_bw_bytes_per_sec
+                            : 0.0;
+
+  // §3.5 correction: scheduler overhead per iteration (10-50 μs midpoint
+  // stored in the profile). Neighbor rebuild and migration amortizations
+  // need live telemetry, which lands with T2.12; omitted here.
+  const double t_step = t_c + t_halo + hw_.scheduler_overhead_sec;
+
+  PerfPrediction p;
+  p.pattern_name = "Pattern3_SD";
+  p.t_step_sec = t_step;
+  p.recommended_K = 1U;
+  p.speedup_vs_baseline = 1.0;
+  return p;
+}
+
+PerfPrediction PerfModel::predict_pattern1(std::uint64_t n_atoms, std::uint32_t K) const {
+  if (K == 0U) {
+    throw std::invalid_argument("PerfModel::predict_pattern1: K must be >= 1");
+  }
+
+  // Pattern 1 single-subdomain: P_space = 1, P_time = n_ranks. Each rank owns
+  // one TD pipeline stage, so zone size == rank size.
+  const std::uint64_t n_per_rank = n_atoms / hw_.n_ranks;
+
+  const double t_c = compute_time_sec(n_per_rank);
+
+  // §3.3: T_p = atom_record_size · N_per_zone / B_intra.
+  // For single-subdomain Pattern 1, zone == rank, so N_per_zone = N_per_rank.
+  const double t_p =
+      kAtomRecordBytes * static_cast<double>(n_per_rank) / hw_.intra_bw_bytes_per_sec;
+
+  // §3.3: T_comm_inner(K) = max(0, T_p/K - T_c_overlap). We take T_c_overlap =
+  // T_c (async can hide comm up to one full compute's worth, per the §3.3
+  // "almost fully overlap" note). For K=1 compute-bound case this yields
+  // T_comm_inner = 0; for comm-bound large-N, a finite residual remains.
+  const double t_comm_inner = std::max(0.0, t_p / static_cast<double>(K) - t_c);
+
+  // §3.5 scheduler overhead scales with K — each pipeline batch incurs one
+  // dispatch. A single TD iteration with K batches pays K · T_sched. This
+  // matches the SPEC §3.3 K_opt = sqrt(T_p / T_c_startup) derivation where
+  // T_c_startup is the per-batch scheduler cost.
+  const double t_sched_total = static_cast<double>(K) * hw_.scheduler_overhead_sec;
+
+  const double t_step = t_c + t_comm_inner + t_sched_total;
+
+  // Speedup vs Pattern 3 baseline — uses the same `n_atoms` so the ratio is
+  // the CLI-facing "how much faster TD is than SD on this config".
+  const PerfPrediction p3 = predict_pattern3(n_atoms);
+  const double speedup = (t_step > 0.0) ? p3.t_step_sec / t_step : 1.0;
+
+  PerfPrediction p;
+  p.pattern_name = "Pattern1_TD";
+  p.t_step_sec = t_step;
+  p.recommended_K = K;
+  p.speedup_vs_baseline = speedup;
+  return p;
+}
+
+std::uint32_t PerfModel::K_opt(std::uint64_t n_atoms) const {
+  // SPEC §3.4 candidate sweep — pick the K ∈ {1,2,4,8,16} that minimizes
+  // T_step_TD(K). The analytic shortcut K_opt ≈ sqrt(T_p / T_sched) from
+  // §3.3 agrees with this on the ramp-up regime (T_p > T_c) but overshoots
+  // in the overlap-saturated regime where max(0, T_p/K - T_c) = 0; iterating
+  // is the robust choice and matches what `rank()` needs internally.
+  std::uint32_t best_k = 1U;
+  double best_t = std::numeric_limits<double>::infinity();
+  for (const auto k : kKCandidates) {
+    const auto p = predict_pattern1(n_atoms, k);
+    if (p.t_step_sec < best_t) {
+      best_t = p.t_step_sec;
+      best_k = k;
+    }
+  }
+  return best_k;
+}
+
+std::vector<PerfPrediction> PerfModel::rank(std::uint64_t n_atoms) const {
+  std::vector<PerfPrediction> out;
+  out.reserve(2U);
+  out.push_back(predict_pattern3(n_atoms));
+  out.push_back(predict_pattern1(n_atoms, K_opt(n_atoms)));
+
+  // Ascending by `t_step_sec`. Deterministic tiebreak: lexicographic
+  // `pattern_name` (so Pattern1_TD < Pattern3_SD on exact ties, matching the
+  // SPEC §2.2 "recommend TD-first when comparable" bias).
+  std::stable_sort(out.begin(), out.end(), [](const PerfPrediction& a, const PerfPrediction& b) {
+    if (a.t_step_sec != b.t_step_sec) {
+      return a.t_step_sec < b.t_step_sec;
+    }
+    return a.pattern_name < b.pattern_name;
+  });
+  return out;
+}
+
+}  // namespace tdmd
