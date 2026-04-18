@@ -4,7 +4,7 @@
 
 set(tdmd_comm_sources comm_backend.cpp crc32.cpp packet_serializer.cpp deterministic_reduction.cpp)
 if(TDMD_ENABLE_MPI)
-  list(APPEND tdmd_comm_sources mpi_host_staging_backend.cpp)
+  list(APPEND tdmd_comm_sources mpi_host_staging_backend.cpp ring_backend.cpp)
 endif()
 
 add_library(tdmd_comm STATIC ${tdmd_comm_sources})

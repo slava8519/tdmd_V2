@@ -39,5 +39,11 @@ if(TDMD_ENABLE_MPI)
     add_test(NAME test_mpi_host_staging_2rank
              COMMAND ${MPIEXEC_EXECUTABLE} ${TDMD_MPI_EXTRA_FLAGS} -np ${TDMD_MPIEXEC_NP}
                      $<TARGET_FILE:test_mpi_host_staging_2rank>)
+
+    # --- T5.5 4-rank ring test -------------------------------------------
+    add_executable(test_ring_4rank main_mpi.cpp test_ring_4rank.cpp)
+    target_link_libraries(test_ring_4rank PRIVATE tdmd::comm Catch2::Catch2 MPI::MPI_CXX)
+    add_test(NAME test_ring_4rank COMMAND ${MPIEXEC_EXECUTABLE} ${TDMD_MPI_EXTRA_FLAGS} -np 4
+                                          $<TARGET_FILE:test_ring_4rank>)
   endif()
 endif()
