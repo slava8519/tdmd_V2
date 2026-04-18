@@ -170,10 +170,22 @@ done
 # lines drift with the committed T4 assets and would make the golden
 # brittle; the §3.4 decision-tree output is what we actually want to pin.
 # The awk range stops at "Caveats:" so the static preamble isn't compared.
+# The range includes a trailing blank line before "Caveats:" which the
+# pre-commit end-of-file-fixer strips from the committed golden — the
+# collect-then-emit-up-to-last-nonblank form handles that without
+# requiring the golden to carry the trailing blank.
 # ---------------------------------------------------------------------------
 ZONING_KEYS="${WORKDIR}/zoning_keys.txt"
-awk '/^Scheme:/,/^Caveats:/ { if ($0 !~ /^Caveats:/) print }' \
-  "${ZONING_OUT}" > "${ZONING_KEYS}"
+awk '
+  /^Scheme:/, /^Caveats:/ {
+    if ($0 ~ /^Caveats:/) next
+    lines[++n] = $0
+    if (NF > 0) last = n
+  }
+  END {
+    for (i = 1; i <= last; i++) print lines[i]
+  }
+' "${ZONING_OUT}" > "${ZONING_KEYS}"
 
 if [[ "${TDMD_UPDATE_GOLDENS:-0}" == "1" ]]; then
   cp "${ZONING_KEYS}" "${ZONING_GOLDEN}"
