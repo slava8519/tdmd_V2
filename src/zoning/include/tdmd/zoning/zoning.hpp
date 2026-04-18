@@ -15,6 +15,7 @@
 #include <array>
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <vector>
 
 namespace tdmd::zoning {
@@ -82,6 +83,12 @@ struct ZoningPlan {
   // Pattern-2 awareness (SPEC §7). Always nullopt in M3 (Pattern 1 only);
   // M7 populates when nested inside an `OuterSdCoordinator`.
   std::optional<tdmd::Box> subdomain_box;
+
+  // Advisory notes from the planner — one entry per "soft" signal
+  // (e.g. "n_ranks exceeds n_opt — consider Pattern 2"). Never
+  // indicates failure; planners throw `ZoningPlanError` for hard
+  // errors. Runtime / CLI surfaces these via `tdmd explain --zoning`.
+  std::vector<std::string> advisories;
 
   [[nodiscard]] std::uint64_t total_zones() const noexcept {
     return static_cast<std::uint64_t>(n_zones[0]) * n_zones[1] * n_zones[2];
