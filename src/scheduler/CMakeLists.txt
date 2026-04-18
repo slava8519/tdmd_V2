@@ -6,7 +6,7 @@
 # Concrete CausalWavefrontScheduler and state machine arrive in T4.3+.
 
 add_library(tdmd_scheduler STATIC scheduler.cpp policy.cpp safety_certificate.cpp
-                                  certificate_store.cpp)
+                                  certificate_store.cpp zone_state_machine.cpp)
 add_library(tdmd::scheduler ALIAS tdmd_scheduler)
 
 target_include_directories(
