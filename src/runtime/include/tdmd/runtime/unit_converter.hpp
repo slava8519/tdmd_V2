@@ -14,10 +14,11 @@
 // mistakes at compile time: a function that takes `LengthQ` cannot be called
 // with `EnergyQ` or with a bare `double`.
 //
-// M1 scope (this file):
-//   - full `metal` support for 8 dimensions;
-//   - `lj` functions are API-stable stubs that throw `NotImplementedInM1Error`.
-// M2 will add real `lj` conversions without changing any signature.
+// As of M2 both `metal` and `lj` unit systems are fully supported; the
+// conversion formulas for `lj` follow the LAMMPS convention (see
+// https://docs.lammps.org/units.html), with the characteristic-time and
+// pressure factors pinned to the same numerical constants the integrator
+// uses internally (`integrator/velocity_verlet.hpp`, LAMMPS `metal`).
 
 #include "tdmd/state/unit_system.hpp"
 
@@ -64,20 +65,15 @@ struct TemperatureQ {
 };
 
 // Reference parameters required for LJ ↔ metal conversion (LAMMPS convention:
-// length = sigma·Å, energy = epsilon·eV, mass = mass·g/mol). Used by M2's lj
-// adapter; in M1 the stub functions still accept this struct for API stability.
+// length = sigma·Å, energy = epsilon·eV, mass = mass·g/mol). Default value is
+// the identity reference (σ=ε=m=1), which makes lj ↔ metal a no-op scaling
+// for length / energy / mass and a pure conversion-factor operation for the
+// derived dimensions. All fields must be strictly positive; converter methods
+// throw `std::invalid_argument` otherwise.
 struct LjReference {
   double sigma = 1.0;    // Å
   double epsilon = 1.0;  // eV
   double mass = 1.0;     // g/mol
-};
-
-// Thrown by `UnitConverter::*_from_lj / *_to_lj` in M1. Upgraded to real
-// conversion in M2 (exec pack D-M1-6).
-class NotImplementedInM1Error : public std::runtime_error {
-public:
-  explicit NotImplementedInM1Error(std::string_view what_arg)
-      : std::runtime_error(std::string(what_arg)) {}
 };
 
 // Thrown on dimensional violations we cannot catch at compile time (e.g.
@@ -140,9 +136,9 @@ public:
   }
 
   // ---------------------------------------------------------------------------
-  // lj ↔ internal — API stable stubs. Every call throws NotImplementedInM1Error
-  // in M1. Signatures will not change in M2. Reference parameters are accepted
-  // today so callers written now compile and run correctly once M2 lands.
+  // lj ↔ internal — LAMMPS `units lj` convention; formulas and provenance in
+  // `unit_converter.cpp`. Each call validates the reference (σ, ε, m all > 0)
+  // and throws `std::invalid_argument` on a malformed reference.
   // ---------------------------------------------------------------------------
   [[nodiscard]] static LengthQ length_from_lj(double value, const LjReference& ref);
   [[nodiscard]] static double length_to_lj(LengthQ q, const LjReference& ref);

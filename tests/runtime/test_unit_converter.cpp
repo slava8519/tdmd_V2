@@ -5,18 +5,14 @@
 #include <type_traits>
 
 using tdmd::EnergyQ;
-using tdmd::ForceQ;
 using tdmd::IncompatibleUnitError;
 using tdmd::LengthQ;
-using tdmd::LjReference;
-using tdmd::MassQ;
-using tdmd::NotImplementedInM1Error;
-using tdmd::PressureQ;
-using tdmd::TemperatureQ;
-using tdmd::TimeQ;
 using tdmd::UnitConverter;
 using tdmd::UnitSystem;
-using tdmd::VelocityQ;
+
+// Detailed lj ↔ metal coverage lives in test_unit_converter_lj.cpp (T2.1).
+// This file carries the metal identity path + `validate_supported_for_input`
+// behaviour — the tests that existed before lj was implemented.
 
 TEST_CASE("UnitConverter internal_system is metal", "[runtime][units]") {
   STATIC_REQUIRE(UnitConverter::internal_system() == UnitSystem::Metal);
@@ -65,56 +61,9 @@ TEST_CASE("metal strong typedefs carry unit-labeled storage", "[runtime][units]"
   STATIC_REQUIRE(!std::is_convertible_v<LengthQ, double>);
 }
 
-TEST_CASE("lj conversions throw NotImplementedInM1Error (all 8 dims)",
-          "[runtime][units][lj_stub]") {
-  const LjReference ref{1.0, 1.0, 1.0};
-
-  REQUIRE_THROWS_AS(UnitConverter::length_from_lj(1.0, ref), NotImplementedInM1Error);
-  REQUIRE_THROWS_AS(UnitConverter::length_to_lj(LengthQ{1.0}, ref), NotImplementedInM1Error);
-
-  REQUIRE_THROWS_AS(UnitConverter::energy_from_lj(1.0, ref), NotImplementedInM1Error);
-  REQUIRE_THROWS_AS(UnitConverter::energy_to_lj(EnergyQ{1.0}, ref), NotImplementedInM1Error);
-
-  REQUIRE_THROWS_AS(UnitConverter::time_from_lj(1.0, ref), NotImplementedInM1Error);
-  REQUIRE_THROWS_AS(UnitConverter::time_to_lj(TimeQ{1.0}, ref), NotImplementedInM1Error);
-
-  REQUIRE_THROWS_AS(UnitConverter::mass_from_lj(1.0, ref), NotImplementedInM1Error);
-  REQUIRE_THROWS_AS(UnitConverter::mass_to_lj(MassQ{1.0}, ref), NotImplementedInM1Error);
-
-  REQUIRE_THROWS_AS(UnitConverter::force_from_lj(1.0, ref), NotImplementedInM1Error);
-  REQUIRE_THROWS_AS(UnitConverter::force_to_lj(ForceQ{1.0}, ref), NotImplementedInM1Error);
-
-  REQUIRE_THROWS_AS(UnitConverter::pressure_from_lj(1.0, ref), NotImplementedInM1Error);
-  REQUIRE_THROWS_AS(UnitConverter::pressure_to_lj(PressureQ{1.0}, ref), NotImplementedInM1Error);
-
-  REQUIRE_THROWS_AS(UnitConverter::velocity_from_lj(1.0, ref), NotImplementedInM1Error);
-  REQUIRE_THROWS_AS(UnitConverter::velocity_to_lj(VelocityQ{1.0}, ref), NotImplementedInM1Error);
-
-  REQUIRE_THROWS_AS(UnitConverter::temperature_from_lj(1.0, ref), NotImplementedInM1Error);
-  REQUIRE_THROWS_AS(UnitConverter::temperature_to_lj(TemperatureQ{1.0}, ref),
-                    NotImplementedInM1Error);
-}
-
-TEST_CASE("NotImplementedInM1Error carries actionable message", "[runtime][units][lj_stub]") {
-  try {
-    [[maybe_unused]] const auto q = UnitConverter::length_from_lj(1.0, LjReference{});
-    FAIL("expected throw");
-  } catch (const NotImplementedInM1Error& err) {
-    const std::string what(err.what());
-    REQUIRE(what.find("M1") != std::string::npos);
-    REQUIRE(what.find("M2") != std::string::npos);
-    REQUIRE(what.find("length") != std::string::npos);
-  }
-}
-
-TEST_CASE("validate_supported_for_input accepts metal", "[runtime][units]") {
+TEST_CASE("validate_supported_for_input accepts metal and lj", "[runtime][units]") {
   REQUIRE_NOTHROW(UnitConverter::validate_supported_for_input(UnitSystem::Metal));
-}
-
-TEST_CASE("validate_supported_for_input rejects lj with NotImplementedInM1Error",
-          "[runtime][units]") {
-  REQUIRE_THROWS_AS(UnitConverter::validate_supported_for_input(UnitSystem::Lj),
-                    NotImplementedInM1Error);
+  REQUIRE_NOTHROW(UnitConverter::validate_supported_for_input(UnitSystem::Lj));
 }
 
 TEST_CASE("validate_supported_for_input rejects real/cgs/si as incompatible", "[runtime][units]") {

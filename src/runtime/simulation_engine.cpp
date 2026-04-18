@@ -2,6 +2,7 @@
 
 #include "tdmd/io/lammps_data_reader.hpp"
 #include "tdmd/io/yaml_config.hpp"
+#include "tdmd/runtime/physical_constants.hpp"
 
 #include <cmath>
 #include <filesystem>
@@ -16,10 +17,6 @@
 namespace tdmd {
 
 namespace {
-
-// Boltzmann constant in metal units (eV / K). Used to convert KE → T.
-// Derived from CODATA 2019 exact kB = 1.380649e-23 J/K.
-constexpr double kBoltzmann_eV_per_K = 8.617333262e-5;
 
 // CutoffStrategy translation — YAML enum to MorsePotential::CutoffStrategy.
 MorsePotential::CutoffStrategy to_morse_strategy(io::MorseCutoffStrategy s) noexcept {
