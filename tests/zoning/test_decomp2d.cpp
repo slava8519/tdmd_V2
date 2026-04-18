@@ -195,21 +195,6 @@ TEST_CASE("Decomp2D — validate_manual_plan is stubbed per OQ-M3-2", "[zoning][
   REQUIRE(reason.find("not implemented") != std::string::npos);
 }
 
-TEST_CASE("Decomp2D — 16×5 dissertation anchor (OQ-M3-5 pending)", "[zoning][decomp2d][!mayfail]") {
-  // SPEC §8.3 claims n_opt=13 for 2D 16×5; §3.2 formula 2·(N_inner+1)
-  // yields N_min=12, n_opt=floor(80/12)=6. Discrepancy tracked as
-  // OQ-M3-5; resolution (SPEC delta) is T3.7 work. This test documents
-  // the formula-consistent value and is tagged [!mayfail] so the
-  // eventual SPEC delta can flip the expected number without churn.
-  tz::Decomp2DZoningPlanner p;
-  tz::PerformanceHint hint;
-  // 16×5 zones: box 48×15 with z trivial.
-  auto plan = p.plan(make_box(48.1, 15.1, 3.1), 2.5, 0.5, 1, hint);
-  REQUIRE(plan.n_zones[0] == 16);
-  REQUIRE(plan.n_zones[1] == 5);
-  REQUIRE(plan.n_zones[2] == 1);
-  REQUIRE(plan.n_min_per_rank == 12);
-  REQUIRE(plan.optimal_rank_count == 6);  // per §3.2 formula
-  // CHECK (soft) — if SPEC delta flips, this is the target value.
-  CHECK(plan.optimal_rank_count == 13);  // §8.3 anchor (currently fails)
-}
+// NOTE: the 16×5 dissertation anchor lives in tests/zoning/test_zoning_anchor.cpp
+// (T3.7). OQ-M3-5 is resolved by SPEC delta 2026-04-18: §8.3 now reads
+// n_opt=6 consistent with the §3.2 formula.

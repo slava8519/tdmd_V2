@@ -508,12 +508,18 @@ forall (box_extent, cutoff, skin, n_ranks) ∈ fuzz:
 
 Из диссертации §2.2–2.5 известны concrete numbers для фиксированных конфигураций. Проверить в TDMD: совпадают ли наши `n_opt` с диссертационными:
 
-| Конфигурация | Dissertation | TDMD expected |
+| Конфигурация | Formula / Source | TDMD expected |
 |---|---|---|
-| 1D, 16 zones | n_opt = 8 (§2.2) | 8 |
-| 2D, 16×5 = 80 zones | n_opt = 13 (eq. 45) | 13 |
-| 3D linear, 16³ zones | n_opt = 14 (§2.5) | N/A (мы не используем linear 3D) |
-| 3D Hilbert, 16³ | no dissertation ref | 64 (наш target) |
+| 1D, 16 zones | `N_min = 2` (§3.1 / Andreev eq. 35) → `n_opt = floor(16/2)` | **8** |
+| 2D, 16×5 = 80 zones | `N_min = 2·(N_inner+1) = 12` (§3.2 / eq. 43) → `n_opt = floor(80/12)` | **6** |
+| 3D linear, 16³ zones | dissertation §2.5 — 3D-linear scheme not implemented in v1 | N/A |
+| 3D Hilbert, 16³ | `N_min = 4·max(NxNy, NyNz, NxNz) = 1024` (§3.3) → `n_opt = floor(4096/1024)` | **4** |
+| 3D Hilbert, 256³ (scaling anchor) | `N_min = 4·256² = 262 144` (§3.3) → `n_opt = floor(256³/262144)` | **64** |
+
+**Changelog — 2026-04-18 (T3.7 SPEC delta, resolves OQ-M3-5 and OQ-M3-6):**
+
+- **OQ-M3-5 (2D 16×5 anchor):** original table claimed `n_opt = 13 (eq. 45)`. The §3.2 formula `N_min = 2·(N_inner+1)` gives `n_opt = 6`, and re-extraction of dissertation eq. (45) during T3.4 yielded `14`, not `13` — so the original value was a transcription error in the first draft of this SPEC, not a re-derivation. The §3.2 formula is the authoritative source for all downstream (perfmodel, scheduler) consumers; the anchor now reads `n_opt = 6`.
+- **OQ-M3-6 (3D Hilbert 16³ anchor):** original table claimed `n_opt = 64`. That value is correct for a **256³** box under §3.3 (`4·256² = 262 144`, `16 777 216 / 262 144 = 64`), not for 16³. The 16³ anchor now reads `n_opt = 4`; a separate 256³ row is added to retain the `64` scaling reference so future regressions that inflate N_min by ≈64× are still caught.
 
 ### 8.4. Regression tests
 
