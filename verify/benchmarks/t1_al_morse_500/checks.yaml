@@ -1,0 +1,52 @@
+# T1 benchmark check declarations.
+#
+# Parsed by verify/t1/run_differential.py (and the generic verify/compare.py).
+# Each entry names a threshold path into verify/thresholds/thresholds.yaml and
+# declares which column pair of the thermo log to compare.
+#
+# Column names match the TDMD thermo header emitted by
+# SimulationEngine::write_thermo_header("# step temp pe ke etotal press").
+
+benchmark: t1_al_morse_500
+
+thermo_columns:
+  # tdmd-column : lammps-column mapping. TDMD column names are already
+  # lowercase. LAMMPS emits CamelCase headers (`Step Temp PotEng KinEng
+  # TotEng Press`); compare.extract_lammps_thermo() lowercases them so the
+  # rhs strings below match.
+  temp: temp
+  pe: poteng
+  ke: kineng
+  etotal: toteng
+  press: press   # LAMMPS in bar; harness converts to eV/Å³ before diffing.
+
+checks:
+  - name: thermo_temp
+    type: column_relative
+    column: temp
+    threshold_path: benchmarks.t1_al_morse_500.thermo_temperature_relative
+    required: true
+
+  - name: thermo_pe
+    type: column_relative
+    column: pe
+    threshold_path: benchmarks.t1_al_morse_500.thermo_potential_energy_relative
+    required: true
+
+  - name: thermo_ke
+    type: column_relative
+    column: ke
+    threshold_path: benchmarks.t1_al_morse_500.thermo_kinetic_energy_relative
+    required: true
+
+  - name: thermo_etotal
+    type: column_relative
+    column: etotal
+    threshold_path: benchmarks.t1_al_morse_500.thermo_total_energy_relative
+    required: true
+
+  - name: thermo_press
+    type: column_relative
+    column: press
+    threshold_path: benchmarks.t1_al_morse_500.thermo_pressure_relative
+    required: true

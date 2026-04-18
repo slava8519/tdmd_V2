@@ -202,21 +202,30 @@ ThermoRow SimulationEngine::snapshot_thermo(std::uint64_t step) const {
   row.kinetic_energy = kinetic_energy(atoms_, species_);
   row.total_energy = row.potential_energy + row.kinetic_energy;
 
+  // Temperature with DOF = 3N−3 (three subtracted for the conserved COM
+  // momentum, LAMMPS's default). T1.11 confirms this matches the oracle's
+  // "temp" column when the initial configuration has zero COM velocity (the
+  // `velocity create ... loop geom` default). Single-atom edge case: fall back
+  // to DOF = 3 to avoid division by zero.
   const std::size_t n = atoms_.size();
   if (n > 0) {
-    const double inv_dof = 1.0 / (3.0 * static_cast<double>(n));
-    row.temperature_K = 2.0 * row.kinetic_energy * inv_dof / kBoltzmann_eV_per_K;
+    const double dof = n > 1 ? (3.0 * static_cast<double>(n) - 3.0) : 3.0;
+    row.temperature_K = 2.0 * row.kinetic_energy / (dof * kBoltzmann_eV_per_K);
   }
 
   // Pressure from the Clausius virial theorem, expressed in native metal
-  // (eV/Å³):
-  //   P = (2·KE + Σα W_αα) / (3·V)
-  // where the virial trace comes from the potential. Conversion to bar lands
-  // in T1.11 alongside the LAMMPS diff harness.
+  // units (eV/Å³):
+  //   P = (2·KE − Σα W_αα) / (3·V)
+  // where the potentials module stores the pair-virial Σ_pairs F_i_α · r_ij_β
+  // with r_ij = r_j − r_i (see potentials/morse.cpp line comment for the
+  // convention). The atomic virial that enters the Clausius form is
+  // Σ_i r_i·F_i = −Σ_pairs r_ij · F_i, hence the minus sign here. This matches
+  // the LAMMPS "press" column bar-for-bar (modulo the trivial bar↔eV/Å³
+  // factor the T1.11 harness applies).
   const double volume = (box_.xhi - box_.xlo) * (box_.yhi - box_.ylo) * (box_.zhi - box_.zlo);
   if (volume > 0.0) {
     const double virial_trace = last_virial_[0] + last_virial_[1] + last_virial_[2];
-    row.pressure_ev_A3 = (2.0 * row.kinetic_energy + virial_trace) / (3.0 * volume);
+    row.pressure_ev_A3 = (2.0 * row.kinetic_energy - virial_trace) / (3.0 * volume);
   }
 
   return row;

@@ -1,0 +1,88 @@
+# TDMD numerical threshold registry.
+#
+# SPEC: docs/specs/verify/SPEC.md §3 (threshold registry).
+# This is the single source of truth for all numerical tolerances. Changes
+# require a threshold-change PR (Validation Engineer + Architect review per
+# SPEC §3.4).
+#
+# Conventions
+# -----------
+# * Every threshold carries an explicit unit (auto-reject rule from master
+#   spec / CLAUDE.md: unitless "< 0.01" is rejected).
+# * `relative` thresholds are dimensionless ratios (|Δx| / |x|).
+# * `absolute` thresholds carry SI / native-unit annotations in the
+#   adjacent comment.
+#
+# Current scope: M1 T1 (Al FCC Morse NVE). Sections for other benchmarks
+# land as they come online (T2 at M2, T3 at M5, ...).
+
+schema_version: 1
+last_updated: 2026-04-18
+
+tolerances:
+
+  # ---------------------------------------------------------------------------
+  # Energy comparisons (differential + conservation). §3.2 categories preserved
+  # so the access API remains stable as more benchmarks land.
+  # ---------------------------------------------------------------------------
+  energy:
+    # TDMD Reference build vs LAMMPS oracle. FP64 / FP64, identical initial
+    # conditions, differences attributable to reduction-order roundoff and
+    # math-library variance.
+    reference_fp64_vs_lammps:
+      relative: 1.0e-10
+      rationale: "Reference build is the bitwise oracle; residual bounded by FP64 eps * O(N_pair)."
+
+  # ---------------------------------------------------------------------------
+  # Per-atom kinematic diffs. Exercised by benchmarks that dump final state
+  # (not exercised by T1 M1 — thermo-only — but registered now so compare.py
+  # has a stable contract for M2+ benchmarks).
+  # ---------------------------------------------------------------------------
+  kinematics:
+    reference_fp64_vs_lammps:
+      # Å; absolute tolerance on max |Δr_i| over all atoms.
+      max_position_absolute: 1.0e-10
+      # Å/ps; absolute tolerance on max |Δv_i|.
+      max_velocity_absolute: 1.0e-10
+      rationale: "100-step VV drift in FP64; O(step * eps * |r|) ~ 1e-12 Å empirically."
+
+  # ---------------------------------------------------------------------------
+  # Benchmark-specific thresholds override / augment the generic categories
+  # above. Each benchmark's checks.yaml references a threshold_path into this
+  # tree.
+  # ---------------------------------------------------------------------------
+  benchmarks:
+    t1_al_morse_500:
+      # Thermo column-wise relative diffs — exercised by run_differential.py.
+      #
+      # Energy columns (PE, KE, E_total) are the physical invariants: TDMD
+      # Reference and LAMMPS agree on them to FP64 eps (measured residual
+      # 0.0 at M1 on x86_64 + gcc-13). Temperature and pressure are derived
+      # observables and carry an additional definitional residual from the
+      # Boltzmann constant; see the rationale block below.
+      thermo_temperature_relative: 2.0e-6
+      thermo_potential_energy_relative: 1.0e-10
+      thermo_kinetic_energy_relative: 1.0e-10
+      thermo_total_energy_relative: 1.0e-10
+      thermo_pressure_relative: 1.0e-8
+      rationale: |
+        Al FCC 5x5x5 (500 atoms), Morse (Girifalco-Weizer), NVE, 100 steps,
+        dt=0.001 ps, Strategy A cutoff on both sides (LAMMPS default == TDMD
+        `cutoff_strategy: hard_cutoff`).
+
+        PE/KE/Etotal at 1e-10 rel match SPEC §3.2
+        `energy.reference_fp64_vs_lammps` — the measured residual at M1 is
+        exactly zero, so we keep the generic bound rather than publishing an
+        artificially tight machine-specific value.
+
+        Temperature carries an irreducible ~1.13e-6 relative offset from the
+        k_B discrepancy:
+          LAMMPS: boltz = 8.617343e-5   (older CODATA, truncated)
+          TDMD:   kB    = 8.617333262e-5 (CODATA 2018)
+        Threshold widened to 2e-6 with this constant in mind — tightening it
+        would require changing TDMD's physical constant, which we refuse on
+        fidelity grounds.
+
+        Pressure: kept at 1e-8 — `compare.py` uses LAMMPS's truncated
+        `nktv2p = 1.6021765e+6` so the conversion is definition-matched to
+        the oracle; the residual budget is pure reduction-order roundoff.

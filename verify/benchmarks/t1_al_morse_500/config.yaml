@@ -1,0 +1,37 @@
+# T1 differential benchmark — TDMD config.
+#
+# Pairs with `lammps_script.in` in the same directory. The LAMMPS side emits
+# `setup.data` (initial lattice + velocities) which this config then ingests,
+# so both engines start from bit-identical initial state.
+#
+# See README.md for cutoff / strategy rationale.
+
+simulation:
+  units: metal
+  seed: 12345              # unused in M1 (ingest from .data), kept for symmetry with LAMMPS.
+
+atoms:
+  source: lammps_data
+  path: setup.data         # resolved relative to this file (produced by LAMMPS stage).
+
+potential:
+  style: morse
+  params:
+    D: 0.2703              # eV   (Girifalco-Weizer 1959)
+    alpha: 1.1646          # 1/Å
+    r0: 3.253              # Å
+    cutoff: 6.0            # Å    (see README §"Cutoff choice")
+    cutoff_strategy: hard_cutoff   # matches LAMMPS `pair_style morse` default.
+
+integrator:
+  style: velocity_verlet
+  dt: 0.001                # ps
+
+neighbor:
+  skin: 0.3                # Å
+
+thermo:
+  every: 10
+
+run:
+  n_steps: 100

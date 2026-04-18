@@ -51,7 +51,11 @@ MorsePotential::Result MorsePotential::compute(AtomSoA& atoms,
 
   const auto& offsets = neighbors.page_offsets();
   const auto& ids = neighbors.neigh_ids();
-  const auto& r2_cache = neighbors.neigh_r2();
+  // NOTE: neighbors.neigh_r2() caches r² at list-build time. Atoms drift
+  // between rebuilds, so we MUST recompute r² from live positions inside
+  // the pair loop (see T1.11 differential-harness commit for the trace
+  // that surfaced this). The cached value is still valid as a candidate
+  // filter at build time but not as the physical r² passed to E and F.
 
   const double cutoff_sq = params_.cutoff * params_.cutoff;
   const double D = params_.D;
@@ -72,10 +76,6 @@ MorsePotential::Result MorsePotential::compute(AtomSoA& atoms,
     const std::uint64_t begin = offsets[i];
     const std::uint64_t end = offsets[i + 1];
     for (std::uint64_t k = begin; k < end; ++k) {
-      const double r2 = r2_cache[k];
-      if (r2 > cutoff_sq) {
-        continue;
-      }
       const std::uint32_t j = ids[k];
 
       const auto delta =
@@ -83,6 +83,10 @@ MorsePotential::Result MorsePotential::compute(AtomSoA& atoms,
       const double dx = delta[0];
       const double dy = delta[1];
       const double dz = delta[2];
+      const double r2 = dx * dx + dy * dy + dz * dz;
+      if (r2 > cutoff_sq) {
+        continue;
+      }
       const double r = std::sqrt(r2);
       const double e = std::exp(-alpha * (r - r0));
       const double one_minus_e = 1.0 - e;

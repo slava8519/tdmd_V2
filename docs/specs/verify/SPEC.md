@@ -430,7 +430,56 @@ T3 не просто benchmark — это **existence proof** проекта. И
 - `hardware_normalization.py` — script нормализации performance с 2007 железа на текущее;
 - `acceptance_criteria.md` — точные условия pass/fail.
 
-### 4.5. Adding new benchmark
+### 4.5. T1 (`t1_al_morse_500`) — landed at M1
+
+**Status:** implemented at M1 (commit lands this section). Thermo-only differential
+(`run_differential.py`); full trajectory comparison lands at M2 with `DifferentialRunner`.
+
+**System:**
+
+- Al FCC 5×5×5 = 500 atoms, lattice 4.05 Å;
+- Morse (Girifalco-Weizer): `D = 0.2703 eV`, `alpha = 1.1646 Å⁻¹`, `r0 = 3.253 Å`,
+  `cutoff = 6.0 Å`, `cutoff_strategy: hard_cutoff` (matches LAMMPS `pair_style morse` Strategy A);
+- NVE, `dt = 0.001 ps`, 100 steps, thermo every 10 steps;
+- Seed 12345, initial T = 300 K via `velocity create ... loop geom dist gaussian` (LAMMPS
+  writes the resulting atoms+velocities via `write_data ... nocoeff`, TDMD reads the same file).
+
+**Layout:** `verify/benchmarks/t1_al_morse_500/{README.md, config.yaml, lammps_script.in, checks.yaml}`.
+Ground-state data file is produced by LAMMPS at harness run-time rather than committed
+as a golden artifact — keeps the benchmark self-regenerating and avoids a 500-atom binary
+blob in-tree.
+
+**Residual budget (measured at M1 on x86_64 + gcc-13):**
+
+| Column | Threshold | Measured residual | Source |
+|---|---|---|---|
+| `pe`     | 1.0e-10 rel | 0.0 (bit-exact) | `energy.reference_fp64_vs_lammps` |
+| `ke`     | 1.0e-10 rel | 0.0 (bit-exact) | `energy.reference_fp64_vs_lammps` |
+| `etotal` | 1.0e-10 rel | 0.0 (bit-exact) | `energy.reference_fp64_vs_lammps` |
+| `temp`   | 2.0e-6 rel  | 1.13e-6 | **kB definitional gap (see below)** |
+| `press`  | 1.0e-8 rel  | 1.23e-11 | FP64 reduction-order roundoff |
+
+**Irreducible kB residual.** LAMMPS hard-codes `boltz = 8.617343e-5` (older CODATA, truncated);
+TDMD uses CODATA 2018 `kB = 8.617333262e-5`. The ratio contributes a flat ~1.13e-6 relative
+offset on any temperature comparison. Tightening `thermo_temperature_relative` below this
+floor would require degrading TDMD's physical constant, which is explicitly rejected on
+fidelity grounds. The threshold is therefore set at 2.0e-6 (1.7× the observed residual)
+with this rationale block committed alongside.
+
+**Pressure conversion.** `compare.py` converts LAMMPS `press` (bar) → eV/Å³ using LAMMPS's
+truncated internal constant `nktv2p = 1.6021765e+6`, not modern CODATA 2018
+(`1.602176634e+6`). The two constants differ by ~2e-8 — using modern CODATA would plant
+a systematic residual that the harness would incorrectly attribute to physics. Matching
+LAMMPS's constant makes the comparison definition-identical and leaves only reduction-order
+roundoff (observed: 1.23e-11 rel).
+
+**CI wiring.** Runs on `ubuntu-latest` under the `differential-t1` job. The job executes the
+full pipeline end-to-end (compile harness, run driver) but the LAMMPS submodule is not
+fetched on the public runner (Option A policy), so the Catch2 wrapper detects the absent
+oracle binary and exits `77` (`SKIP_RETURN_CODE`). Oracle-gated validation is part of the
+local pre-push protocol until an isolated runner lands (revisit at M6).
+
+### 4.6. Adding new benchmark
 
 При добавлении нового потенциала или расширении (e.g. новый ML model в wave 3), добавляется новый Txx benchmark. Процедура:
 

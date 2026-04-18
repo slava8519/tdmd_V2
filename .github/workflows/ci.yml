@@ -124,6 +124,53 @@ jobs:
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
+  # differential-t1 — T1 benchmark (Al FCC Morse NVE, 500 atoms, 100 steps)
+  # diffed against a LAMMPS oracle. verify/SPEC.md §4 (benchmarks), §7 (harness).
+  #
+  # Option A CI policy (docs/development/m0_execution_pack.md): the LAMMPS
+  # submodule is NOT fetched on the public runner, so the differential test
+  # detects the absent oracle binary and exits 77 (SKIP_RETURN_CODE). The job
+  # still runs end-to-end to guarantee the harness infrastructure (Python
+  # driver, checks.yaml, thresholds.yaml) stays green. Full oracle comparison
+  # is part of the local pre-push protocol until an isolated GPU runner is
+  # provisioned (revisit at M6).
+  # ---------------------------------------------------------------------------
+  differential-t1:
+    name: Differential T1 vs LAMMPS (SKIP on public CI)
+    runs-on: ubuntu-latest
+    needs: build-cpu
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install harness deps
+        run: pip install pyyaml
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc-13 g++-13 cmake ninja-build
+
+      - name: Configure
+        env:
+          CC: gcc-13
+          CXX: g++-13
+        run: cmake -B build_cpu --preset cpu-only
+
+      - name: Build
+        run: cmake --build build_cpu --parallel
+
+      - name: Run T1 differential harness
+        run: ctest --test-dir build_cpu --output-on-failure -R test_t1_differential
+
+  # ---------------------------------------------------------------------------
   # NOTE: CUDA / GPU build is intentionally NOT in CI.
   # Rationale: self-hosted runner on a public repo executes arbitrary PR code on
   # the dev workstation. See docs/development/m0_execution_pack.md "Option A".

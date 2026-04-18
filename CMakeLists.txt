@@ -115,6 +115,7 @@ add_subdirectory(src)
 
 if(TDMD_BUILD_TESTS)
   add_subdirectory(tests)
+  add_subdirectory(verify)
 endif()
 
 if(TDMD_BUILD_BENCHMARKS)
