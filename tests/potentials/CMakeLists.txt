@@ -19,3 +19,17 @@ target_compile_definitions(test_eam_file
                            PRIVATE TDMD_TEST_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures")
 
 add_test(NAME test_eam_file COMMAND test_eam_file)
+
+add_executable(test_eam_alloy test_eam_alloy.cpp)
+
+target_link_libraries(test_eam_alloy PRIVATE tdmd::potentials tdmd::neighbor tdmd::state
+                                             Catch2::Catch2WithMain)
+
+add_test(NAME test_eam_alloy COMMAND test_eam_alloy)
+
+add_executable(test_eam_fs test_eam_fs.cpp)
+
+target_link_libraries(test_eam_fs PRIVATE tdmd::potentials tdmd::neighbor tdmd::state
+                                          Catch2::Catch2WithMain)
+
+add_test(NAME test_eam_fs COMMAND test_eam_fs)

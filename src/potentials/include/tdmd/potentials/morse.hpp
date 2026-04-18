@@ -29,9 +29,7 @@
 // implementation is Strategy C. For an apples-to-apples LAMMPS diff at T1.11
 // configure LAMMPS with an equivalent shifted-force convention.
 
-#include "tdmd/neighbor/neighbor_list.hpp"
-#include "tdmd/state/atom_soa.hpp"
-#include "tdmd/state/box.hpp"
+#include "tdmd/potentials/potential.hpp"
 
 #include <array>
 #include <cstdint>
@@ -39,7 +37,7 @@
 
 namespace tdmd {
 
-class MorsePotential {
+class MorsePotential final : public Potential {
 public:
   // Per-pair parameters. Single-species in M1 means one struct per MorsePotential
   // instance. Multi-species M2 will switch to `std::vector<PairParams>` indexed
@@ -51,12 +49,9 @@ public:
     double cutoff = 0.0;  // Interaction cutoff, Å. Must be > r0; caller enforces.
   };
 
-  // Aggregate returned from `compute`. Per-atom forces are written in-place into
-  // `atoms.fx / fy / fz`; they are NOT in this struct.
-  struct Result {
-    double potential_energy = 0.0;      // eV, summed over pairs
-    std::array<double, 6> virial = {};  // (xx, yy, zz, xy, xz, yz), eV·Å (Voigt)
-  };
+  // Backward-compatibility alias for the T1.8 per-class return struct. New
+  // callers should consume `tdmd::ForceResult` directly.
+  using Result = ForceResult;
 
   // Cutoff treatment per SPEC §2.4.1/§2.4.2:
   //   HardCutoff    (Strategy A) — E(r) = E_pair(r), F(r) = F_pair(r); zero past r_c.
@@ -89,9 +84,11 @@ public:
   //
   // Does not allocate on the hot path — only reads / writes into the caller's
   // SoA.
-  [[nodiscard]] Result compute(AtomSoA& atoms, const NeighborList& neighbors, const Box& box) const;
+  [[nodiscard]] ForceResult compute(AtomSoA& atoms,
+                                    const NeighborList& neighbors,
+                                    const Box& box) override;
 
-  [[nodiscard]] double cutoff() const noexcept { return params_.cutoff; }
+  [[nodiscard]] double cutoff() const noexcept override { return params_.cutoff; }
   [[nodiscard]] const PairParams& params() const noexcept { return params_; }
   [[nodiscard]] CutoffStrategy strategy() const noexcept { return strategy_; }
 
@@ -99,7 +96,7 @@ public:
   // override this from user config; this value is a safe default for M1.
   [[nodiscard]] double effective_skin() const noexcept { return 0.05 * params_.cutoff; }
 
-  [[nodiscard]] std::string name() const { return "morse"; }
+  [[nodiscard]] std::string name() const override { return "morse"; }
 
 private:
   PairParams params_{};

@@ -33,10 +33,8 @@ MorsePotential::MorsePotential(const PairParams& params, CutoffStrategy strategy
   }
 }
 
-MorsePotential::Result MorsePotential::compute(AtomSoA& atoms,
-                                               const NeighborList& neighbors,
-                                               const Box& box) const {
-  Result result;
+ForceResult MorsePotential::compute(AtomSoA& atoms, const NeighborList& neighbors, const Box& box) {
+  ForceResult result;
   const std::size_t n = atoms.size();
   if (n == 0) {
     return result;
