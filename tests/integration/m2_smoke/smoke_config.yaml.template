@@ -1,0 +1,33 @@
+# M2 integration-smoke TDMD config — Ni-Al EAM/alloy NVE, 10 steps.
+#
+# Exec pack: docs/development/m2_execution_pack.md §T2.13.
+# The harness substitutes {{ATOMS_PATH}} and {{EAM_PATH}} at smoke-run
+# time — both point at committed T4 assets (see this directory's README
+# for the reuse rationale). Everything else is fixed so the thermo trace
+# stays comparable against the committed golden.
+
+simulation:
+  units: metal
+  seed: 12345              # matches T4 / unused at ingest, kept for symmetry
+
+atoms:
+  source: lammps_data
+  path: "{{ATOMS_PATH}}"   # verify/benchmarks/t4_nial_alloy/setup.data (LFS)
+
+potential:
+  style: eam/alloy
+  params:
+    file: "{{EAM_PATH}}"   # verify/third_party/potentials/NiAl_Mishin_2004.eam.alloy
+
+integrator:
+  style: velocity_verlet
+  dt: 0.001                # ps — same profile as T1 / T4 for thermo comparability
+
+neighbor:
+  skin: 0.3                # Å
+
+thermo:
+  every: 1                 # capture every step so the golden covers the full trace
+
+run:
+  n_steps: 10

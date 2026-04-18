@@ -97,6 +97,15 @@ public:
   // Optional telemetry sink. Ownership stays with the caller; pass nullptr
   // (default) to disable timing. Must be set before `run()` to take effect.
   // Single-thread only (M2); M3+ will layer a ring-buffered async sink.
+  //
+  // INVARIANT (LAMMPS-style run-window): attach telemetry and call
+  // `Telemetry::begin_run()` *after* `init()` returns, never before. `init()`
+  // warm-starts forces via an internal `recompute_forces()`; including that
+  // in the measured window yields Pair > Total in tiny-step runs. See
+  // `tests/integration/m2_smoke/run_nial_eam_smoke.sh` and
+  // `src/cli/run_command.cpp` for the correct attachment point. Mirrors
+  // LAMMPS's `run` command convention: initialisation / neighbor setup are
+  // outside the timer; only the step loop is timed.
   void set_telemetry(telemetry::Telemetry* sink) noexcept { telemetry_ = sink; }
 
   // Read-only accessors — useful for tests that build an engine in-process
