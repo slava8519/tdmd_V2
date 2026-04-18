@@ -108,3 +108,40 @@ tolerances:
         Pressure: kept at 1e-8 — `compare.py` uses LAMMPS's truncated
         `nktv2p = 1.6021765e+6` so the conversion is definition-matched to
         the oracle; the residual budget is pure reduction-order roundoff.
+
+    t4_nial_alloy:
+      # Ni-Al FCC 6×6×6 (864 atoms), 50:50 random, Mishin 2004 EAM/alloy, NVE,
+      # 100 steps, dt=0.001 ps, hard cutoff (LAMMPS `pair_style eam/alloy`
+      # default — no shifted-force for EAM; smoothing arrives with T3.*).
+      #
+      # Thermo thresholds mirror T1 one-for-one: the LAMMPS↔TDMD numerical
+      # envelope is set by reduction order + constant discrepancies, not by
+      # the choice of pair style.  EAM's two-pass force assembly adds more
+      # FLOPs per step but does not widen the residual in FP64.
+      thermo_temperature_relative: 2.0e-6
+      thermo_potential_energy_relative: 1.0e-10
+      thermo_kinetic_energy_relative: 1.0e-10
+      thermo_total_energy_relative: 1.0e-10
+      thermo_pressure_relative: 1.0e-8
+
+      # Per-atom-per-component forces diff (T2.8 forces layer).  Threshold
+      # anchored to `energy.reference_fp64_vs_lammps` — EAM forces are
+      # differentiated analytically from the same Hermite spline both sides
+      # use (TDMD: `TabulatedFunction`, LAMMPS: `pair_eam.cpp::compute`), so
+      # residual is bounded by FP64 eps · O(N_pair) ~ 1e-14 empirically.
+      # 1e-10 keeps a 4-decade safety margin for CPU architecture / BLAS
+      # variance without being so loose it would hide real regressions.
+      forces_relative: 1.0e-10
+      rationale: |
+        Ni-Al Mishin 2004 EAM/alloy differential.  Both TDMD and LAMMPS
+        consume the exact same setfl file (verbatim bytes, no resampling —
+        see verify/third_party/potentials/README.md), so the pair/embedding
+        table is identical.  Expected residual in FP64:
+          * PE / KE / E_total ≈ 0 (reduction-order roundoff only)
+          * Forces ≈ 0 (same spline derivation on both sides)
+          * Temperature ≈ 1.13e-6 rel (k_B discrepancy, same as T1)
+          * Pressure ≈ 1e-10 rel (nktv2p conversion is matched)
+
+        M2 acceptance gate (master spec §14 M2): failing this benchmark
+        blocks M2 closure.  Treat threshold relaxations here as a red flag
+        — first bisect the regression.

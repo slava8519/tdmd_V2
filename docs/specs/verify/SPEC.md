@@ -531,7 +531,76 @@ differently) and `compare.py` to handle lj→metal thermo conversion on the
 oracle side. Scheduled for T5 (post-M2) if a future benchmark needs it;
 D-M1-6 is already fully closed without it.
 
-### 4.6. Adding new benchmark
+### 4.7. T4 (`t4_nial_alloy`) — M2 acceptance gate
+
+**Status:** landed at M2 (T2.9). The first end-to-end TDMD-vs-LAMMPS
+differential against a many-body **EAM/alloy** potential, and the single
+benchmark whose failure blocks M2 closure (master spec §14 M2).
+
+**System:**
+
+- Ni-Al FCC 6×6×6 = 864 atoms, lattice `a₀ = 3.52 Å` (Ni native), 50:50
+  Ni:Al random shuffle (`random.Random(12345)`);
+- Types: `1 = Ni, m = 58.71`, `2 = Al, m = 26.982` — both taken **verbatim
+  from the Mishin 2004 setfl header**, not from tabulated atomic weights.
+  LAMMPS `pair_eam_alloy::coeff()` silently overrides atom masses with the
+  setfl values on `pair_coeff`, so `setup.data` must match or KE at step 0
+  diverges by ~1.7e-5 relative between engines;
+- Potential: Mishin 2004 Ni-Al EAM/alloy (`pair_style eam/alloy`),
+  `cutoff = 6.72488 Å` from setfl tabulation;
+- NVE Velocity-Verlet, `dt = 0.001 ps`, 100 steps, thermo every 10 steps;
+- Initial velocities: Maxwell-Boltzmann at 300 K, COM momentum subtracted,
+  KE rescaled to hit exactly 300 K under `dof = 3N − 3`;
+- Fully periodic box, skin = 0.3 Å.
+
+**Layout:** `verify/benchmarks/t4_nial_alloy/{README.md, generate_setup.py,
+setup.data, config_metal.yaml, lammps_script_metal.in, checks.yaml}`. Unlike
+T1, the ground-state file `setup.data` is **committed** (not regenerated at
+harness time) — the LAMMPS script reads it verbatim via a `-var setup_data
+<abs_path>` variable. This keeps both engines on bit-identical bytes and
+avoids the LAMMPS `velocity create` PRNG path (which differs from Python's
+`random.Random` Gauss sampler). Re-running `generate_setup.py` with the
+unchanged seed reproduces the committed file byte-for-byte.
+
+The setfl file `verify/third_party/potentials/NiAl_Mishin_2004.eam.alloy`
+(1.9 MB) is committed verbatim from the NIST Interatomic Potentials
+Repository — it is not part of the LAMMPS examples tree and we refuse a
+runtime dependency on `nist.gov` for reproducibility. Provenance and
+license live in `third_party/potentials/README.md`.
+
+**No lj variant.** EAM setfl tables are dimensional by convention
+(length in Å, energy in eV), and `SimulationEngine::init` rejects
+`units: lj` for `style: eam/alloy` with an explicit error. A cross-unit
+T4 variant is out of scope.
+
+**Residual budget (measured at M2 on x86_64 + gcc-13):**
+
+| Column / check | Threshold | Measured residual | Source |
+|---|---|---|---|
+| `pe`       | 1.0e-10 rel | 0.0 (bit-exact) | `energy.reference_fp64_vs_lammps` |
+| `ke`       | 1.0e-10 rel | 0.0 (bit-exact) | `energy.reference_fp64_vs_lammps` |
+| `etotal`   | 1.0e-10 rel | 0.0 (bit-exact) | `energy.reference_fp64_vs_lammps` |
+| `temp`     | 2.0e-6 rel  | 1.13e-6 | kB definitional gap (§4.5) |
+| `press`    | 1.0e-8 rel  | 3.65e-11 | FP64 reduction-order roundoff |
+| **forces (per-atom per-component)** | **1.0e-10 rel** | **3.25e-11** | **FP64 reduction-order roundoff** |
+
+Forces residual headroom is 3.08× (3.25e-11 / 1.0e-10). Tighter thresholds
+would not add value — the remainder is genuine FP64 cancellation in the
+two-pass EAM reduction order, not a TDMD/LAMMPS semantic gap. All thermo
+columns reproduce T1's residual pattern (kB gap for temp, bit-exact for
+energies) because nothing in the EAM addition changes the thermo pipeline.
+
+**CI wiring.** Runs on `ubuntu-latest` under the `differential-t4` job (same
+Option A template as `differential-t1`). Public runner does not fetch the
+LAMMPS submodule, so the Catch2 wrapper returns `77` (`SKIP_RETURN_CODE`)
+and the job is green without executing the oracle. Local pre-push runs
+exercise the full differential against the built-in LAMMPS oracle.
+
+**Known non-issues.** Listed in `verify/benchmarks/t4_nial_alloy/README.md`
+under "Known non-issues"; the setfl-mass-override and the temperature kB
+gap are the two with persistent cross-release implications.
+
+### 4.8. Adding new benchmark
 
 При добавлении нового потенциала или расширении (e.g. новый ML model в wave 3), добавляется новый Txx benchmark. Процедура:
 

@@ -25,7 +25,7 @@
 #include "tdmd/neighbor/cell_grid.hpp"
 #include "tdmd/neighbor/displacement_tracker.hpp"
 #include "tdmd/neighbor/neighbor_list.hpp"
-#include "tdmd/potentials/morse.hpp"
+#include "tdmd/potentials/potential.hpp"
 #include "tdmd/state/atom_soa.hpp"
 #include "tdmd/state/box.hpp"
 #include "tdmd/state/species.hpp"
@@ -141,8 +141,9 @@ private:
   SpeciesRegistry species_{};
 
   // Policies (owned via unique_ptr so the header stays light — potential
-  // types may grow richer).
-  std::unique_ptr<MorsePotential> potential_;
+  // types may grow richer). `potential_` holds the abstract base; the
+  // concrete subclass is selected in `init()` by `PotentialStyle`.
+  std::unique_ptr<Potential> potential_;
   std::unique_ptr<VelocityVerletIntegrator> integrator_;
 
   // Neighbor pipeline.

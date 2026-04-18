@@ -247,10 +247,47 @@ run: { n_steps: 1 }
 }
 
 TEST_CASE("parse_yaml_config: unsupported potential.style rejects", "[io][yaml]") {
+  // `eam/alloy` landed in T2.9; a still-unsupported style (SNAP) stands in for
+  // the "future style" regression we want this test to catch.
   constexpr std::string_view yaml = R"(
 simulation: { units: metal }
 atoms: { source: lammps_data, path: ./a.data }
-potential: { style: eam/alloy, params: { file: ./Al.eam.alloy } }
+potential: { style: snap, params: { file: ./Al.snap } }
+integrator: { style: velocity_verlet, dt: 0.001 }
+run: { n_steps: 1 }
+)";
+  REQUIRE_THROWS_AS(parse_string(yaml), tdmd::io::YamlParseError);
+}
+
+TEST_CASE("parse_yaml_config: eam/alloy style accepted with file param", "[io][yaml]") {
+  constexpr std::string_view yaml = R"(
+simulation: { units: metal }
+atoms: { source: lammps_data, path: ./a.data }
+potential: { style: eam/alloy, params: { file: ./Ni-Al.eam.alloy } }
+integrator: { style: velocity_verlet, dt: 0.001 }
+run: { n_steps: 1 }
+)";
+  const auto cfg = parse_string(yaml);
+  REQUIRE(cfg.potential.style == tdmd::io::PotentialStyle::EamAlloy);
+  REQUIRE(cfg.potential.eam_alloy.file == "./Ni-Al.eam.alloy");
+}
+
+TEST_CASE("parse_yaml_config: eam/alloy rejects empty file string", "[io][yaml]") {
+  constexpr std::string_view yaml = R"(
+simulation: { units: metal }
+atoms: { source: lammps_data, path: ./a.data }
+potential: { style: eam/alloy, params: { file: "" } }
+integrator: { style: velocity_verlet, dt: 0.001 }
+run: { n_steps: 1 }
+)";
+  REQUIRE_THROWS_AS(parse_string(yaml), tdmd::io::YamlParseError);
+}
+
+TEST_CASE("parse_yaml_config: eam/alloy rejects missing file param", "[io][yaml]") {
+  constexpr std::string_view yaml = R"(
+simulation: { units: metal }
+atoms: { source: lammps_data, path: ./a.data }
+potential: { style: eam/alloy, params: {} }
 integrator: { style: velocity_verlet, dt: 0.001 }
 run: { n_steps: 1 }
 )";

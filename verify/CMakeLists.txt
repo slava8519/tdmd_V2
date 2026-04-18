@@ -7,3 +7,4 @@
 
 add_subdirectory(t0)
 add_subdirectory(t1)
+add_subdirectory(t4)

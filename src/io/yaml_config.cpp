@@ -171,10 +171,13 @@ PotentialStyle parse_potential_style(const YAML::Node& node, std::string_view ke
   if (raw == "morse") {
     return PotentialStyle::Morse;
   }
+  if (raw == "eam/alloy") {
+    return PotentialStyle::EamAlloy;
+  }
   throw_parse_error(node,
                     key_path,
                     "unsupported potential.style '" + raw +
-                        "' — accepted: morse (eam/alloy, snap, pace arrive in M2+)");
+                        "' — accepted: morse, eam/alloy (eam/fs, snap, pace arrive in M2+)");
 }
 
 MorseCutoffStrategy parse_cutoff_strategy(const YAML::Node& node, std::string_view key_path) {
@@ -248,14 +251,32 @@ MorseParams parse_morse_params(const YAML::Node& node) {
   return out;
 }
 
+EamAlloyParams parse_eam_alloy_params(const YAML::Node& node) {
+  constexpr std::string_view path = "potential.params";
+  reject_unknown_keys(node, path, {"file"});
+  EamAlloyParams out{};
+  out.file = as_scalar<std::string>(require_child(node, path, "file"), "potential.params.file");
+  if (out.file.empty()) {
+    throw_parse_error(node["file"],
+                      "potential.params.file",
+                      "potential.params.file must not be empty");
+  }
+  return out;
+}
+
 PotentialBlock parse_potential_block(const YAML::Node& node) {
   constexpr std::string_view path = "potential";
   reject_unknown_keys(node, path, {"style", "params"});
   PotentialBlock out{};
   out.style = parse_potential_style(require_child(node, path, "style"), "potential.style");
   const auto params = require_child(node, path, "params");
-  if (out.style == PotentialStyle::Morse) {
-    out.morse = parse_morse_params(params);
+  switch (out.style) {
+    case PotentialStyle::Morse:
+      out.morse = parse_morse_params(params);
+      break;
+    case PotentialStyle::EamAlloy:
+      out.eam_alloy = parse_eam_alloy_params(params);
+      break;
   }
   return out;
 }

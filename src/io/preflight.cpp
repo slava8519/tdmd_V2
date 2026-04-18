@@ -99,39 +99,65 @@ void check_atoms(const AtomsBlock& atoms, std::vector<PreflightError>& out) {
 }
 
 void check_potential(const PotentialBlock& pot, std::vector<PreflightError>& out) {
-  // M1 only has Morse. If/when the enum grows, switch on pot.style.
-  const auto& m = pot.morse;
-  if (!is_finite_positive(m.D)) {
-    push(out,
-         PreflightSeverity::Error,
-         "potential.params.D",
-         "Morse well depth D must be finite and > 0 (got " + std::to_string(m.D) + ")");
-  }
-  if (!is_finite_positive(m.alpha)) {
-    push(out,
-         PreflightSeverity::Error,
-         "potential.params.alpha",
-         "Morse alpha must be finite and > 0 (got " + std::to_string(m.alpha) + ")");
-  }
-  if (!is_finite_positive(m.r0)) {
-    push(out,
-         PreflightSeverity::Error,
-         "potential.params.r0",
-         "Morse equilibrium distance r0 must be finite and > 0 (got " + std::to_string(m.r0) + ")");
-  }
-  if (!is_finite_positive(m.cutoff)) {
-    push(out,
-         PreflightSeverity::Error,
-         "potential.params.cutoff",
-         "Morse cutoff must be finite and > 0 (got " + std::to_string(m.cutoff) + ")");
-  } else if (std::isfinite(m.r0) && m.cutoff <= m.r0) {
-    // Only meaningful when both are finite; avoids a spurious second error when
-    // r0 was already rejected as non-finite.
-    push(out,
-         PreflightSeverity::Error,
-         "potential.params.cutoff",
-         "Morse cutoff (" + std::to_string(m.cutoff) + ") must be strictly greater than r0 (" +
-             std::to_string(m.r0) + ")");
+  switch (pot.style) {
+    case PotentialStyle::Morse: {
+      const auto& m = pot.morse;
+      if (!is_finite_positive(m.D)) {
+        push(out,
+             PreflightSeverity::Error,
+             "potential.params.D",
+             "Morse well depth D must be finite and > 0 (got " + std::to_string(m.D) + ")");
+      }
+      if (!is_finite_positive(m.alpha)) {
+        push(out,
+             PreflightSeverity::Error,
+             "potential.params.alpha",
+             "Morse alpha must be finite and > 0 (got " + std::to_string(m.alpha) + ")");
+      }
+      if (!is_finite_positive(m.r0)) {
+        push(out,
+             PreflightSeverity::Error,
+             "potential.params.r0",
+             "Morse equilibrium distance r0 must be finite and > 0 (got " + std::to_string(m.r0) +
+                 ")");
+      }
+      if (!is_finite_positive(m.cutoff)) {
+        push(out,
+             PreflightSeverity::Error,
+             "potential.params.cutoff",
+             "Morse cutoff must be finite and > 0 (got " + std::to_string(m.cutoff) + ")");
+      } else if (std::isfinite(m.r0) && m.cutoff <= m.r0) {
+        // Only meaningful when both are finite; avoids a spurious second error when
+        // r0 was already rejected as non-finite.
+        push(out,
+             PreflightSeverity::Error,
+             "potential.params.cutoff",
+             "Morse cutoff (" + std::to_string(m.cutoff) + ") must be strictly greater than r0 (" +
+                 std::to_string(m.r0) + ")");
+      }
+      break;
+    }
+    case PotentialStyle::EamAlloy: {
+      const auto& ea = pot.eam_alloy;
+      if (ea.file.empty()) {
+        push(out,
+             PreflightSeverity::Error,
+             "potential.params.file",
+             "EAM/alloy potential.params.file must not be empty");
+        break;
+      }
+      // We do not parse the setfl file here (the parser is in the potentials
+      // module and pulls in ~200 KB of text-scanning code); just verify the
+      // file is reachable. Format-level errors surface at SimulationEngine::init
+      // with a path:line diagnostic via parse_eam_alloy().
+      if (!std::filesystem::is_regular_file(ea.file)) {
+        push(out,
+             PreflightSeverity::Error,
+             "potential.params.file",
+             "EAM/alloy potential.params.file '" + ea.file + "' is not a regular file");
+      }
+      break;
+    }
   }
 }
 

@@ -57,7 +57,8 @@ enum class AtomsSource : std::uint8_t {
 
 enum class PotentialStyle : std::uint8_t {
   Morse,
-  // EAM / SNAP / PACE — M2+ / M8.
+  EamAlloy,  // LAMMPS `pair_style eam/alloy` — setfl file (T2.7, T2.9).
+  // EAM/FS / SNAP / PACE — M2+ / M8.
 };
 
 enum class MorseCutoffStrategy : std::uint8_t {
@@ -78,6 +79,18 @@ struct MorseParams {
   MorseCutoffStrategy cutoff_strategy = MorseCutoffStrategy::ShiftedForce;
 };
 
+// LAMMPS-compatible `pair_style eam/alloy` parameters. The `file` path is
+// resolved relative to the YAML file's directory (same convention as
+// `atoms.path` — see runtime/simulation_engine.cpp::resolve_atoms_path).
+// Species ordering inside the setfl file must match the LAMMPS type ordering
+// in the companion `.data` file, since EamAlloyPotential uses `AtomSoA::type`
+// directly as an index into the per-species tables (see
+// potentials/eam_alloy.hpp). An explicit `species` map is deferred until a
+// benchmark needs it.
+struct EamAlloyParams {
+  std::string file;
+};
+
 struct SimulationBlock {
   UnitsKind units = UnitsKind::Metal;
   std::uint64_t seed = 12345;
@@ -95,6 +108,7 @@ struct AtomsBlock {
 struct PotentialBlock {
   PotentialStyle style = PotentialStyle::Morse;
   MorseParams morse{};
+  EamAlloyParams eam_alloy{};
 };
 
 struct IntegratorBlock {

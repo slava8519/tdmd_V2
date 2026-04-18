@@ -1,0 +1,37 @@
+# T4 differential benchmark — TDMD config (metal units).
+#
+# Pairs with `lammps_script_metal.in` in the same directory. The committed
+# `setup.data` (864 atoms Ni-Al FCC, 50:50, seed 12345) plus the committed
+# Mishin 2004 EAM setfl file form the complete bit-identical input set that
+# both engines consume; see README.md §"Initial state" for generator
+# provenance.
+#
+# No LJ variant for T4 — EAM tables are dimensional by convention (see
+# potentials/SPEC §4.5 and the SimulationEngine init dispatch, which rejects
+# `units=lj` for `style=eam/alloy`).
+
+simulation:
+  units: metal
+  seed: 12345              # unused at ingest (atoms read verbatim), kept for symmetry.
+
+atoms:
+  source: lammps_data
+  path: setup.data         # resolved relative to this file (committed alongside).
+
+potential:
+  style: eam/alloy
+  params:
+    file: ../../third_party/potentials/NiAl_Mishin_2004.eam.alloy
+
+integrator:
+  style: velocity_verlet
+  dt: 0.001                # ps — same profile as T1 for thermo comparability.
+
+neighbor:
+  skin: 0.3                # Å
+
+thermo:
+  every: 10
+
+run:
+  n_steps: 100

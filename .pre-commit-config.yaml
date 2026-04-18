@@ -36,6 +36,12 @@ repos:
       - id: check-merge-conflict
       - id: check-added-large-files
         args: ['--maxkb=500']
+        # verify/third_party/potentials/ holds committed setfl / EAM tables
+        # (e.g. Mishin 2004 Ni-Al is 1.9 MB). These are the canonical parameter
+        # files for T4+ benchmarks — required for reproducibility, and not
+        # available elsewhere in the LAMMPS submodule. README alongside them
+        # documents provenance + license.
+        exclude: '^verify/third_party/potentials/.*\.(eam\.alloy|eam\.fs|eam|adp|meam|snap)$'
       - id: check-case-conflict
       - id: check-executables-have-shebangs
       - id: check-shebang-scripts-are-executable

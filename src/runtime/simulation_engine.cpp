@@ -2,6 +2,9 @@
 
 #include "tdmd/io/lammps_data_reader.hpp"
 #include "tdmd/io/yaml_config.hpp"
+#include "tdmd/potentials/eam_alloy.hpp"
+#include "tdmd/potentials/eam_file.hpp"
+#include "tdmd/potentials/morse.hpp"
 #include "tdmd/runtime/physical_constants.hpp"
 #include "tdmd/runtime/unit_converter.hpp"
 #include "tdmd/state/lj_reference.hpp"
@@ -120,20 +123,40 @@ void SimulationEngine::init(const io::YamlConfig& config, const std::string& con
     convert_state_lj_to_metal(atoms_, box_, species_, lj_ref);
   }
 
-  // --- Build the Morse potential. The YAML block carries Morse parameters in
-  // the same unit system as `simulation.units`, so we convert them here when
-  // the user wrote lj. `alpha` is inverse length; its metal value is
-  // alpha_lj / σ (no dedicated converter — it's a pure scaling).
-  const auto& mp = config.potential.morse;
-  MorsePotential::PairParams pp{.D = mp.D, .alpha = mp.alpha, .r0 = mp.r0, .cutoff = mp.cutoff};
-  if (is_lj) {
-    pp.D = UnitConverter::energy_from_lj(mp.D, lj_ref).metal_eV;
-    pp.alpha = mp.alpha / lj_ref.sigma;
-    pp.r0 = UnitConverter::length_from_lj(mp.r0, lj_ref).metal_angstroms;
-    pp.cutoff = UnitConverter::length_from_lj(mp.cutoff, lj_ref).metal_angstroms;
+  // --- Build the potential. Dispatched on `config.potential.style`:
+  //   * morse     — native pair potential, lj→metal conversion done here
+  //                 for D (energy), alpha (1/length), r0 / cutoff (length).
+  //   * eam/alloy — parses a LAMMPS setfl file at load time. The file is
+  //                 always in metal units (LAMMPS convention for
+  //                 `pair_style eam/alloy`); the YAML's lj mode is rejected
+  //                 with an explicit message because EAM tables are not
+  //                 dimensionless in the Andreev/LJ sense.
+  switch (config.potential.style) {
+    case io::PotentialStyle::Morse: {
+      const auto& mp = config.potential.morse;
+      MorsePotential::PairParams pp{.D = mp.D, .alpha = mp.alpha, .r0 = mp.r0, .cutoff = mp.cutoff};
+      if (is_lj) {
+        pp.D = UnitConverter::energy_from_lj(mp.D, lj_ref).metal_eV;
+        pp.alpha = mp.alpha / lj_ref.sigma;
+        pp.r0 = UnitConverter::length_from_lj(mp.r0, lj_ref).metal_angstroms;
+        pp.cutoff = UnitConverter::length_from_lj(mp.cutoff, lj_ref).metal_angstroms;
+      }
+      potential_ = std::make_unique<MorsePotential>(pp, to_morse_strategy(mp.cutoff_strategy));
+      break;
+    }
+    case io::PotentialStyle::EamAlloy: {
+      if (is_lj) {
+        throw std::invalid_argument(
+            "potential.style=eam/alloy is incompatible with simulation.units=lj "
+            "(EAM setfl tables are dimensional by convention)");
+      }
+      const std::string eam_path = resolve_atoms_path(config.potential.eam_alloy.file, config_dir);
+      potentials::EamAlloyData eam = potentials::parse_eam_alloy(eam_path);
+      potential_ = std::make_unique<EamAlloyPotential>(std::move(eam));
+      break;
+    }
   }
-  potential_ = std::make_unique<MorsePotential>(pp, to_morse_strategy(mp.cutoff_strategy));
-  cutoff_ = pp.cutoff;
+  cutoff_ = potential_->cutoff();
 
   // --- Build the integrator.
   integrator_ = std::make_unique<VelocityVerletIntegrator>();

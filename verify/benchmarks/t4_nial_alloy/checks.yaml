@@ -1,0 +1,59 @@
+# T4 benchmark check declarations — Ni-Al EAM/alloy differential.
+#
+# Parsed by verify/t4/run_differential.py (via the shared verify.harness +
+# verify.compare layer shared with T1). Each entry names a threshold path
+# into verify/thresholds/thresholds.yaml and declares the column (thermo)
+# or scalar (forces) comparator to run.
+#
+# Column names match the TDMD thermo header emitted by
+# `SimulationEngine::write_thermo_header("# step temp pe ke etotal press")`.
+
+benchmark: t4_nial_alloy
+
+thermo_columns:
+  # tdmd-column : lammps-column mapping.  `compare.extract_lammps_thermo()`
+  # lowercases the CamelCase oracle headers so the rhs strings match.
+  temp: temp
+  pe: poteng
+  ke: kineng
+  etotal: toteng
+  press: press          # LAMMPS in bar; harness converts to eV/Å³ before diffing.
+
+checks:
+  - name: thermo_temp
+    type: column_relative
+    column: temp
+    threshold_path: benchmarks.t4_nial_alloy.thermo_temperature_relative
+    required: true
+
+  - name: thermo_pe
+    type: column_relative
+    column: pe
+    threshold_path: benchmarks.t4_nial_alloy.thermo_potential_energy_relative
+    required: true
+
+  - name: thermo_ke
+    type: column_relative
+    column: ke
+    threshold_path: benchmarks.t4_nial_alloy.thermo_kinetic_energy_relative
+    required: true
+
+  - name: thermo_etotal
+    type: column_relative
+    column: etotal
+    threshold_path: benchmarks.t4_nial_alloy.thermo_total_energy_relative
+    required: true
+
+  - name: thermo_press
+    type: column_relative
+    column: press
+    threshold_path: benchmarks.t4_nial_alloy.thermo_pressure_relative
+    required: true
+
+  # Per-atom-per-component forces diff (T2.8 forces layer).  `threshold_path`
+  # here resolves to a single scalar rel tolerance; compare.compare_forces()
+  # uses max(|a|,|b|) as the denominator per SPEC §3.4.
+  - name: forces
+    type: forces_relative
+    threshold_path: benchmarks.t4_nial_alloy.forces_relative
+    required: true

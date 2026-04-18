@@ -66,12 +66,19 @@ def run_lammps(
     script: pathlib.Path,
     workdir: pathlib.Path,
     log_name: str = "lammps.log",
+    extra_vars: Mapping[str, str] | None = None,
 ) -> pathlib.Path:
     """Invoke ``lmp -in <script>`` from ``workdir``. Returns the log path.
 
     ``lammps_libdir`` is prepended to ``LD_LIBRARY_PATH`` so locally-built
     LAMMPS binaries that link against ``liblammps.so`` in a sibling dir
     load cleanly without requiring a system-wide install.
+
+    ``extra_vars`` is forwarded verbatim as ``-var K V`` pairs so per-benchmark
+    scripts can reference externally-owned assets (e.g. the committed
+    ``setup.data`` or EAM files) by absolute path without copying them into
+    the ephemeral workdir. Passing a trailing path separator or a value with
+    spaces is *not* normalised — callers are responsible for sensible inputs.
     """
     log_path = workdir / log_name
     env = os.environ.copy()
@@ -86,6 +93,11 @@ def run_lammps(
         "-var",
         "workdir",
         str(workdir.resolve()),
+    ]
+    if extra_vars:
+        for key, value in extra_vars.items():
+            cmd += ["-var", key, value]
+    cmd += [
         "-log",
         str(log_path.resolve()),
         "-screen",
@@ -115,18 +127,32 @@ def run_tdmd(
     workdir: pathlib.Path,
     label: str,
     emit_dump: bool = False,
+    extra_absolute_paths: Mapping[tuple[str, ...], pathlib.Path] | None = None,
 ) -> TdmdRun:
     """Run TDMD with a workdir-local copy of the config (absolute atoms.path).
 
     ``label`` disambiguates per-variant artifacts so the metal and lj runs
     coexist in the same workdir without clobbering each other (T1 lj
     cross-check). ``emit_dump=True`` adds ``--dump`` for T2.8+ forces diffs.
+
+    ``extra_absolute_paths`` lets benchmark drivers rewrite additional
+    config keys to absolute paths — e.g. EAM setfl files in T4 that
+    otherwise get resolved relative to the workdir copy of the config and
+    break. Keys are YAML dotted paths expressed as tuples, values are
+    resolved ``Path`` instances. Missing intermediate keys throw.
     """
     import yaml
 
     with benchmark_config.open() as fh:
         cfg = yaml.safe_load(fh)
     cfg["atoms"]["path"] = str(setup_data.resolve())
+
+    if extra_absolute_paths:
+        for key_path, abs_path in extra_absolute_paths.items():
+            node = cfg
+            for key in key_path[:-1]:
+                node = node[key]
+            node[key_path[-1]] = str(abs_path.resolve())
 
     resolved_cfg = workdir / f"tdmd_config_{label}.yaml"
     with resolved_cfg.open("w") as fh:
