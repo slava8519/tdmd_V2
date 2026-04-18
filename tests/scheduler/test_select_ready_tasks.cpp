@@ -317,11 +317,12 @@ TEST_CASE("select_ready_tasks — unsafe cert excludes zone", "[scheduler][selec
 
 TEST_CASE("select_ready_tasks — peer-block when peer lags by more than 1 step",
           "[scheduler][select][peer]") {
-  // Zone 0 at time_level=5, zone 1 at time_level=3. K_max large enough
-  // to admit any t; zone 0 wants t=6 but peer (zone 1) is only at 3,
-  // 3+1 = 4 < 6 → peer-blocked. Zone 1 wants t=4 (since its min_level=4);
-  // peer (zone 0) is at 5 ≥ 3 → peer OK.
-  auto policy = policy_with_cap(/*cap=*/2, /*k_max=*/10);
+  // Zone 0 at time_level=5, zone 1 at time_level=3. K_max chosen large
+  // enough to admit t=6 (legal set is {1,2,4,8} per D-M5-1; K=8 → frontier
+  // bound = 3+8 = 11 ≥ 6); zone 0 wants t=6 but peer (zone 1) is only at
+  // 3, 3+1 = 4 < 6 → peer-blocked. Zone 1 wants t=4 (since its
+  // min_level=4); peer (zone 0) is at 5 ≥ 3 → peer OK.
+  auto policy = policy_with_cap(/*cap=*/2, /*k_max=*/8);
   ts::CausalWavefrontScheduler sched{policy};
   const auto plan = make_plan(2, 1, 1);
   sched.initialize(plan);
@@ -333,7 +334,7 @@ TEST_CASE("select_ready_tasks — peer-block when peer lags by more than 1 step"
   sched.refresh_certificates();
 
   const auto tasks = sched.select_ready_tasks();
-  // Only zone 1 admissible: t = 4 is within [3+1, min(3+1+9, 3+10)] = [4, 13].
+  // Only zone 1 admissible: t = 4 is within [3+1, min(3+1+7, 3+8)] = [4, 11].
   // Peer (zone 0) at time_level=5 ≥ t-1=3 ✓, cert safe, neighbor window OK.
   // Zone 0 candidate at t=6 requires peer ≥ 5; zone 1 at 3 fails.
   REQUIRE(tasks.size() == 1);

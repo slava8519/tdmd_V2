@@ -136,6 +136,11 @@ struct RunBlock {
 // (D-M4-9 acceptance gate).
 struct SchedulerBlock {
   bool td_mode = false;
+
+  // D-M5-1: pipeline depth cap K ∈ {1, 2, 4, 8}. Default 1 preserves M4
+  // byte-exact regression (D-M5-12) when the YAML key is absent. The parser
+  // rejects any other value with a line-numbered error.
+  std::uint32_t pipeline_depth_cap = 1;
 };
 
 // Aggregate. Parser produces this, preflight inspects it.

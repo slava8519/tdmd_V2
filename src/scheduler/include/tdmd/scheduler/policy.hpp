@@ -14,9 +14,18 @@
 
 namespace tdmd::scheduler {
 
+// D-M5-1: legal K-values. M5 pipeline depth is pinned to {1, 2, 4, 8}; any
+// other value is a configuration error (K=0 stalls the frontier guard, K=3
+// is not a power of 2 and is excluded by the master-spec auto-K policy, K>8
+// is deferred to adaptive auto-tuning in M8). Keep this list tight so invalid
+// YAML is caught before the scheduler ever runs.
+constexpr bool is_valid_k_max_pipeline_depth(std::uint32_t k) noexcept {
+  return k == 1u || k == 2u || k == 4u || k == 8u;
+}
+
 struct SchedulerPolicy {
-  // Frontier control:
-  std::uint32_t k_max_pipeline_depth = 1;     // D-M4-1: K=1 in M4
+  // Frontier control (D-M5-1: K ∈ {1, 2, 4, 8}; default stays 1 for M4 regression):
+  std::uint32_t k_max_pipeline_depth = 1;
   std::uint32_t max_tasks_per_iteration = 1;  // single-thread in M4
 
   // Priority:

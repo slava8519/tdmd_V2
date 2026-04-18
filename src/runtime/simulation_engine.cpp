@@ -220,6 +220,7 @@ void SimulationEngine::init(const io::YamlConfig& config, const std::string& con
   // default; td_mode_ stays false and td_scheduler_ stays null when not
   // requested by YAML.
   td_mode_ = config.scheduler.td_mode;
+  td_pipeline_depth_cap_ = config.scheduler.pipeline_depth_cap;
   if (td_mode_) {
     td_initialize_scheduler();
   }
@@ -441,8 +442,8 @@ void SimulationEngine::td_initialize_scheduler() {
       std::make_unique<zoning::ZoningPlan>(planner.plan(box_, cutoff_, skin_, /*n_ranks=*/1, hint));
 
   scheduler::SchedulerPolicy policy = scheduler::PolicyFactory::for_reference();
-  policy.k_max_pipeline_depth = 1;  // D-M4-1
-  policy.max_tasks_per_iteration =  // drain all ready zones
+  policy.k_max_pipeline_depth = td_pipeline_depth_cap_;  // D-M5-1 (K ∈ {1,2,4,8})
+  policy.max_tasks_per_iteration =                       // drain all ready zones
       static_cast<std::uint32_t>(td_plan_->total_zones());
 
   td_scheduler_ = std::make_unique<scheduler::CausalWavefrontScheduler>(policy);

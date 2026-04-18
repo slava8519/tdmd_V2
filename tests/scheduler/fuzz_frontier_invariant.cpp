@@ -30,6 +30,7 @@
 #include "tdmd/zoning/zoning.hpp"
 
 #include <algorithm>
+#include <array>
 #include <catch2/catch_test_macros.hpp>
 #include <cstddef>
 #include <cstdint>
@@ -128,7 +129,10 @@ TEST_CASE("select_ready_tasks — I6 frontier invariant fuzzer (≥250k sequence
 
     // Build plan + policy.
     const auto plan = make_random_plan(rng);
-    const std::uint32_t k_max = std::uniform_int_distribution<std::uint32_t>{1, 4}(rng);
+    // D-M5-1: K must be from {1, 2, 4, 8}. Draw an index and look up.
+    constexpr std::array<std::uint32_t, 4> kLegalK = {1u, 2u, 4u, 8u};
+    const std::uint32_t k_max =
+        kLegalK[std::uniform_int_distribution<std::size_t>{0, kLegalK.size() - 1}(rng)];
     const std::uint32_t cap = std::uniform_int_distribution<std::uint32_t>{1, 8}(rng);
     auto policy = ts::PolicyFactory::for_reference();
     policy.k_max_pipeline_depth = k_max;
@@ -216,7 +220,10 @@ TEST_CASE("select_ready_tasks — fuzzer reproducibility", "[scheduler][select][
   auto one_run = [](std::uint64_t seed) {
     std::mt19937_64 rng{seed};
     const auto plan = make_random_plan(rng);
-    const std::uint32_t k_max = std::uniform_int_distribution<std::uint32_t>{1, 4}(rng);
+    // D-M5-1: K must be from {1, 2, 4, 8}. Draw an index and look up.
+    constexpr std::array<std::uint32_t, 4> kLegalK = {1u, 2u, 4u, 8u};
+    const std::uint32_t k_max =
+        kLegalK[std::uniform_int_distribution<std::size_t>{0, kLegalK.size() - 1}(rng)];
     const std::uint32_t cap = std::uniform_int_distribution<std::uint32_t>{1, 8}(rng);
     auto policy = ts::PolicyFactory::for_reference();
     policy.k_max_pipeline_depth = k_max;

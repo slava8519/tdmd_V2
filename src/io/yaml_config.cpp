@@ -320,10 +320,23 @@ RunBlock parse_run_block(const YAML::Node& node) {
 
 SchedulerBlock parse_scheduler_block(const YAML::Node& node) {
   constexpr std::string_view path = "scheduler";
-  reject_unknown_keys(node, path, {"td_mode"});
+  reject_unknown_keys(node, path, {"td_mode", "pipeline_depth_cap"});
   SchedulerBlock out{};
   if (const auto td = node["td_mode"]; td) {
     out.td_mode = as_scalar<bool>(td, "scheduler.td_mode");
+  }
+  if (const auto k = node["pipeline_depth_cap"]; k) {
+    const auto value = as_scalar<std::uint32_t>(k, "scheduler.pipeline_depth_cap");
+    // D-M5-1: {1, 2, 4, 8} only. Reject at parse time so invalid configs
+    // never reach scheduler::initialize — the earlier we catch K=3/5/16,
+    // the less debugging the scientist has to do.
+    if (value != 1u && value != 2u && value != 4u && value != 8u) {
+      throw YamlParseError(
+          line_of(k),
+          "scheduler.pipeline_depth_cap",
+          "pipeline_depth_cap must be one of {1, 2, 4, 8} (D-M5-1); got " + std::to_string(value));
+    }
+    out.pipeline_depth_cap = value;
   }
   return out;
 }

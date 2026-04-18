@@ -209,6 +209,9 @@ private:
   // The scheduler transitions zones through their full lifecycle per step
   // for diagnostic + determinism signal, but does not dispatch physics.
   bool td_mode_ = false;
+  // D-M5-1: K-batching depth cap from YAML (scheduler.pipeline_depth_cap);
+  // {1, 2, 4, 8} only, default 1 for M4 byte-exact regression.
+  std::uint32_t td_pipeline_depth_cap_ = 1;
   std::unique_ptr<zoning::ZoningPlan> td_plan_;
   std::unique_ptr<scheduler::CausalWavefrontScheduler> td_scheduler_;
   std::unique_ptr<scheduler::CertificateInputSource> td_cert_source_;

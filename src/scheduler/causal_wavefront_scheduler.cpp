@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <stdexcept>
+#include <string>
 #include <utility>
 
 namespace tdmd::scheduler {
@@ -34,6 +35,16 @@ void CausalWavefrontScheduler::initialize(const tdmd::zoning::ZoningPlan& plan) 
   if (initialized_) {
     throw std::logic_error(
         "CausalWavefrontScheduler::initialize: already initialized; call shutdown() first");
+  }
+
+  // D-M5-1: reject K outside {1, 2, 4, 8} before touching any state. A misconfigured
+  // K_max lets the frontier guard either starve (K=0) or run unbounded (K=3, 5, 16),
+  // so fail loudly at the boundary rather than silently producing wrong schedules.
+  if (!is_valid_k_max_pipeline_depth(policy_.k_max_pipeline_depth)) {
+    throw std::logic_error(
+        "CausalWavefrontScheduler::initialize: k_max_pipeline_depth must be one of "
+        "{1, 2, 4, 8} (D-M5-1); got " +
+        std::to_string(policy_.k_max_pipeline_depth));
   }
 
   const auto total = plan.total_zones();
