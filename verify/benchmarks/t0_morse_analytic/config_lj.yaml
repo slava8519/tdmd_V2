@@ -1,0 +1,41 @@
+# T0 morse-analytic benchmark — TDMD config, lj units (identity reference).
+#
+# See config_metal.yaml for the system description and the analytic formulas.
+# The identity reference (sigma=epsilon=mass=1) means every numerical value
+# below matches config_metal.yaml — this is intentional and is the T0
+# cross-check: that post-ingest AtomSoA + forces are bit-identical across
+# the two unit systems when the reference is identity.
+
+simulation:
+  units: lj
+  reference:
+    sigma: 1.0
+    epsilon: 1.0
+    mass: 1.0
+  seed: 0
+
+atoms:
+  source: lammps_data
+  path: setup_lj.data
+
+potential:
+  style: morse
+  params:
+    D: 1.0
+    alpha: 1.0
+    r0: 3.0
+    cutoff: 6.0
+    cutoff_strategy: hard_cutoff
+
+integrator:
+  style: velocity_verlet
+  dt: 0.001
+
+neighbor:
+  skin: 0.3
+
+thermo:
+  every: 1
+
+run:
+  n_steps: 0

@@ -1,0 +1,31 @@
+# T0 benchmark check declarations.
+#
+# Unlike T1, T0 is self-referential: the ground truth is the closed-form
+# Morse formula, not a LAMMPS run. The Catch2 driver consumes these entries
+# directly — there is no generic comparator that walks this file yet.
+#
+# Keeping the declaration in checks.yaml rather than hard-coded in the test
+# means thresholds live in one place (verify/thresholds/thresholds.yaml) and
+# the test is a thin wrapper that just compares against the resolved number.
+
+benchmark: t0_morse_analytic
+
+checks:
+  - name: force_x_atom0_analytic
+    type: analytic_scalar_relative
+    threshold_path: benchmarks.t0_morse_analytic.forces_analytic_relative
+    required: true
+
+  - name: force_x_atom1_analytic
+    type: analytic_scalar_relative
+    threshold_path: benchmarks.t0_morse_analytic.forces_analytic_relative
+    required: true
+
+  - name: potential_energy_analytic
+    type: analytic_scalar_relative
+    threshold_path: benchmarks.t0_morse_analytic.forces_analytic_relative
+    required: true
+
+  - name: metal_vs_lj_crosscheck_bitwise
+    type: bitwise_equality
+    required: true

@@ -5,4 +5,5 @@
 #
 # Gated on TDMD_BUILD_TESTS from the root CMakeLists.
 
+add_subdirectory(t0)
 add_subdirectory(t1)

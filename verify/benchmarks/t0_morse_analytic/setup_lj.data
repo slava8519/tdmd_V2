@@ -1,0 +1,30 @@
+# TDMD benchmark T0 — morse-analytic dimer (lj units, identity reference).
+#
+# With sigma=epsilon=mass=1 the numerical values in lj are bitwise-identical
+# to the metal .data above: length_lj = length_metal / sigma = length_metal,
+# mass_lj = mass_metal / m_ref = mass_metal, velocity_lj = velocity_metal *
+# sqrt(mass/epsilon) = velocity_metal. The two .data files differ only in this
+# header comment — that is the whole point of identity-reference lj: it makes
+# the metal<->lj conversion a readability-test, not a numerics test. A
+# non-identity lj benchmark is deferred to T2.4 (T1 cross-check).
+
+2 atoms
+1 atom types
+
+0.0 20.0 xlo xhi
+0.0 20.0 ylo yhi
+0.0 20.0 zlo zhi
+
+Masses
+
+1 1.0
+
+Atoms # atomic
+
+1 1 8.25 10.0 10.0
+2 1 11.75 10.0 10.0
+
+Velocities
+
+1 0.0 0.0 0.0
+2 0.0 0.0 0.0

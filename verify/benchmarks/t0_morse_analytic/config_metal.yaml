@@ -1,0 +1,47 @@
+# T0 morse-analytic benchmark — TDMD config, metal units.
+#
+# Companion of config_lj.yaml. Both configs describe the same physical system
+# (2 Morse-bonded atoms, separation 3.5 A, at rest). The cross-check is that
+# after UnitConverter ingests config_lj.yaml with an identity reference
+# (sigma=epsilon=mass=1), the internal AtomSoA + forces match config_metal's
+# bit-for-bit.
+#
+# Morse parameters (D=1 eV, alpha=1 A^-1, r0=3 A) are deliberately simple so
+# closed-form force / PE have exact human-auditable values:
+#   delta = r - r0 = 0.5 A
+#   e     = exp(-alpha*delta) = exp(-0.5)
+#   PE    = D * (1 - e)^2
+#   |F|   = 2*D*alpha*(1 - e)*e
+
+simulation:
+  units: metal
+  seed: 0
+
+atoms:
+  source: lammps_data
+  path: setup_metal.data
+
+potential:
+  style: morse
+  params:
+    D: 1.0
+    alpha: 1.0
+    r0: 3.0
+    cutoff: 6.0
+    # hard_cutoff: at r=3.5 we are deep inside the cutoff, but we still pin
+    # the strategy explicitly so the test compares to the "pure" Morse formula
+    # rather than to Morse minus a shifted-force correction. See README.
+    cutoff_strategy: hard_cutoff
+
+integrator:
+  style: velocity_verlet
+  dt: 0.001
+
+neighbor:
+  skin: 0.3
+
+thermo:
+  every: 1
+
+run:
+  n_steps: 0

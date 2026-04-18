@@ -13,8 +13,8 @@
 # * `absolute` thresholds carry SI / native-unit annotations in the
 #   adjacent comment.
 #
-# Current scope: M1 T1 (Al FCC Morse NVE). Sections for other benchmarks
-# land as they come online (T2 at M2, T3 at M5, ...).
+# Current scope: M1 T1 (Al FCC Morse NVE) + M2 T0 (Morse analytic dimer).
+# Sections for other benchmarks land as they come online (T3 at M5, ...).
 
 schema_version: 1
 last_updated: 2026-04-18
@@ -52,6 +52,21 @@ tolerances:
   # tree.
   # ---------------------------------------------------------------------------
   benchmarks:
+    t0_morse_analytic:
+      # 2-atom Morse dimer, separation r0 + 0.5 A, compared against the
+      # closed-form expression |F| = 2*D*alpha*(1-e)*e, PE = D*(1-e)^2.
+      # A 2-atom system has zero reduction-order roundoff, so the residual
+      # budget is driven by exp() and arithmetic roundoff only — tight (1e-12)
+      # relative bound is realistic on x86_64 + gcc-13. A looser threshold
+      # here would silently mask a real regression.
+      forces_analytic_relative: 1.0e-12
+      rationale: |
+        Dimer with D=1 eV, alpha=1 A^-1, r0=3 A, cutoff=6 A (hard).
+        `hard_cutoff` pinned explicitly — `shifted_force` (TDMD default)
+        subtracts a linear ramp, diverging from the pure-Morse analytic
+        formula by O(exp(-alpha*(r_c-r0))) ~ 2.5e-3, far above 1e-12.
+        See verify/benchmarks/t0_morse_analytic/README.md §"Why hard_cutoff".
+
     t1_al_morse_500:
       # Thermo column-wise relative diffs — exercised by run_differential.py.
       #
