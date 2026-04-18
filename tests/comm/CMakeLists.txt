@@ -5,7 +5,7 @@
 # tests (2-rank ping, 4-rank ring) arrive with T5.4 / T5.5 and will live in
 # this same directory (test_mpi_host_staging.cpp, test_ring_backend.cpp).
 
-add_executable(test_comm test_comm_types.cpp)
+add_executable(test_comm test_comm_types.cpp test_packet_serializer.cpp)
 
 target_link_libraries(test_comm PRIVATE tdmd::comm Catch2::Catch2WithMain)
 

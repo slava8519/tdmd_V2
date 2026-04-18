@@ -2,7 +2,7 @@
 # SPEC: docs/specs/comm/SPEC.md (v1.0, 2026-04-16)
 # Exec pack: docs/development/m5_execution_pack.md T5.2–T5.12
 
-add_library(tdmd_comm STATIC comm_backend.cpp)
+add_library(tdmd_comm STATIC comm_backend.cpp crc32.cpp packet_serializer.cpp)
 add_library(tdmd::comm ALIAS tdmd_comm)
 
 target_include_directories(tdmd_comm PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
