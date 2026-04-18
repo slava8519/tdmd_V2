@@ -5,7 +5,7 @@
 # Three scheme implementations (Linear1D / Decomp2D / Hilbert3D) land in
 # T3.3–T3.5; this CMakeLists just establishes the target and its sources.
 
-add_library(tdmd_zoning STATIC zoning.cpp)
+add_library(tdmd_zoning STATIC zoning.cpp linear1d.cpp)
 add_library(tdmd::zoning ALIAS tdmd_zoning)
 
 target_include_directories(tdmd_zoning PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>

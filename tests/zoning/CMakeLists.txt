@@ -1,4 +1,4 @@
-add_executable(test_zoning test_zoning_types.cpp)
+add_executable(test_zoning test_zoning_types.cpp test_linear1d.cpp)
 
 target_link_libraries(test_zoning PRIVATE tdmd::zoning Catch2::Catch2WithMain)
 
