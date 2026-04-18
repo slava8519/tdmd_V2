@@ -2,23 +2,26 @@
 
 #include <cmath>
 #include <stdexcept>
+#include <utility>
 
 namespace tdmd {
 
-void DisplacementTracker::reset(const AtomSoA& atoms) {
-  const std::size_t n = atoms.size();
+void DisplacementTracker::init(const AtomSoA& atoms) {
   x_at_build_.assign(atoms.x.begin(), atoms.x.end());
   y_at_build_.assign(atoms.y.begin(), atoms.y.end());
   z_at_build_.assign(atoms.z.begin(), atoms.z.end());
   max_displacement_ = 0.0;
-  (void) n;
+  rebuild_pending_ = false;
+  rebuild_reason_.clear();
+  // Note: `build_version_` stays at whatever it was (0 on first init; the
+  // tracker object may be reused across restart cycles).
 }
 
-void DisplacementTracker::update(const AtomSoA& atoms, const Box& box) {
+void DisplacementTracker::update_displacement(const AtomSoA& atoms, const Box& box) {
   if (atoms.size() != x_at_build_.size()) {
     throw std::logic_error(
-        "DisplacementTracker::update: atom count changed since last reset "
-        "(migration / add / remove occurred without a rebuild)");
+        "DisplacementTracker::update_displacement: atom count changed since the last "
+        "baseline (migration / add / remove occurred without execute_rebuild)");
   }
 
   double max_d_sq = 0.0;
@@ -40,6 +43,21 @@ void DisplacementTracker::set_threshold(double threshold) {
         "DisplacementTracker::set_threshold: threshold must be non-negative");
   }
   threshold_ = threshold;
+}
+
+void DisplacementTracker::request_rebuild(std::string reason) {
+  rebuild_pending_ = true;
+  rebuild_reason_ = std::move(reason);
+}
+
+void DisplacementTracker::execute_rebuild(const AtomSoA& atoms) {
+  x_at_build_.assign(atoms.x.begin(), atoms.x.end());
+  y_at_build_.assign(atoms.y.begin(), atoms.y.end());
+  z_at_build_.assign(atoms.z.begin(), atoms.z.end());
+  max_displacement_ = 0.0;
+  rebuild_pending_ = false;
+  rebuild_reason_.clear();
+  ++build_version_;
 }
 
 }  // namespace tdmd

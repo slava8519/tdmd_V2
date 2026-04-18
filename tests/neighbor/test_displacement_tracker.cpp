@@ -1,3 +1,6 @@
+// SPEC: docs/specs/neighbor/SPEC.md §2.2, §5, §6
+// Exec pack: docs/development/m3_execution_pack.md T3.8
+
 #include "tdmd/neighbor/displacement_tracker.hpp"
 #include "tdmd/state/atom_soa.hpp"
 #include "tdmd/state/box.hpp"
@@ -37,28 +40,33 @@ TEST_CASE("DisplacementTracker default-constructs empty with zero state",
   REQUIRE(tr.size() == 0);
   REQUIRE(tr.max_displacement() == 0.0);
   REQUIRE(tr.threshold() == 0.0);
-  REQUIRE_FALSE(tr.needs_rebuild());
+  REQUIRE_FALSE(tr.skin_exceeded());
+  REQUIRE(tr.build_version() == 0);
+  REQUIRE_FALSE(tr.rebuild_pending());
+  REQUIRE(tr.rebuild_reason().empty());
 }
 
-TEST_CASE("DisplacementTracker reset baselines positions and zeroes displacement",
+TEST_CASE("DisplacementTracker init baselines positions and zeroes displacement",
           "[neighbor][tracker]") {
   auto atoms = make_atoms_grid();
   tdmd::DisplacementTracker tr;
   tr.set_threshold(0.15);
-  tr.reset(atoms);
+  tr.init(atoms);
 
   REQUIRE(tr.size() == atoms.size());
   REQUIRE(tr.max_displacement() == 0.0);
-  REQUIRE_FALSE(tr.needs_rebuild());
+  REQUIRE_FALSE(tr.skin_exceeded());
+  REQUIRE(tr.build_version() == 0);  // init does NOT bump the counter
 }
 
-TEST_CASE("DisplacementTracker::update returns 0 when nothing moved", "[neighbor][tracker]") {
+TEST_CASE("DisplacementTracker::update_displacement returns 0 when nothing moved",
+          "[neighbor][tracker]") {
   auto atoms = make_atoms_grid();
   const auto box = make_cubic_box(20.0);
   tdmd::DisplacementTracker tr;
   tr.set_threshold(0.15);
-  tr.reset(atoms);
-  tr.update(atoms, box);
+  tr.init(atoms);
+  tr.update_displacement(atoms, box);
   REQUIRE(tr.max_displacement() == 0.0);
 }
 
@@ -67,31 +75,31 @@ TEST_CASE("DisplacementTracker reports max displacement exactly", "[neighbor][tr
   const auto box = make_cubic_box(20.0);
   tdmd::DisplacementTracker tr;
   tr.set_threshold(0.2);
-  tr.reset(atoms);
+  tr.init(atoms);
 
   atoms.x[3] += 0.1;
   atoms.y[5] += 0.05;
   atoms.z[7] += 0.09;
-  tr.update(atoms, box);
+  tr.update_displacement(atoms, box);
   REQUIRE(std::abs(tr.max_displacement() - 0.1) < 1e-14);
-  REQUIRE_FALSE(tr.needs_rebuild());
+  REQUIRE_FALSE(tr.skin_exceeded());
 }
 
-TEST_CASE("DisplacementTracker triggers rebuild above threshold, not below",
+TEST_CASE("DisplacementTracker triggers skin_exceeded above threshold, not below",
           "[neighbor][tracker][trigger]") {
   auto atoms = make_atoms_grid();
   const auto box = make_cubic_box(20.0);
   tdmd::DisplacementTracker tr;
   tr.set_threshold(0.15);  // skin/2 for skin=0.3
-  tr.reset(atoms);
+  tr.init(atoms);
 
   atoms.x[0] += 0.14;
-  tr.update(atoms, box);
-  REQUIRE_FALSE(tr.needs_rebuild());
+  tr.update_displacement(atoms, box);
+  REQUIRE_FALSE(tr.skin_exceeded());
 
   atoms.x[0] += 0.02;  // now displaced by 0.16, above 0.15
-  tr.update(atoms, box);
-  REQUIRE(tr.needs_rebuild());
+  tr.update_displacement(atoms, box);
+  REQUIRE(tr.skin_exceeded());
 }
 
 TEST_CASE("DisplacementTracker uses minimum-image for periodic wraps", "[neighbor][tracker][pbc]") {
@@ -102,29 +110,103 @@ TEST_CASE("DisplacementTracker uses minimum-image for periodic wraps", "[neighbo
   const auto box = make_cubic_box(L);
   tdmd::DisplacementTracker tr;
   tr.set_threshold(0.5);
-  tr.reset(atoms);
+  tr.init(atoms);
 
   atoms.x[0] = L - 0.02;
-  tr.update(atoms, box);
+  tr.update_displacement(atoms, box);
   REQUIRE(std::abs(tr.max_displacement() - 0.07) < 1e-14);
-  REQUIRE_FALSE(tr.needs_rebuild());
+  REQUIRE_FALSE(tr.skin_exceeded());
 }
 
-TEST_CASE("DisplacementTracker::update rejects size mismatch", "[neighbor][tracker][error]") {
+TEST_CASE("DisplacementTracker::update_displacement rejects size mismatch",
+          "[neighbor][tracker][error]") {
   auto atoms = make_atoms_grid();
   tdmd::DisplacementTracker tr;
   tr.set_threshold(0.1);
-  tr.reset(atoms);
+  tr.init(atoms);
 
   atoms.add_atom(0, 0.0, 0.0, 0.0);
   const auto box = make_cubic_box(20.0);
-  REQUIRE_THROWS_AS(tr.update(atoms, box), std::logic_error);
+  REQUIRE_THROWS_AS(tr.update_displacement(atoms, box), std::logic_error);
 }
 
 TEST_CASE("DisplacementTracker set_threshold rejects negatives", "[neighbor][tracker][error]") {
   tdmd::DisplacementTracker tr;
   REQUIRE_THROWS_AS(tr.set_threshold(-0.01), std::invalid_argument);
   REQUIRE_NOTHROW(tr.set_threshold(0.0));
+}
+
+// ---------------------------------------------------------------------------
+// New T3.8 tests: request_rebuild / execute_rebuild / build_version.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("DisplacementTracker request_rebuild sets pending flag + reason",
+          "[neighbor][tracker][rebuild]") {
+  auto atoms = make_atoms_grid();
+  tdmd::DisplacementTracker tr;
+  tr.init(atoms);
+
+  REQUIRE_FALSE(tr.rebuild_pending());
+  tr.request_rebuild("migration");
+  REQUIRE(tr.rebuild_pending());
+  REQUIRE(tr.rebuild_reason() == "migration");
+
+  // Idempotent + most-recent reason wins.
+  tr.request_rebuild("skin exceeded");
+  REQUIRE(tr.rebuild_pending());
+  REQUIRE(tr.rebuild_reason() == "skin exceeded");
+}
+
+TEST_CASE("DisplacementTracker execute_rebuild resets tracker and bumps build_version",
+          "[neighbor][tracker][rebuild]") {
+  auto atoms = make_atoms_grid();
+  const auto box = make_cubic_box(20.0);
+  tdmd::DisplacementTracker tr;
+  tr.set_threshold(0.05);
+  tr.init(atoms);
+
+  atoms.x[0] += 0.2;
+  tr.update_displacement(atoms, box);
+  tr.request_rebuild("skin");
+  REQUIRE(tr.skin_exceeded());
+  REQUIRE(tr.rebuild_pending());
+  REQUIRE(tr.max_displacement() > 0.0);
+  REQUIRE(tr.build_version() == 0);
+
+  tr.execute_rebuild(atoms);
+  REQUIRE(tr.max_displacement() == 0.0);
+  REQUIRE_FALSE(tr.skin_exceeded());
+  REQUIRE_FALSE(tr.rebuild_pending());
+  REQUIRE(tr.rebuild_reason().empty());
+  REQUIRE(tr.build_version() == 1);
+
+  // A second rebuild without any motion still bumps the counter — that is
+  // intentional: external triggers (migration, potential change) may
+  // require a rebuild even when the skin is fine.
+  tr.execute_rebuild(atoms);
+  REQUIRE(tr.build_version() == 2);
+}
+
+TEST_CASE("DisplacementTracker post-rebuild needs no rebuild regardless of prior hysteresis",
+          "[neighbor][tracker][rebuild]") {
+  auto atoms = make_atoms_grid();
+  const auto box = make_cubic_box(20.0);
+  tdmd::DisplacementTracker tr;
+  tr.set_threshold(0.1);
+  tr.init(atoms);
+
+  // Push well beyond threshold, execute_rebuild, then query immediately.
+  atoms.x[2] += 0.5;
+  tr.update_displacement(atoms, box);
+  REQUIRE(tr.skin_exceeded());
+  tr.execute_rebuild(atoms);
+  REQUIRE_FALSE(tr.skin_exceeded());
+  REQUIRE_FALSE(tr.rebuild_pending());
+
+  // A tiny additional wiggle should not wrap back to stale state.
+  atoms.x[2] += 0.01;
+  tr.update_displacement(atoms, box);
+  REQUIRE_FALSE(tr.skin_exceeded());
 }
 
 TEST_CASE("DisplacementTracker is conservative on random walks (10⁴ trials)",
@@ -145,7 +227,7 @@ TEST_CASE("DisplacementTracker is conservative on random walks (10⁴ trials)",
 
     tdmd::DisplacementTracker tr;
     tr.set_threshold(threshold);
-    tr.reset(atoms);
+    tr.init(atoms);
 
     double exp_max = 0.0;
     int triggered_step = -1;
@@ -156,9 +238,9 @@ TEST_CASE("DisplacementTracker is conservative on random walks (10⁴ trials)",
       atoms.x[1] += step(rng);
       atoms.y[1] += step(rng);
       atoms.z[1] += step(rng);
-      tr.update(atoms, box);
+      tr.update_displacement(atoms, box);
       exp_max = std::max(exp_max, tr.max_displacement());
-      if (tr.needs_rebuild() && triggered_step == -1) {
+      if (tr.skin_exceeded() && triggered_step == -1) {
         triggered_step = s;
         REQUIRE(tr.max_displacement() > threshold);
       }

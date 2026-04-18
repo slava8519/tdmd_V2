@@ -176,7 +176,7 @@ void SimulationEngine::init(const io::YamlConfig& config, const std::string& con
   }
   neighbor_list_.build(atoms_, box_, cell_grid_, cutoff_, skin_);
   displacement_tracker_.set_threshold(0.5 * skin_);
-  displacement_tracker_.reset(atoms_);
+  displacement_tracker_.init(atoms_);
 
   // --- Initial force / energy / virial snapshot.
   recompute_forces();
@@ -206,8 +206,11 @@ ThermoRow SimulationEngine::run(std::uint64_t n_steps, std::ostream* thermo_out)
     // Neighbor rebuild check — based on displacements since the last build.
     {
       telemetry::ScopedSection neigh(telemetry_, "Neigh");
-      displacement_tracker_.update(atoms_, box_);
-      if (displacement_tracker_.needs_rebuild()) {
+      displacement_tracker_.update_displacement(atoms_, box_);
+      if (displacement_tracker_.skin_exceeded()) {
+        displacement_tracker_.request_rebuild("skin exceeded");
+      }
+      if (displacement_tracker_.rebuild_pending()) {
         rebuild_neighbors();
       }
     }
@@ -327,7 +330,7 @@ void SimulationEngine::rebuild_neighbors() {
     cell_grid_.bin(atoms_);
   }
   neighbor_list_.build(atoms_, box_, cell_grid_, cutoff_, skin_);
-  displacement_tracker_.reset(atoms_);
+  displacement_tracker_.execute_rebuild(atoms_);
 }
 
 void SimulationEngine::recompute_forces() {
