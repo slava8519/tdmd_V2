@@ -1,5 +1,6 @@
 #include "tdmd/cli/validate_command.hpp"
 
+#include "tdmd/cli/field_docs.hpp"
 #include "tdmd/io/preflight.hpp"
 #include "tdmd/io/yaml_config.hpp"
 
@@ -8,7 +9,6 @@
 #include <exception>
 #include <filesystem>
 #include <iostream>
-#include <map>
 #include <ostream>
 #include <string>
 #include <string_view>
@@ -37,55 +37,10 @@ cxxopts::Options make_validate_options_spec() {
   return opts;
 }
 
-// Short-form field documentation surfaced by --explain. Master spec §5.3 is
-// the source for unit-system semantics; the rest are summaries of the io/
-// SPEC §3 block descriptions. Keep entries to two or three sentences.
-const std::map<std::string, std::string>& explain_table() {
-  static const std::map<std::string, std::string> table = {
-      {"units",
-       "simulation.units selects the unit system the .data file and potential "
-       "parameters are in. M1 supports 'metal' (Angstrom / eV / g/mol / ps) "
-       "only; 'lj' is reserved for M2. 'real', 'cgs', 'si' are recognised but "
-       "not supported in v1 (master spec §5.3)."},
-      {"atoms.source",
-       "atoms.source chooses how initial positions / velocities are produced. "
-       "M1 supports 'lammps_data' (read a LAMMPS `write_data` file) only; "
-       "generators are deferred to M2."},
-      {"atoms.path",
-       "atoms.path is the path to the LAMMPS .data file. Relative paths are "
-       "resolved relative to the directory containing the YAML config."},
-      {"potential.style",
-       "potential.style names the pair/many-body form. M1 supports 'morse' "
-       "only; EAM / SNAP / MEAM are M2-M3+."},
-      {"potential.params.cutoff_strategy",
-       "cutoff_strategy selects how the pair energy/force is handled at the "
-       "cutoff radius. 'shifted_force' (default) subtracts a linear ramp so "
-       "force is exactly zero at r = cutoff. 'hard_cutoff' truncates with a "
-       "step discontinuity — only for bitwise reference comparisons."},
-      {"integrator.style",
-       "integrator.style chooses the time-integration scheme. M1 supports "
-       "'velocity_verlet' (NVE) only; NVT/NPT land in M9."},
-      {"integrator.dt",
-       "integrator.dt is the timestep in the active unit system's native time "
-       "unit (ps for metal, reduced units for lj). Must be > 0 and finite."},
-      {"neighbor.skin",
-       "neighbor.skin is the extra buffer around each atom's cutoff sphere. A "
-       "larger skin rebuilds the list less often but costs more pairwise "
-       "distance checks. M1 default is 0.3 A."},
-      {"thermo.every",
-       "thermo.every is the step interval at which a thermo row is emitted. "
-       "Row 0 (initial state) and the final step are always included."},
-      {"run.n_steps",
-       "run.n_steps is the total number of integration steps to perform. "
-       "Must be >= 1."},
-  };
-  return table;
-}
-
 void print_explain(std::ostream& out) {
   out << "tdmd validate --explain <field>\n\n"
       << "Recognised fields:\n";
-  for (const auto& [k, _v] : explain_table()) {
+  for (const auto& [k, _v] : config_field_descriptions()) {
     out << "  " << k << '\n';
   }
 }
@@ -192,7 +147,7 @@ int validate_command(const ValidateOptions& options, const ValidateStreams& stre
   // --- Explain mode: print a short field description and exit. Orthogonal to
   // validation — deliberately does not require (or consume) a config file.
   if (!options.explain_field.empty()) {
-    const auto& table = explain_table();
+    const auto& table = config_field_descriptions();
     auto it = table.find(options.explain_field);
     if (it == table.end()) {
       err << "tdmd validate --explain: unknown field '" << options.explain_field << "'\n\n";

@@ -4,7 +4,7 @@
 
 # Static library holds the subcommand logic so tests can exercise the subcommand end-to-end without
 # spawning a child process.
-add_library(tdmd_cli STATIC run_command.cpp validate_command.cpp)
+add_library(tdmd_cli STATIC run_command.cpp validate_command.cpp explain_command.cpp field_docs.cpp)
 add_library(tdmd::cli ALIAS tdmd_cli)
 
 target_include_directories(tdmd_cli PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -12,7 +12,7 @@ target_include_directories(tdmd_cli PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOU
 
 target_link_libraries(
   tdmd_cli
-  PUBLIC tdmd::io tdmd::runtime
+  PUBLIC tdmd::io tdmd::runtime tdmd::perfmodel
   PRIVATE cxxopts::cxxopts)
 
 target_compile_features(tdmd_cli PUBLIC cxx_std_20)
