@@ -61,6 +61,28 @@ fetchcontent_declare(
 fetchcontent_makeavailable(yaml-cpp)
 
 # ------------------------------------------------------------------------------
+# cxxopts — header-only CLI argument parser (M1/T1.9). Pinned tag; SYSTEM so its headers do not
+# warn. Tests / examples / install are off.
+# ------------------------------------------------------------------------------
+set(CXXOPTS_BUILD_EXAMPLES
+    OFF
+    CACHE BOOL "" FORCE)
+set(CXXOPTS_BUILD_TESTS
+    OFF
+    CACHE BOOL "" FORCE)
+set(CXXOPTS_ENABLE_INSTALL
+    OFF
+    CACHE BOOL "" FORCE)
+
+fetchcontent_declare(
+  cxxopts
+  GIT_REPOSITORY https://github.com/jarro2783/cxxopts.git
+  GIT_TAG v3.2.0
+  GIT_SHALLOW TRUE
+  SYSTEM)
+fetchcontent_makeavailable(cxxopts)
+
+# ------------------------------------------------------------------------------
 # Future deps (uncomment when milestones require): - HDF5 (M3 — trajectory output) - nlohmann_json
 # (M3 — threshold registry, manifest) - fmt (M1 — structured logging; or rely on C++23 std::print
 # once available) - MPI (M5 — multi-rank comm layer)

@@ -12,7 +12,7 @@ target_include_directories(tdmd_io PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOUR
 # it.
 target_link_libraries(
   tdmd_io
-  PUBLIC tdmd::state tdmd::runtime
+  PUBLIC tdmd::state
   PRIVATE yaml-cpp::yaml-cpp)
 
 target_compile_features(tdmd_io PUBLIC cxx_std_20)

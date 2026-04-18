@@ -7,10 +7,10 @@
 // binary to run these tests (that integration check is T1.11).
 
 #include "tdmd/io/lammps_data_reader.hpp"
-#include "tdmd/runtime/unit_converter.hpp"
 #include "tdmd/state/atom_soa.hpp"
 #include "tdmd/state/box.hpp"
 #include "tdmd/state/species.hpp"
+#include "tdmd/state/unit_system.hpp"
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>

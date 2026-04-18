@@ -1,0 +1,36 @@
+# CLI test fixture — points at the 32-atom Al FCC data file shipped for T1.3,
+# with Morse params shrunk so the 8.1 A cubic box satisfies the CellGrid
+# 3-cells-per-axis stencil (L_axis >= 3 * (r0 + skin)).
+#
+# These are toy values, not physically meaningful — the T1.11 differential
+# harness uses the real Girifalco-Weizer parameters on a larger cell.
+
+simulation:
+  units: metal
+  seed: 42
+
+atoms:
+  source: lammps_data
+  path: ../../io/fixtures/al_fcc_small.data
+
+potential:
+  style: morse
+  params:
+    D: 0.2703
+    alpha: 2.0
+    r0: 2.0
+    cutoff: 2.5
+    cutoff_strategy: shifted_force
+
+integrator:
+  style: velocity_verlet
+  dt: 0.001
+
+neighbor:
+  skin: 0.1
+
+thermo:
+  every: 2
+
+run:
+  n_steps: 4

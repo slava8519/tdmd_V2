@@ -19,6 +19,8 @@
 //   - `lj` functions are API-stable stubs that throw `NotImplementedInM1Error`.
 // M2 will add real `lj` conversions without changing any signature.
 
+#include "tdmd/state/unit_system.hpp"
+
 #include <cstdint>
 #include <stdexcept>
 #include <string>
@@ -27,13 +29,9 @@
 
 namespace tdmd {
 
-enum class UnitSystem : std::uint8_t {
-  Metal,  // LAMMPS metal: Å, eV, g/mol, ps
-  Lj,     // LAMMPS lj:    reduced (sigma, epsilon, mass) — M2 impl
-  Real,   // LAMMPS real:  recognized, not supported in v1
-  Cgs,    // cgs:          recognized, not supported in v1
-  Si,     // SI:           never supported (master spec §5.3 policy)
-};
+// `UnitSystem` enum has moved to `state/unit_system.hpp` so modules that only
+// need the tag (e.g. io/) do not transitively pull the full UnitConverter
+// interface. The converter itself still lives here.
 
 [[nodiscard]] std::string_view to_string(UnitSystem s) noexcept;
 

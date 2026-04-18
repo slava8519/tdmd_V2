@@ -18,10 +18,10 @@
 // Round-trip invariant: `parse → dump → parse` is bit-exact when the same
 // unit system is used on both ends (exec pack T1.3 mandatory invariant).
 
-#include "tdmd/runtime/unit_converter.hpp"
 #include "tdmd/state/atom_soa.hpp"
 #include "tdmd/state/box.hpp"
 #include "tdmd/state/species.hpp"
+#include "tdmd/state/unit_system.hpp"
 
 #include <cstddef>
 #include <cstdint>

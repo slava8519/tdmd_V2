@@ -1,0 +1,41 @@
+# Example M1 tdmd.yaml — Al FCC 7x7x7 = 1372 atoms, NVE, 100 steps.
+# Exec pack: docs/development/m1_execution_pack.md T1.9 (acceptance example).
+#
+# Canonical quick-start config for `tdmd run`. The 7x7x7 supercell gives a
+# 28.35 A cubic box so the CellGrid 3-cells-per-axis stencil (requires
+# L_axis >= 3 * (cutoff + skin) = 24.9 A for cutoff = 8.0 A, skin = 0.3 A)
+# is satisfied with room to spare. D-M1-3 mentioned 5x5x5 = 500, but at the
+# Girifalco-Weizer cutoff of 8 A that box is too small; 7x7x7 keeps the
+# Morse parameters canonical at the cost of a few hundred extra atoms.
+
+simulation:
+  units: metal
+  seed: 12345
+
+atoms:
+  source: lammps_data
+  path: al_fcc_1372.data
+
+potential:
+  style: morse
+  params:
+    # Girifalco-Weizer Al (1959): D = 0.2703 eV, alpha = 1.1646 1/A,
+    # r0 = 3.253 A.
+    D: 0.2703
+    alpha: 1.1646
+    r0: 3.253
+    cutoff: 8.0
+    cutoff_strategy: shifted_force
+
+integrator:
+  style: velocity_verlet
+  dt: 0.001   # ps (metal)
+
+neighbor:
+  skin: 0.3
+
+thermo:
+  every: 10
+
+run:
+  n_steps: 100
