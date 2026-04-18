@@ -1,7 +1,7 @@
 # tdmd::potentials — interaction force models (Morse, EAM, MEAM, SNAP, ...).
 # SPEC: docs/specs/potentials/SPEC.md
 
-add_library(tdmd_potentials STATIC morse.cpp)
+add_library(tdmd_potentials STATIC morse.cpp tabulated.cpp)
 add_library(tdmd::potentials ALIAS tdmd_potentials)
 
 target_include_directories(
