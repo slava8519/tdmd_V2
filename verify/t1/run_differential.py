@@ -42,7 +42,6 @@ import math
 import os
 import pathlib
 import shutil
-import subprocess
 import sys
 import tempfile
 
@@ -52,11 +51,12 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from verify import compare  # noqa: E402  (import after sys.path tweak)
+from verify.harness import differential_runner as runner  # noqa: E402
 
-EXIT_PASS = 0
-EXIT_FAIL = 1
-EXIT_ERROR = 2
-EXIT_SKIP = 77
+EXIT_PASS = runner.EXIT_PASS
+EXIT_FAIL = runner.EXIT_FAIL
+EXIT_ERROR = runner.EXIT_ERROR
+EXIT_SKIP = runner.EXIT_SKIP
 
 # LAMMPS `units metal` mvv2e — the single constant that couples KE=½mv² in
 # (g/mol)·(Å/ps)² to energy in eV. Mirrored in src/runtime/unit_converter.cpp
@@ -80,76 +80,10 @@ def _skip(msg: str) -> None:
     sys.exit(EXIT_SKIP)
 
 
-def run_lammps(
-    lammps_bin: pathlib.Path,
-    lammps_libdir: pathlib.Path | None,
-    script: pathlib.Path,
-    workdir: pathlib.Path,
-) -> pathlib.Path:
-    """Run LAMMPS with the given script. Returns the emitted log path."""
-    log_path = workdir / "lammps.log"
-    env = os.environ.copy()
-    if lammps_libdir is not None:
-        existing = env.get("LD_LIBRARY_PATH", "")
-        libdir_abs = str(lammps_libdir.resolve())
-        env["LD_LIBRARY_PATH"] = f"{libdir_abs}:{existing}" if existing else libdir_abs
-    cmd = [
-        str(lammps_bin.resolve()),
-        "-in",
-        str(script.resolve()),
-        "-var",
-        "workdir",
-        str(workdir.resolve()),
-        "-log",
-        str(log_path.resolve()),
-        "-screen",
-        "none",
-    ]
-    print(f"[T1] running LAMMPS: {' '.join(cmd)}")
-    result = subprocess.run(cmd, env=env, cwd=workdir, check=False)
-    if result.returncode != 0:
-        _die(f"LAMMPS exited with code {result.returncode}; see {log_path}")
-    return log_path
-
-
-def run_tdmd(
-    tdmd_bin: pathlib.Path,
-    benchmark_config: pathlib.Path,
-    setup_data: pathlib.Path,
-    workdir: pathlib.Path,
-    label: str,
-) -> pathlib.Path:
-    """Write a workdir-local copy of the config (absolute atoms.path) and run tdmd.
-
-    ``label`` disambiguates per-variant artifact names so the metal and lj runs
-    coexist in the same workdir without clobbering each other.
-
-    Returns the path to the TDMD thermo file.
-    """
-    import yaml  # local import keeps the file PyYAML-free until needed.
-
-    with benchmark_config.open() as fh:
-        cfg = yaml.safe_load(fh)
-    cfg["atoms"]["path"] = str(setup_data.resolve())
-
-    resolved_cfg = workdir / f"tdmd_config_{label}.yaml"
-    with resolved_cfg.open("w") as fh:
-        yaml.safe_dump(cfg, fh, sort_keys=False)
-
-    thermo_path = workdir / f"tdmd_thermo_{label}.log"
-    cmd = [
-        str(tdmd_bin),
-        "run",
-        "--quiet",
-        "--thermo",
-        str(thermo_path),
-        str(resolved_cfg),
-    ]
-    print(f"[T1] running TDMD ({label}): {' '.join(cmd)}")
-    result = subprocess.run(cmd, check=False)
-    if result.returncode != 0:
-        _die(f"TDMD ({label}) exited with code {result.returncode}")
-    return thermo_path
+# Process runners live in ``verify/harness/differential_runner.py`` (T2.8).
+# The T1 driver retains the lj-variant-specific bits below; LAMMPS + TDMD
+# invocation is delegated to the shared runner so T4 and future benchmarks
+# exercise the same code path.
 
 
 def scale_velocities_for_lj(
@@ -309,20 +243,14 @@ def _diff_against_lammps(
     tolerances,
     label: str,
 ) -> compare.DiffReport:
-    """Run the standard TDMD-vs-LAMMPS column diff and annotate with ``label``."""
-    column_map, checks, name = compare.load_checks(checks_yaml, tolerances)
-    tdmd_cols, tdmd_rows = compare.parse_thermo_file(tdmd_thermo)
-    lmp_cols, lmp_rows = compare.extract_lammps_thermo(lammps_log)
-    report = compare.compare_columns(
-        tdmd_cols=tdmd_cols,
-        tdmd_rows=tdmd_rows,
-        lmp_cols=lmp_cols,
-        lmp_rows=lmp_rows,
-        column_map=column_map,
-        checks=checks,
-        name=f"{name} [{label} vs lammps]",
+    """Shim around the shared harness so the T1 call sites stay unchanged."""
+    return runner.diff_thermo_vs_lammps(
+        tdmd_thermo=tdmd_thermo,
+        lammps_log=lammps_log,
+        checks_yaml=checks_yaml,
+        tolerances=tolerances,
+        label=f"{label} vs lammps",
     )
-    return report
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -414,7 +342,12 @@ def main(argv: list[str] | None = None) -> int:
         workdir.mkdir(parents=True, exist_ok=True)
 
     try:
-        lammps_log = run_lammps(args.lammps, args.lammps_libdir, lammps_script, workdir)
+        try:
+            lammps_log = runner.run_lammps(
+                args.lammps, args.lammps_libdir, lammps_script, workdir
+            )
+        except runner.HarnessError as exc:
+            _die(str(exc))
         setup_data = workdir / "setup.data"
         if not setup_data.exists():
             _die(f"LAMMPS did not emit setup.data at {setup_data}")
@@ -426,9 +359,18 @@ def main(argv: list[str] | None = None) -> int:
         thermo_lj: pathlib.Path | None = None
 
         if need_metal:
-            thermo_metal = run_tdmd(
-                args.tdmd, config_metal, setup_data, workdir, "metal"
-            )
+            try:
+                tdmd_out = runner.run_tdmd(
+                    args.tdmd,
+                    config_metal,
+                    setup_data,
+                    workdir,
+                    "metal",
+                    emit_dump=False,
+                )
+            except runner.HarnessError as exc:
+                _die(str(exc))
+            thermo_metal = tdmd_out.thermo_path
             reports.append(
                 _diff_against_lammps(
                     thermo_metal, lammps_log, checks_yaml, tolerances, "metal"
@@ -440,7 +382,18 @@ def main(argv: list[str] | None = None) -> int:
             scale_velocities_for_lj(
                 setup_data, setup_data_lj, LJ_VELOCITY_SCALE_METAL_TO_LJ
             )
-            thermo_lj = run_tdmd(args.tdmd, config_lj, setup_data_lj, workdir, "lj")
+            try:
+                tdmd_out = runner.run_tdmd(
+                    args.tdmd,
+                    config_lj,
+                    setup_data_lj,
+                    workdir,
+                    "lj",
+                    emit_dump=False,
+                )
+            except runner.HarnessError as exc:
+                _die(str(exc))
+            thermo_lj = tdmd_out.thermo_path
             reports.append(
                 _diff_against_lammps(
                     thermo_lj, lammps_log, checks_yaml, tolerances, "lj"

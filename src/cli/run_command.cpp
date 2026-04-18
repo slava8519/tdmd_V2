@@ -28,6 +28,9 @@ cxxopts::Options make_run_options_spec() {
       ("h,help", "Print help and exit")
       ("thermo", "Write thermo output to a file (default: stdout)",
           cxxopts::value<std::string>())
+      ("dump", "After the final step, write a LAMMPS-compatible per-atom "
+               "dump (id type x y z fx fy fz) to <file>",
+          cxxopts::value<std::string>())
       ("quiet", "Suppress non-thermo stdout messages",
           cxxopts::value<bool>()->default_value("false"))
       ("config", "Path to tdmd YAML config",
@@ -110,6 +113,11 @@ RunParseResult parse_run_options(const std::vector<std::string>& argv,
   } else {
     out_options.thermo_path.clear();
   }
+  if (parsed.count("dump") > 0) {
+    out_options.dump_path = parsed["dump"].as<std::string>();
+  } else {
+    out_options.dump_path.clear();
+  }
   out_options.quiet = parsed["quiet"].as<bool>();
 
   return result;
@@ -175,6 +183,14 @@ int run_command(const RunOptions& options, const RunStreams& streams) {
   try {
     engine.init(config, /*config_dir=*/"");
     (void) engine.run(config.run.n_steps, thermo_out);
+    if (!options.dump_path.empty()) {
+      std::ofstream dump_file(options.dump_path);
+      if (!dump_file.is_open()) {
+        err << "failed to open dump file '" << options.dump_path << "' for writing\n";
+        return 1;
+      }
+      engine.write_dump_frame(dump_file);
+    }
     engine.finalize();
   } catch (const std::exception& e) {
     err << "runtime error: " << e.what() << '\n';

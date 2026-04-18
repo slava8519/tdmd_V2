@@ -10,7 +10,10 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
+#include <cstddef>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -67,6 +70,14 @@ TEST_CASE("tdmd run parser: --thermo + --quiet captured", "[cli][run][parse]") {
   REQUIRE(opts.quiet);
 }
 
+TEST_CASE("tdmd run parser: --dump captured", "[cli][run][parse]") {
+  tdmd::cli::RunOptions opts;
+  REQUIRE(parse_err({"--dump", "/tmp/d.lmp", "cfg.yaml"}, opts).empty());
+  REQUIRE(opts.config_path == "cfg.yaml");
+  REQUIRE(opts.dump_path == "/tmp/d.lmp");
+  REQUIRE(opts.thermo_path.empty());
+}
+
 TEST_CASE("tdmd run parser: --help writes usage and signals early-return", "[cli][run][parse]") {
   tdmd::cli::RunOptions opts;
   std::ostringstream help;
@@ -106,6 +117,59 @@ TEST_CASE("tdmd run: happy path returns 0 and emits thermo stream", "[cli][run][
   }
   // header + 3 data rows = 4 newlines (quiet suppresses status lines).
   REQUIRE(newlines == 4U);
+}
+
+TEST_CASE("tdmd run: --dump emits LAMMPS-compatible frame after the final step",
+          "[cli][run][integration][dump]") {
+  namespace fs = std::filesystem;
+  const auto tmp = fs::temp_directory_path() / "tdmd_cli_dump.tmp";
+  fs::remove(tmp);
+
+  tdmd::cli::RunOptions opts;
+  opts.config_path = cli_fixture("cli_nve_toy.yaml");
+  opts.dump_path = tmp.string();
+  opts.quiet = true;
+
+  std::ostringstream out;
+  std::ostringstream err;
+  tdmd::cli::RunStreams streams{&out, &err};
+  const int rc = tdmd::cli::run_command(opts, streams);
+
+  INFO("stderr: " << err.str());
+  REQUIRE(rc == 0);
+  REQUIRE(fs::exists(tmp));
+
+  // Pull the dump into memory and validate structural invariants: the LAMMPS
+  // `rerun` loader keys off these exact strings (dump_custom.cpp:664+),
+  // including section order and column count.
+  std::ifstream dump_in(tmp);
+  std::string content((std::istreambuf_iterator<char>(dump_in)), std::istreambuf_iterator<char>());
+  REQUIRE_THAT(content, Catch::Matchers::ContainsSubstring("ITEM: TIMESTEP"));
+  REQUIRE_THAT(content, Catch::Matchers::ContainsSubstring("ITEM: NUMBER OF ATOMS"));
+  REQUIRE_THAT(content, Catch::Matchers::ContainsSubstring("ITEM: BOX BOUNDS pp pp pp"));
+  REQUIRE_THAT(content, Catch::Matchers::ContainsSubstring("ITEM: ATOMS id type x y z fx fy fz"));
+
+  // The ATOMS payload must have the declared number of rows (parsed from
+  // the "ITEM: NUMBER OF ATOMS" line). Catches off-by-one and ordering
+  // regressions without pinning the exact force values.
+  std::istringstream iss(content);
+  std::string line;
+  std::size_t declared_n = 0;
+  bool in_atoms = false;
+  std::size_t atoms_rows = 0;
+  while (std::getline(iss, line)) {
+    if (line == "ITEM: NUMBER OF ATOMS") {
+      std::getline(iss, line);
+      declared_n = std::stoull(line);
+    } else if (line.rfind("ITEM: ATOMS", 0) == 0) {
+      in_atoms = true;
+    } else if (in_atoms && !line.empty() && line.rfind("ITEM:", 0) != 0) {
+      ++atoms_rows;
+    }
+  }
+  REQUIRE(declared_n > 0);
+  REQUIRE(atoms_rows == declared_n);
+  fs::remove(tmp);
 }
 
 TEST_CASE("tdmd run: --thermo redirects output to a file", "[cli][run][integration]") {

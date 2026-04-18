@@ -6,8 +6,10 @@
 #include "tdmd/runtime/unit_converter.hpp"
 #include "tdmd/state/lj_reference.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <iomanip>
 #include <iostream>
@@ -16,6 +18,7 @@
 #include <stdexcept>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace tdmd {
 
@@ -223,6 +226,50 @@ void SimulationEngine::write_thermo_row(std::ostream& out, const ThermoRow& row)
   out << row.step << ' ' << std::setprecision(10) << std::scientific << row.temperature_K << ' '
       << row.potential_energy << ' ' << row.kinetic_energy << ' ' << row.total_energy << ' '
       << row.pressure_ev_A3 << '\n';
+  out.flags(saved);
+  out.precision(saved_precision);
+}
+
+void SimulationEngine::write_dump_frame(std::ostream& out) const {
+  const std::size_t n = atoms_.size();
+
+  // LAMMPS header — pp pp pp = fully periodic box (master spec §5.2 assumes
+  // periodic in all three axes for M1/M2; open boundaries are post-M2).
+  out << "ITEM: TIMESTEP\n" << current_step_ << '\n';
+  out << "ITEM: NUMBER OF ATOMS\n" << n << '\n';
+  out << "ITEM: BOX BOUNDS pp pp pp\n";
+
+  std::ios::fmtflags saved = out.flags();
+  const auto saved_precision = out.precision();
+  out << std::setprecision(16) << std::scientific;
+  out << box_.xlo << ' ' << box_.xhi << '\n';
+  out << box_.ylo << ' ' << box_.yhi << '\n';
+  out << box_.zlo << ' ' << box_.zhi << '\n';
+  out << "ITEM: ATOMS id type x y z fx fy fz\n";
+
+  // Emit rows in id-ascending order. AtomSoA does not guarantee stable
+  // ordering after `compute_stable_reorder` — bins regroup atoms by spatial
+  // cell, which is incompatible with LAMMPS's per-atom id. We sort a small
+  // index vector and walk it; allocating a size-n std::vector once per dump
+  // is acceptable (dump is a rare, off-hot-path operation).
+  std::vector<std::size_t> order(n);
+  for (std::size_t i = 0; i < n; ++i) {
+    order[i] = i;
+  }
+  std::sort(order.begin(), order.end(), [&](std::size_t a, std::size_t b) {
+    return atoms_.id[a] < atoms_.id[b];
+  });
+
+  for (std::size_t k = 0; k < n; ++k) {
+    const std::size_t i = order[k];
+    // LAMMPS prints type as 1-based, id is already 1-based in AtomSoA (see
+    // io/lammps_data_reader.cpp — ids are read verbatim from the data file,
+    // and LAMMPS atom ids start at 1). Species `type` is 0-based internally;
+    // +1 on the wire for LAMMPS compatibility.
+    out << atoms_.id[i] << ' ' << (static_cast<std::uint32_t>(atoms_.type[i]) + 1U) << ' '
+        << atoms_.x[i] << ' ' << atoms_.y[i] << ' ' << atoms_.z[i] << ' ' << atoms_.fx[i] << ' '
+        << atoms_.fy[i] << ' ' << atoms_.fz[i] << '\n';
+  }
   out.flags(saved);
   out.precision(saved_precision);
 }

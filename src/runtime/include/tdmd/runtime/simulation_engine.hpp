@@ -111,6 +111,27 @@ public:
   // fixed (10 significant digits) so output is deterministic and diffable.
   static void write_thermo_row(std::ostream& out, const ThermoRow& row);
 
+  // Emit the current simulation frame as a LAMMPS-compatible text dump:
+  //
+  //   ITEM: TIMESTEP
+  //   <current_step>
+  //   ITEM: NUMBER OF ATOMS
+  //   <n>
+  //   ITEM: BOX BOUNDS pp pp pp
+  //   <xlo> <xhi>
+  //   <ylo> <yhi>
+  //   <zlo> <zhi>
+  //   ITEM: ATOMS id type x y z fx fy fz
+  //   1 1 ...
+  //   2 1 ...
+  //
+  // Atom rows are emitted in id-ascending order (1-based ids, matching
+  // LAMMPS). Forces are the currently-cached `atoms_.fx/fy/fz` — consumers
+  // are expected to call this right after `run()` so they see post-final-
+  // step forces. Used by the T2.8 DifferentialRunner; LAMMPS `rerun` can
+  // consume the same file bit-for-bit.
+  void write_dump_frame(std::ostream& out) const;
+
 private:
   enum class State : std::uint8_t { Constructed, Initialised, Finalised };
 

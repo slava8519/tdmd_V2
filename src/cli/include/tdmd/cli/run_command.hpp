@@ -26,6 +26,11 @@ namespace tdmd::cli {
 struct RunOptions {
   std::string config_path;  // positional: path to tdmd.yaml
   std::string thermo_path;  // optional --thermo <file>; empty = stdout
+  std::string dump_path;    // optional --dump <file>; emits LAMMPS-compatible
+                            // `ITEM: ATOMS id type x y z fx fy fz` after the
+                            // final step. Empty = no dump. Used by the T2.8
+                            // DifferentialRunner to compare per-atom forces
+                            // against LAMMPS.
   bool quiet = false;       // --quiet suppresses non-thermo stdout
 };
 
