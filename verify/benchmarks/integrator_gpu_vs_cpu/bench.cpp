@@ -48,17 +48,21 @@ Fixture make_lattice(std::size_t target_atoms) {
   for (std::size_t iz = 0; iz < n; ++iz) {
     for (std::size_t iy = 0; iy < n; ++iy) {
       for (std::size_t ix = 0; ix < n; ++ix) {
-        fx.atoms.add_atom(0U, a * ix, a * iy, a * iz);
+        fx.atoms.add_atom(0U,
+                          a * static_cast<double>(ix),
+                          a * static_cast<double>(iy),
+                          a * static_cast<double>(iz));
       }
     }
   }
   for (std::size_t i = 0; i < fx.atoms.size(); ++i) {
-    fx.atoms.vx[i] = 0.01 * std::sin(0.37 * (i + 1));
-    fx.atoms.vy[i] = 0.01 * std::cos(0.19 * (i + 1));
-    fx.atoms.vz[i] = 0.01 * std::sin(0.83 * (i + 1) + 1.1);
-    fx.atoms.fx[i] = std::sin(0.11 * (i + 1));
-    fx.atoms.fy[i] = std::cos(0.29 * (i + 1));
-    fx.atoms.fz[i] = std::sin(0.53 * (i + 1));
+    const double fi = static_cast<double>(i + 1);
+    fx.atoms.vx[i] = 0.01 * std::sin(0.37 * fi);
+    fx.atoms.vy[i] = 0.01 * std::cos(0.19 * fi);
+    fx.atoms.vz[i] = 0.01 * std::sin(0.83 * fi + 1.1);
+    fx.atoms.fx[i] = std::sin(0.11 * fi);
+    fx.atoms.fy[i] = std::cos(0.29 * fi);
+    fx.atoms.fz[i] = std::sin(0.53 * fi);
   }
   return fx;
 }
@@ -71,7 +75,7 @@ double median(std::vector<double>& v) {
 double time_cpu(const Fixture& fx, int repeats) {
   using clk = std::chrono::steady_clock;
   std::vector<double> ts;
-  ts.reserve(repeats);
+  ts.reserve(static_cast<std::size_t>(repeats));
   tdmd::AtomSoA atoms = fx.atoms;
   tdmd::VelocityVerletIntegrator vv;
   const double dt = 0.001;
@@ -92,7 +96,7 @@ double time_cpu(const Fixture& fx, int repeats) {
 double time_gpu(const Fixture& fx, int repeats) {
   using clk = std::chrono::steady_clock;
   std::vector<double> ts;
-  ts.reserve(repeats);
+  ts.reserve(static_cast<std::size_t>(repeats));
 
   tdmd::gpu::GpuConfig cfg;
   cfg.memory_pool_init_size_mib = 16;
