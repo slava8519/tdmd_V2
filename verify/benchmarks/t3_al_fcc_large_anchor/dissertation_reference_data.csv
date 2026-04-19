@@ -3,10 +3,16 @@
 # (1D Linear-Z zoning, N_min = 2, ring topology).
 #
 # STATUS: extracted 2026-04-19 from the authoritative scans at
-#   docs/_sources/fig_29.png (sha256 9c50880bd983d3d9d941d8fe78f53e239f4e42848b19762c1058e2a4aa612b35)
-#   docs/_sources/fig_30.png (sha256 c8b9797e71632c37926038af562a629b9d50b5b9e99c8b6e1ae9e2e62ba77f51)
-# via manual WebPlotDigitizer-style readout (T6.0). Replaces the T5.10
-# placeholder. Closes R-M5-8.
+#   docs/_sources/fig_29.png (sha256 88f6d059fc6e6432add8b3ade39da46390daa50478bb3d543fff0d69926bc9c0)
+#   docs/_sources/fig_30.png (sha256 98e9d8da255d5c7e5af4042d5d7ca155a2ee195c608ff8cc6e9d92d2df5c59e7)
+# Committed PNGs are PIL-palette-quantised derivatives (1200 px long edge,
+# 64-colour MEDIANCUT + Floyd-Steinberg dither, ~100 KiB each) of the raw
+# 16-bit-per-channel scans (fig_29: 1672 KiB sha256 9c50880bd983d3d9d941d8fe78f53e239f4e42848b19762c1058e2a4aa612b35;
+#                         fig_30: 1637 KiB sha256 c8b9797e71632c37926038af562a629b9d50b5b9e99c8b6e1ae9e2e62ba77f51)
+# — compression was required by the 500 KiB per-file pre-commit hook;
+# perceptual fidelity was preserved and extraction was performed on the raw
+# scans prior to compression. Extracted via manual WebPlotDigitizer-style
+# readout (T6.0). Replaces the T5.10 placeholder. Closes R-M5-8.
 #
 # Extraction methodology (per verify/SPEC §4.4):
 #   1. Axis calibration: X = {0, 8, 16, 23, 31}, Y = {0, 0.20, 0.40, 0.60, 0.80}
