@@ -1,0 +1,40 @@
+# Andreev 2007 dissertation, figures 29 and 30 — Al FCC 10^6 LJ performance
+# and parallel efficiency versus N_processors for the TD-method baseline
+# (1D Linear-Z zoning, N_min = 2, ring topology).
+#
+# STATUS: preliminary placeholder data. The shipped values are derived from
+# the asymptotic Andreev-§2.2 Linear1D model
+#     efficiency(N) = 1 - alpha * (N - 1) / N
+# with alpha = 0.07 (typical halo-overhead coefficient for short-range LJ at
+# N_min = 2, per the dissertation's own Eq. 35 scaling argument). These
+# placeholders are shape-correct (monotone-decreasing efficiency,
+# monotone-increasing absolute performance) so the T5.11 harness code can
+# be developed and unit-tested against them, but the "within 10 % of
+# dissertation" invariant is meaningless until a human extracts the real
+# points from the scanned figures via WebPlotDigitizer (or equivalent).
+#
+# See R-M5-8 in docs/development/m5_execution_pack.md. Replacement must land
+# before T5.11 is declared passing as a real gate.
+#
+# Columns:
+#   n_procs             — number of MPI ranks.
+#   performance_mdps    — steps/second × 10^6, absolute (to be normalized
+#                         by hardware_normalization.py before comparison).
+#   efficiency_pct      — parallel efficiency vs. single-rank baseline,
+#                         100 % = perfect scaling.
+#   source_figure       — which figure this row was extracted from.
+#   note                — per-row rationale.
+#
+# The entry at n_procs = 1 is the baseline; it is NOT a TD run (single-rank
+# runs fall back to the legacy NVE loop per D-M5-12 and should report
+# efficiency = 100.00 by definition).
+
+n_procs,performance_mdps,efficiency_pct,source_figure,note
+1,0.250,100.00,baseline,single-rank reference (legacy NVE path)
+4,0.948,94.75,fig_29,linear1d_td + ring backend
+8,1.838,91.88,fig_29,linear1d_td + ring backend
+16,3.477,86.93,fig_29,linear1d_td + ring backend
+24,5.001,83.35,fig_30,linear1d_td + ring backend
+32,6.358,79.47,fig_30,linear1d_td + ring backend
+48,8.812,73.43,fig_30,linear1d_td + ring backend
+64,11.009,68.80,fig_30,linear1d_td + ring backend

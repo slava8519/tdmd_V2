@@ -424,11 +424,35 @@ T3 не просто benchmark — это **existence proof** проекта. И
 
 **Gate:** M5 **cannot merge** без passing T3.
 
-`verify/benchmarks/t3_al_fcc_large_anchor/` содержит дополнительно:
+**Status:** fixture landed at M5 (T5.10, commit lands this section). Harness
+(`anchor_test_runner`) arrives at T5.11.
 
-- `dissertation_reference_data.csv` — извлечённые числа из рис. 29-30;
-- `hardware_normalization.py` — script нормализации performance с 2007 железа на текущее;
-- `acceptance_criteria.md` — точные условия pass/fail.
+`verify/benchmarks/t3_al_fcc_large_anchor/` содержит:
+
+- `README.md` — experiment description, potential-proxy rationale (Morse
+  Girifalco-Weizer stands in for the dissertation's LJ at M5 — native LJ is
+  post-M5), and the "setup.data is regenerated, not LFS-blob'd" decision;
+- `config.yaml` — TDMD config (linear_1d zoning, ring backend + Kahan
+  ring reduction, NVE, dt = 1 fs, 1000 steps, Al FCC 10⁶ atoms);
+- `lammps_script.in` — LAMMPS parity script; cross-checks LJ physics only,
+  not scaling;
+- `dissertation_reference_data.csv` — извлечённые числа из рис. 29-30
+  (initial shipment is a placeholder per R-M5-8; replacement before T5.11
+  runs as a real gate);
+- `hardware_normalization.py` — stdlib-only script нормализации
+  performance с 2007 железа на текущее; emits `ghz_flops_ratio` scalar;
+- `checks.yaml` — per-gate thresholds (efficiency ±10 %, absolute perf
+  ±25 %, LAMMPS parity 1e-10 force + 1e-6 thermo, NVE drift 1e-6);
+- `acceptance_criteria.md` — точные условия pass/fail + failure-mode
+  catalogue + escalation path.
+
+Companion data lives at `verify/data/t3_al_fcc_large_anchor/`:
+
+- `regen_setup.sh` — one-shot LAMMPS invocation that produces `setup.data`
+  (10⁶-atom Al FCC lattice at 300 K). Idempotent; `--force` overwrites.
+  Not-committed-as-LFS decision follows the T1 precedent
+  (`t1_al_morse_500`) — keeps the repo git-LFS-free at the cost of a
+  ~30 s regeneration per fresh CI workspace.
 
 ### 4.5. T1 (`t1_al_morse_500`) — landed at M1
 

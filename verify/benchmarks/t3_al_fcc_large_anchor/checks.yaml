@@ -1,0 +1,65 @@
+# T3 anchor-test threshold declarations.
+#
+# Parsed by verify/harness/anchor_test_runner/ (T5.11). Each dissertation
+# checkpoint from dissertation_reference_data.csv becomes two comparisons —
+# one for absolute performance (hardware-normalised) and one for parallel
+# efficiency. The efficiency comparison is the primary signal; absolute
+# performance is secondary and carries a wider tolerance to absorb
+# hardware_normalization.py's proxy-derived ratio (see that file's docstring).
+#
+# All thresholds resolve to paths under verify/thresholds/thresholds.yaml.
+# Values declared below in-place (rather than centralised in thresholds.yaml)
+# where the threshold is anchor-test-specific and does not want to share a
+# tolerance with unrelated benchmarks. Per verify/SPEC.md §3.1.2 this is
+# allowed for anchor-test + analytic benchmarks (T0, T3); differential
+# benchmarks (T1, T2, T4+) must centralise.
+
+benchmark: t3_al_fcc_large_anchor
+
+# Which N_procs rows the harness should actually run. Runtime subset of the
+# full CSV — smoke tiers may pick {4, 8}, slow tier runs the whole set.
+ranks_to_probe: [4, 8, 16]
+
+# Both primary gates come from the dissertation CSV; values under each key
+# are per-point relative tolerances (fraction of the reference value).
+dissertation_comparison:
+  # Parallel efficiency = (1-rank steps/s) * N / (N-rank steps/s) * 100.
+  # Primary gate. 10% tolerance = R-M5-8 (±2% extraction + ±5% hardware +
+  # ±1% run-to-run + ±2% model mismatch).
+  efficiency_relative: 0.10
+
+  # Absolute performance after hardware_normalization.py. Secondary gate;
+  # wider tolerance because the normalisation is a proxy (see README
+  # §"Potential choice" and hardware_normalization.py docstring). A run
+  # that passes efficiency but fails absolute performance is still a
+  # "yellow" — the harness emits warning but does not fail the milestone
+  # gate.
+  absolute_performance_relative: 0.25
+
+# Physics parity vs LAMMPS — runs on 1-rank (serial) TDMD against a serial
+# LAMMPS over the same setup.data. Sanity check — ensures the LJ / Morse
+# proxy physics matches LAMMPS at M5 before spending cluster time on
+# scaling. Both columns are conservative enough to absorb FP64 reduction
+# order variation on 10^6 atoms (master spec §6.6 — single-rank is
+# bit-exact; 10^-10 relative captures the accumulated summation rounding
+# across 1000 steps).
+lammps_parity:
+  step_0_force_relative: 1.0e-10
+  step_1000_etotal_relative: 1.0e-6
+  thermo_temperature_relative: 1.0e-6
+  thermo_pressure_relative: 1.0e-5    # pressure has worse FP budget
+
+# NVE drift budget — orthogonal observable; fails bright if the integrator
+# or force kernel has a bug that gets hidden in the efficiency metric.
+# Master spec §13.5 determinism matrix: NVE drift |dE/E| < 1e-6 over 1000
+# steps with dt = 1 fs. D-M5-6 calls this the "scientific gate".
+nve_drift:
+  max_relative_drift: 1.0e-6
+  window_steps: 1000
+
+# Runtime budget — infrastructure check. A full T3 run (4 rank * 3 N_proc
+# points + setup regen) should complete in under an hour on the dev
+# workstation; escalate if it does not.
+runtime:
+  wall_clock_budget_minutes: 60
+  setup_regen_budget_minutes: 5

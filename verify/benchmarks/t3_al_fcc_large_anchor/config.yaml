@@ -1,0 +1,79 @@
+# T3 anchor-test — TDMD config (Andreev §3.5 reproduction at M5).
+#
+# The M5 acceptance target is the dissertation's figures 29–30 (performance +
+# parallel efficiency vs N_processors) on an Al FCC 10⁶-atom box with a
+# short-range pair potential, linear-1D zoning along Z, and the ring
+# communication backend. See ./README.md §"Experiment" for the full table.
+#
+# Potential choice — Morse (Girifalco-Weizer) as LJ proxy:
+#   Andreev's dissertation runs a Lennard-Jones potential for Al. TDMD's M1
+#   potential surface exposes Morse + EAM/alloy; the Lennard-Jones family is
+#   deferred to a post-M5 task. Scaling behaviour (the actual observable this
+#   anchor-test measures) is dominated by neighbour count × communication
+#   pattern, which is controlled by `cutoff × atom-density` — NOT by the
+#   exact pair-force shape. At the M5 cutoff 8.0 Å and Al FCC density
+#   (4.05 Å lattice constant) both Morse and LJ produce ~85 neighbours per
+#   atom; per-step compute cost is within a few %. The scaling curves
+#   therefore carry over, and the 10 % dissertation-tolerance (verify/SPEC
+#   §4.4) comfortably absorbs the ≈1 % compute-cost drift. See README
+#   §"Comparison scope" for the full rationale.
+#
+# Pairs with `lammps_script.in` in the same directory. The LAMMPS side emits
+# a `setup.data` (initial lattice + velocities at 300 K) via
+# `../../data/t3_al_fcc_large_anchor/regen_setup.sh`; this config ingests
+# that file verbatim so both sides start from bit-identical state.
+
+simulation:
+  units: metal
+  seed: 12345
+
+atoms:
+  source: lammps_data
+  path: ../../data/t3_al_fcc_large_anchor/setup.data
+
+potential:
+  style: morse
+  params:
+    # Girifalco–Weizer Morse parameters for Al (same as T1; physically
+    # equivalent at the 8 Å anchor-test cutoff to the Andreev LJ form).
+    D: 0.2703               # eV
+    alpha: 1.1646           # 1/Å
+    r0: 3.253               # Å
+    cutoff: 8.0             # Å — the M5 canonical cutoff (R-M5-4).
+    cutoff_strategy: hard_cutoff  # matches LAMMPS `pair_style morse` (parity
+                                   # with `lammps_script.in`).
+
+integrator:
+  style: velocity_verlet
+  dt: 0.001                 # ps (1 fs)
+
+neighbor:
+  skin: 2.0                 # Å — zone width 8+2 = 10 Å, fits 25 slabs along
+                             # a 255 Å box edge on the Z axis (see README).
+
+thermo:
+  every: 100                # 1000 / 100 = 10 rows — enough for NVE-drift
+                             # regression without flooding the harness log.
+
+run:
+  n_steps: 1000
+
+# T5.8 — multi-rank comm backend. Ring topology + Kahan ring reduction is
+# the dissertation's own choice (Andreev §3.5, R-M5-7 in the M5 exec pack).
+comm:
+  backend: ring
+  topology: ring
+
+# T5.9 — force Linear1D zoning. The auto-select tree (§3.4) on this cubic
+# box would pick Hilbert3D; linear_1d is what the dissertation uses
+# (Andreev §2.2, N_min = 2) and is the only scheme the anchor-test
+# comparison is meaningful against.
+zoning:
+  scheme: linear_1d
+
+# T4 / T5.8 — TD scheduler on (K=1 preserves byte-exact M4 regression;
+# T5.11 harness iterates K ∈ {1, 2, 4, 8} at runtime via a second config
+# or CLI override, so this file pins the baseline).
+scheduler:
+  td_mode: true
+  pipeline_depth_cap: 1

@@ -1,0 +1,69 @@
+# T3 LAMMPS parity script — Al FCC 10^6 Morse NVE, 1000 steps.
+#
+# Consumed by the anchor_test_runner (T5.11) as the *physics parity*
+# cross-check — TDMD vs LAMMPS at step 0 (bit-exact forces within Reference
+# profile tolerances) and at step 1000 (thermo.etotal relative drift within
+# the benchmarks.t3.thermo_energy_relative threshold).
+#
+# NOT a scaling cross-check — the dissertation-comparison half of the anchor
+# test is driven by `dissertation_reference_data.csv`, not by LAMMPS runtime
+# measurements.
+#
+# Variables (resolved via `-var`):
+#   workdir  — output directory; `setup.data`, `final.data`, and
+#              `thermo.log` are written here.
+#
+# Matches verify/benchmarks/t3_al_fcc_large_anchor/config.yaml bit-for-bit:
+#   - Girifalco-Weizer Morse parameters (physically equivalent to the
+#     dissertation's Lennard-Jones form at 8 A cutoff on Al FCC — see
+#     README §"Potential choice").
+#   - hard-truncation cutoff at 8.0 A (LAMMPS `pair_style morse` default).
+#   - velocity-Verlet NVE, dt = 0.001 ps.
+#   - 1000 steps, thermo every 100 steps.
+
+units           metal
+atom_style      atomic
+boundary        p p p
+
+# Al FCC 63x63x63 unit cells -> 1 000 188 atoms. 63^3 = 250 047 unit cells
+# * 4 atoms/cell = 1 000 188 ~= 10^6, and 63 * 4.05 = 255.15 A box edge
+# — the M5 canonical "anchor" geometry (see README §"Experiment").
+lattice         fcc 4.05
+region          simbox block 0 63 0 63 0 63
+create_box      1 simbox
+create_atoms    1 box
+mass            1 26.9815385    # Al standard atomic mass
+
+# Initial velocities at 300 K, seed 12345, deterministic with `loop geom`
+# (LAMMPS documentation §velocity — produces identical assignments across
+# ranks and across LAMMPS minor versions at a given seed + geom ordering).
+velocity        all create 300.0 12345 loop geom dist gaussian
+
+# Dump the initial state so TDMD (and any re-run of this script) can ingest
+# a bit-identical starting state. `nocoeff` keeps the file to the shape
+# lammps_data_reader.cpp supports at M1 (Masses + Atoms + Velocities).
+write_data      ${workdir}/setup.data nocoeff
+
+# Potential — matches config.yaml.
+pair_style      morse 8.0
+pair_coeff      1 1 0.2703 1.1646 3.253
+
+# Neighbor list — matches config.yaml neighbor.skin = 2.0 A.
+neighbor        2.0 bin
+neigh_modify    every 1 delay 0 check yes
+
+# Thermo output — same cadence as TDMD.
+thermo          100
+thermo_style    custom step temp pe ke etotal press
+
+# velocity-Verlet NVE at dt = 0.001 ps (1 fs).
+timestep        0.001
+fix             1 all nve
+
+# Log thermo to a dedicated file so the harness can diff it against TDMD's.
+log             ${workdir}/thermo.log
+run             1000
+log             none
+
+# Dump final state for any M5+ position-level diff harness.
+write_data      ${workdir}/final.data nocoeff
