@@ -2805,6 +2805,8 @@ Hosting: ReadTheDocs + versioned docs per release.
 
 **Rationale для выбора items:** все 4 — actual silent failures observed в production MD codes. Items 5-12 из анализа (PP/PME split, ML potentials framework, Newton×atomics, thread-MPI, GPU direct comm, clock sensitivity, PME FFT) — документированы в open questions per module SPECs, адресуются когда станут релевантны в v1.5-v2.0.
 
+**M6 kickoff addendum (2026-04-19):** авторизован `docs/specs/gpu/SPEC.md` v1.0 в составе T6.2 skeleton PR. Новый module `gpu/` (RAII обёртки над CUDA primitives — `DeviceStream`, `DeviceEvent`, `DevicePtr<T>`; abstract `DeviceAllocator`; PIMPL compile firewall per D-M6-17 — public headers компилируются без CUDA toolkit). Anchors D-M6-1..D-M6-20 из `docs/development/m6_execution_pack.md` (9-недельный execution pack, commit `c141fcd`). Все сопутствующие existing SPECs (`potentials/`, `neighbor/`, `integrator/`, `comm/`, `io/`) получат change log entries без breaking contract changes по мере landing GPU paths (T6.4-T6.8). См. также `src/gpu/` skeleton + `tests/gpu/test_gpu_types.cpp` (51 assertion, 16 test cases, pure C++ — зелёные на CPU-only CI build).
+
 ### v2.4
 
 Закрыта волна из 5 open questions, которые были на границе между "open question" и "needs formal policy". Изменения:
