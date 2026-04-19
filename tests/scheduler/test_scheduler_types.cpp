@@ -8,6 +8,7 @@
 // tests (state-machine transitions, cert math, select_ready_tasks) land
 // in T4.3+.
 
+#include "tdmd/scheduler/outer_sd_coordinator.hpp"
 #include "tdmd/scheduler/policy.hpp"
 #include "tdmd/scheduler/td_scheduler.hpp"
 #include "tdmd/scheduler/types.hpp"
@@ -109,9 +110,11 @@ TEST_CASE("TdScheduler — abstract interface is not instantiable", "[scheduler]
   // happens in T4.5 via CausalWavefrontScheduler.
   STATIC_REQUIRE(std::is_abstract_v<ts::TdScheduler>);
   STATIC_REQUIRE(std::is_polymorphic_v<ts::TdScheduler>);
-  // OuterSdCoordinator — Pattern 2 placeholder (D-M4-2). In M4 it has only
-  // a virtual destructor (no pure virtuals), so it's polymorphic but
-  // instantiable; the shape-check here is the virtual-dtor anchor.
+  // OuterSdCoordinator — T7.6 promoted from M4 stub (D-M4-2) to the full
+  // pure-virtual contract from master §12.7a + scheduler/SPEC §2.4. The
+  // class is now abstract; only concrete implementations such as
+  // ConcreteOuterSdCoordinator instantiate.
+  STATIC_REQUIRE(std::is_abstract_v<ts::OuterSdCoordinator>);
   STATIC_REQUIRE(std::is_polymorphic_v<ts::OuterSdCoordinator>);
   STATIC_REQUIRE(std::has_virtual_destructor_v<ts::OuterSdCoordinator>);
 }

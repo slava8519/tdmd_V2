@@ -24,14 +24,14 @@ struct ZoningPlan;
 
 namespace tdmd::scheduler {
 
-// Pattern 2 coordinator — empty in M4. Full shape lands in M7 (SPEC §1.3,
-// D-M4-2). Defined here (rather than forward-declared to a future M7
-// header) so `attach_outer_coordinator(nullptr)` is a legal call in M4
-// without pulling in a comm/ dependency.
-class OuterSdCoordinator {
-public:
-  virtual ~OuterSdCoordinator() = default;
-};
+// Pattern 2 coordinator. M4 carried only a virtual-dtor stub here so that
+// `attach_outer_coordinator(nullptr)` was a legal call without pulling in
+// a comm / state dependency. T7.6 lands the full pure-virtual interface
+// in `outer_sd_coordinator.hpp`. The forward declaration here keeps the
+// public TdScheduler header free of `tdmd::state` / SubdomainGrid; clients
+// that actually construct or call methods on the coordinator must include
+// `tdmd/scheduler/outer_sd_coordinator.hpp` directly.
+class OuterSdCoordinator;
 
 class TdScheduler {
 public:

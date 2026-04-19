@@ -12,7 +12,9 @@ add_library(
   zone_dag.cpp
   causal_wavefront_scheduler.cpp
   diagnostic_dump.cpp
-  event_log.cpp)
+  event_log.cpp
+  # T7.6: Pattern 2 outer coordinator + halo snapshot ring buffer.
+  concrete_outer_sd_coordinator.cpp)
 add_library(tdmd::scheduler ALIAS tdmd_scheduler)
 
 target_include_directories(
@@ -28,6 +30,10 @@ target_link_libraries(tdmd_scheduler PRIVATE tdmd::zoning)
 # TemporalPacket. Kept PUBLIC because the header exposes set_comm_backend(CommBackend*) — callers
 # need the type visible to pass an argument.
 target_link_libraries(tdmd_scheduler PUBLIC tdmd::comm)
+
+# T7.6: SubdomainGrid (in outer_sd_coordinator.hpp) carries tdmd::Box from state/ as a public field
+# per master spec §12.7a. PUBLIC because the type is visible in scheduler's public headers.
+target_link_libraries(tdmd_scheduler PUBLIC tdmd::state)
 
 target_compile_features(tdmd_scheduler PUBLIC cxx_std_20)
 
