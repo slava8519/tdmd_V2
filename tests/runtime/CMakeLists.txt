@@ -62,5 +62,11 @@ if(TDMD_ENABLE_MPI)
 
     add_test(NAME test_gpu_2rank_smoke COMMAND ${MPIEXEC_EXECUTABLE} ${TDMD_MPI_EXTRA_FLAGS} -np 2
                                                $<TARGET_FILE:test_gpu_2rank_smoke>)
+
+    # Catch2 v3.5+ exits with code 4 when every test case SKIP()s — the has_cuda_device() guard in
+    # test_gpu_2rank_smoke.cpp hits this path on CPU-only CI runners. Teach CTest to treat the
+    # propagated 4 as SKIPPED instead of a hard FAIL so Option A (no GPU runner) matrices stay
+    # green.
+    set_tests_properties(test_gpu_2rank_smoke PROPERTIES SKIP_RETURN_CODE 4)
   endif()
 endif()

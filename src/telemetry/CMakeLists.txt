@@ -23,6 +23,27 @@ if(TDMD_BUILD_CUDA)
   find_package(CUDAToolkit REQUIRED)
   target_include_directories(tdmd_telemetry PUBLIC ${CUDAToolkit_INCLUDE_DIRS})
   target_compile_definitions(tdmd_telemetry PUBLIC TDMD_BUILD_CUDA=1)
+
+  # NVTX3 C++ wrapper (nvtx3/nvtx3.hpp) ships with the NVIDIA-hosted CUDA toolkit but is stripped
+  # from Ubuntu's apt `nvidia-cuda-toolkit` package (CUDA 12.0 in ubuntu-24.04). Detect presence at
+  # configure time so local dev (CUDA 12.5+/13.x) keeps full Nsight instrumentation while the
+  # compile-only CI matrix still builds. When absent, TDMD_NVTX_RANGE expands to a zero-cost no-op
+  # per nvtx.hpp — no runtime impact.
+  find_file(
+    TDMD_NVTX3_HEADER
+    NAMES nvtx3/nvtx3.hpp
+    HINTS ${CUDAToolkit_INCLUDE_DIRS}
+    NO_DEFAULT_PATH)
+  if(TDMD_NVTX3_HEADER)
+    target_compile_definitions(tdmd_telemetry PUBLIC TDMD_HAS_NVTX3=1)
+    message(STATUS "tdmd_telemetry: NVTX3 found at ${TDMD_NVTX3_HEADER} — "
+                   "TDMD_NVTX_RANGE emits scoped ranges")
+  else()
+    target_compile_definitions(tdmd_telemetry PUBLIC TDMD_HAS_NVTX3=0)
+    message(STATUS "tdmd_telemetry: NVTX3 header nvtx3/nvtx3.hpp not in "
+                   "${CUDAToolkit_INCLUDE_DIRS} — TDMD_NVTX_RANGE falls back "
+                   "to no-op (install CUDA 12.5+ from nvidia.com for Nsight " "ranges)")
+  endif()
 endif()
 
 tdmd_apply_build_flavor(tdmd_telemetry)

@@ -38,7 +38,17 @@
 // TDMD_BUILD_CUDA is always defined by the build system (0 or 1) — consistent
 // with gpu/*.cu conventions. Use `#if` not `#ifdef` so CPU-only builds that
 // set TDMD_BUILD_CUDA=0 take the no-op path.
-#if TDMD_BUILD_CUDA
+//
+// TDMD_HAS_NVTX3 (set by src/telemetry/CMakeLists.txt) additionally gates the
+// header inclusion on whether nvtx3/nvtx3.hpp is present in the toolkit being
+// built against. Ubuntu's apt `nvidia-cuda-toolkit` (CUDA 12.0) strips the
+// C++ wrapper header, so CI matrices without it still compile — the macro
+// falls through to the no-op arm below. Default = 0 if unset.
+#ifndef TDMD_HAS_NVTX3
+#define TDMD_HAS_NVTX3 0
+#endif
+
+#if TDMD_BUILD_CUDA && TDMD_HAS_NVTX3
 #include <nvtx3/nvtx3.hpp>
 #endif
 
@@ -48,7 +58,7 @@
 #define TDMD_NVTX_CONCAT_INNER(a, b) a##b
 #define TDMD_NVTX_CONCAT(a, b) TDMD_NVTX_CONCAT_INNER(a, b)
 
-#if TDMD_BUILD_CUDA
+#if TDMD_BUILD_CUDA && TDMD_HAS_NVTX3
 
 // RAII range: begins on ctor, ends on dtor. Unique per expansion via
 // `__LINE__` so multiple TDMD_NVTX_RANGE calls in the same enclosing scope
