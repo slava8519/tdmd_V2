@@ -1,0 +1,24 @@
+# Expected telemetry counters for the M5 2-rank smoke (10 steps, K=1, TD mode).
+#
+# These are invariants, not point values. The smoke harness extracts the
+# named JSON fields from `--telemetry-jsonl` and checks each against its
+# expected property below. Anything outside the listed keys is ignored.
+#
+# Format: <dotted_key>  <op>  <value>
+#   op ∈ { == , >= , <=, > , < }
+#
+# Reference: m5_execution_pack.md §T5.12 "Mandatory invariants".
+
+# Every run must finish its end-of-run JSONL emit (run_end event).
+event                        ==  run_end
+
+# Wall-time sanity — the 2-rank 10-step run should comfortably fit the
+# < 30s CI budget. A large spike means either the build is debug or
+# MpiHostStaging is doing something wrong (e.g. blocking send on the
+# wrong rank).
+total_wall_sec               <=  30.0
+
+# CommBackend lifecycle must be clean — the ScopedSection wrapping
+# Telemetry::begin/end_section calls should match. Any mismatch indicates
+# dangling ScopedSection objects (RAII bug or exception escape).
+ignored_end_calls            ==  0

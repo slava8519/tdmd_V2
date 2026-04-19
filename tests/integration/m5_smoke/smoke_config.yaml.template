@@ -1,0 +1,56 @@
+# M5 integration-smoke TDMD config — Ni-Al EAM/alloy NVE, 10 steps, TD mode,
+# 2-rank MPI with MpiHostStaging backend.
+#
+# Exec pack: docs/development/m5_execution_pack.md §T5.12.
+# SPEC: docs/specs/scheduler/SPEC.md §12.3 (determinism); docs/specs/comm/SPEC.md
+#       §3 (MpiHostStaging); master spec §14 M5 (acceptance gate).
+#
+# This config is byte-for-byte the M4 smoke config with a single addition:
+# `comm.backend: mpi_host_staging` + `comm.topology: mesh`. D-M5-12 pins the
+# chain: K=1 P=2 with MpiHostStaging MUST produce thermo byte-identical to
+# K=1 P=1 (= M4 golden = M3 golden). That's the scientific gate for M5's
+# multi-rank wiring — no tolerance discussion, it's a reduction-order
+# invariant.
+#
+# The harness substitutes {{ATOMS_PATH}} and {{EAM_PATH}} at smoke-run time.
+
+simulation:
+  units: metal
+  seed: 12345
+
+atoms:
+  source: lammps_data
+  path: "{{ATOMS_PATH}}"   # verify/benchmarks/t4_nial_alloy/setup.data (LFS)
+
+potential:
+  style: eam/alloy
+  params:
+    file: "{{EAM_PATH}}"   # verify/third_party/potentials/NiAl_Mishin_2004.eam.alloy
+
+integrator:
+  style: velocity_verlet
+  dt: 0.001                # ps — identical to M2 / M3 / M4 smokes
+
+neighbor:
+  skin: 0.05               # Å — forces mid-run rebuild, same as M3 / M4 smoke
+
+thermo:
+  every: 1                 # full-trace thermo for golden match
+
+run:
+  n_steps: 10
+
+# M4 layer: opt-in deterministic TD scheduler (D-M4-11). K=1 ⇒ scheduler
+# observes legacy physics sequence; all force / integrator / neighbor calls
+# are identical to the non-TD path.
+scheduler:
+  td_mode: true
+  pipeline_depth_cap: 1
+
+# M5 layer: activate the MPI host-staging comm backend. With 2 ranks in
+# mesh topology, the thermo reduction goes through `deterministic_sum_double`
+# (not raw MPI_Allreduce) — D-M5-9. D-M5-12 guarantees the resulting thermo
+# stream matches K=1 P=1 byte-for-byte.
+comm:
+  backend: mpi_host_staging
+  topology: mesh

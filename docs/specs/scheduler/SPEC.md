@@ -792,6 +792,21 @@ NVTX ranges для Nsight:
 
 ## 16. Change log
 
+- **2026-04-19** — **M5 landed (multi-rank, K-batching, deterministic
+  reduction)**. T5.1–T5.12 wired the full M5 user surface: K-batching
+  pipeline K ∈ {1, 2, 4, 8} with I6 fuzzer ≥ 100k sequences (T5.6);
+  scheduler peer dispatch — PackedForSend / InFlight / ZoneDataArrived /
+  Committed states fully wired, filling D-M4-6's single-rank no-ops (T5.7);
+  `SimulationEngine` multi-rank run loop with deterministic thermo
+  reduction through `deterministic_sum_double` (T5.8, D-M5-9); Linear1D
+  Z-axis zoning opt-in override via `zoning.scheme` YAML (T5.9);
+  `AnchorTestRunner` harness with hardware-normalised 10 % acceptance
+  gate (T5.11); M5 integration smoke in CI — K=1 P=2 MpiHostStaging
+  thermo byte-exact to M4 golden (T5.12, D-M5-12 chain).
+  - K=1 P=1 regression from M4 preserved byte-for-byte (D-M5-12 chain:
+    M3 ≡ M4 ≡ M5 thermo golden).
+  - NVT/NPT in TD remains K=1-only in v1.5 (M9 lands it; see master
+    spec §14).
 - **2026-04-19** — **M4 landed (Reference, K=1 single-rank)**. T4.1–T4.11
   implemented the full Reference realization of the scheduler: zone state
   machine + I1–I5 fuzzer (T4.4), SafetyCertificate + CertificateStore + I7

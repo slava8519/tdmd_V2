@@ -106,7 +106,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            ${{ matrix.apt }} cmake ninja-build
+            ${{ matrix.apt }} cmake ninja-build openmpi-bin libopenmpi-dev
 
       - name: Configure (cpu-only preset)
         run: cmake -B build_cpu --preset cpu-only -DTDMD_WARNINGS_AS_ERRORS=ON
@@ -128,6 +128,13 @@ jobs:
 
       - name: M4 smoke (TD scheduler K=1, byte-exact to M3, 10 steps)
         run: tests/integration/m4_smoke/run_m4_td_smoke.sh --tdmd build_cpu/src/cli/tdmd
+
+      - name: M5 smoke (2-rank MpiHostStaging, byte-exact to M4, 10 steps)
+        # Exits 0 with a SKIPPED banner if mpirun is absent — treated as a
+        # non-failure so forks without openmpi-bin installed can still merge
+        # past this step. D-M5-12 byte-exact regression chain: M3 ≡ M4 ≡ M5
+        # thermo golden.
+        run: tests/integration/m5_smoke/run_m5_smoke.sh --tdmd build_cpu/src/cli/tdmd
 
       - name: Upload compile_commands.json
         if: matrix.compiler == 'clang-17'

@@ -661,4 +661,28 @@ Comm backend diagnostics:
 
 ---
 
+---
+
+## 14. Change log
+
+- **2026-04-19** — **M5 landed**. T5.2–T5.12 implemented the full M5
+  comm surface: skeleton `CommBackend` abstract interface + types +
+  `TDMD_ENABLE_MPI` optional build flag (T5.2); `TemporalPacket` wire
+  format — pack/unpack, CRC32 integrity, protocol version v1 (T5.3);
+  `MpiHostStagingBackend` — 2-rank ping-pong, deterministic reduction
+  via `deterministic_sum_double` (D-M5-9), Kahan-compensated ring sum
+  (T5.4); `RingBackend` — 4-rank ring, ring-sum bit-exact, non-ring-dest
+  assert in Reference (T5.5); K-batching pipeline integration (T5.6);
+  scheduler peer dispatch (T5.7); multi-rank `SimulationEngine` with
+  deterministic thermo reduction (T5.8, D-M5-12 byte-exact chain); M5
+  integration smoke — K=1 P=2 MpiHostStaging thermo byte-exact to M4
+  golden, CI-gated on openmpi-bin install (T5.12).
+  - Anchor-test (T3) — dissertation reproduction harness
+    (`verify/harness/anchor_test_runner/`, T5.11) is the primary M5
+    science gate; local slow-tier, not CI-wired per D-M5-13.
+  - GPU-aware MPI backend deferred to M6; Pattern 2 / `HybridBackend`
+    deferred to M7.
+
+---
+
 *Конец comm/SPEC.md v1.0, дата: 2026-04-16.*

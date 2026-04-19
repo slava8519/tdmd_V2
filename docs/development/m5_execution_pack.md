@@ -940,7 +940,7 @@ mention в README как "local pre-push mandatory before M5 merge."
 - [ ] **T3 benchmark fixture** (T5.10), Al FCC 10⁶ LJ config + dissertation reference CSV + hardware normalization script
 - [x] **AnchorTestRunner** (T5.11), harness + report dataclass + hardware probe cache + mocked smoke shipped 2026-04-19 (commit pending); local 10% tolerance gate validated at pre-push time per README
 - [ ] **Anchor-test acceptance** — primary M5 gate, mandatory (master spec §13.3)
-- [ ] **M5 integration smoke** (T5.12) < 30s, CI-integrated; K=1 P=2 byte-exact chain green
+- [x] **M5 integration smoke** (T5.12) shipped 2026-04-19. Wall-time 1s local (30s CI budget), K=1 P=2 MpiHostStaging thermo byte-exact to M4 golden (D-M5-12 chain), telemetry invariants green, CI-gated on `openmpi-bin` install
 - [ ] No regressions: M1, M2, M3, M4 smokes + T1, T4 differentials all green
 - [ ] CI Pipelines A (lint+build+smokes) + B (unit/property) + C (differentials) all green
 - [ ] Pre-implementation + session reports attached в каждом PR
