@@ -55,7 +55,8 @@ def _write_reference_csv(
 ):
     hdr = ""
     if placeholder:
-        hdr = "# NOTE: placeholder values (R-M5-8) — replace before production.\n"
+        # Canonical sentinel the runner's _csv_is_placeholder detector grep is for.
+        hdr = "# STATUS: preliminary placeholder — replace before production.\n"
     body = "n_procs,performance_mdps,efficiency_pct,source_figure,note\n"
     body += "\n".join(f"{n},{perf},{eff},fig29,ph" for (n, perf, eff) in rows)
     path.write_text(hdr + body + "\n")

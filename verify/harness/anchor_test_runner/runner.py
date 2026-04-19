@@ -89,7 +89,9 @@ def _load_reference_csv(path: pathlib.Path) -> dict[int, dict[str, object]]:
     """
     out: dict[int, dict[str, object]] = {}
     with path.open(newline="") as fh:
-        reader = csv.DictReader(row for row in fh if not row.lstrip().startswith("#"))
+        reader = csv.DictReader(
+            row for row in fh if row.strip() and not row.lstrip().startswith("#")
+        )
         for row in reader:
             try:
                 n = int(row["n_procs"])
@@ -475,13 +477,15 @@ def _git_revision_of(path: pathlib.Path) -> str:
 
 
 def _csv_is_placeholder(path: pathlib.Path) -> bool:
-    """Heuristic: if the CSV comments include the string 'placeholder' or
-    'R-M5-8', its source values have not been extracted yet. See the
-    CSV header in T5.10.
+    """Heuristic: the T5.10 placeholder CSV explicitly declared itself as
+    ``# STATUS: preliminary placeholder``. T6.0 replaced the values with
+    real extracted points from Andreev fig 29/30 and the header now
+    begins ``# STATUS: extracted``. Only the literal placeholder sentinel
+    counts — casual mentions of the word in commentary do not.
     """
     try:
         with path.open() as fh:
             head = fh.read(2048)
     except OSError:
         return False
-    return "placeholder" in head.lower() or "r-m5-8" in head.lower()
+    return "# STATUS: preliminary placeholder" in head

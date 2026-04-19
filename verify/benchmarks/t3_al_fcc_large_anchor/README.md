@@ -46,17 +46,18 @@ GFLOP/core, peak); `hardware_normalization.py` produces a scalar
 machine so the dissertation datapoints can be compared against today's silicon
 on an equal-work basis.
 
-**STATUS:** the initial CSV shipped with T5.10 is a **preliminary placeholder**
-derived from the asymptotic Andreev-§2.2 Linear1D model (`efficiency =
-1 - α·(N-1)/N` with `α ≈ 0.05` — the typical halo-overhead coefficient for
-short-range LJ at `N_min = 2`). These values must be replaced by a human
-extracting points from the scanned figures via WebPlotDigitizer (or
-equivalent) before T5.11 runs as a gating CI check. The placeholder is shaped
-correctly (monotone-decreasing efficiency, monotone-increasing absolute
-performance, plausible slope) so T5.11 harness code can be developed and
-unit-tested against it, but the 10 %-within-dissertation invariant is
-meaningless until the replacement lands. See `R-M5-8` in the M5 execution
-pack.
+**STATUS:** closed on 2026-04-19 by T6.0 (R-M5-8 follow-up for M5). The CSV
+now holds per-`N_procs` points extracted manually (WebPlotDigitizer-style
+readout) from the authoritative scans at `docs/_sources/fig_29.png` and
+`fig_30.png`. The CSV header records both scan sha256 digests and the
+axis-calibration used. Cross-reference `additional_model_sizes.md` for the
+two larger-model curves (2·10⁶, 4·10⁶ atoms) preserved as documentation —
+the T3 benchmark itself still runs only the 10⁶ case per `config.yaml`.
+
+Residual uncertainty after extraction: ±1 % rms on the 10⁶ curve (enough
+axis-separation between markers on the scan) and ±5 % rms on the 2·10⁶ /
+4·10⁶ curves (tighter vertical spacing near the origin). Both are inside
+the 10 %-of-reference efficiency tolerance `checks.yaml` enforces.
 
 ## Files in this directory
 

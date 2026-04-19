@@ -70,9 +70,11 @@ When T3 fires RED, the M5 retrospective expects one of these classifications
 in the incident report:
 
 1. **`REF_DATA_STALE`** — the reference CSV is still the T5.10 placeholder
-   (see `dissertation_reference_data.csv` header). Fix: extract the real
-   points via WebPlotDigitizer per R-M5-8 and re-run. Not a code bug — an
-   open TODO.
+   (see `dissertation_reference_data.csv` header). Closed by T6.0
+   (2026-04-19) — real points extracted from `docs/_sources/fig_29.png`
+   and `fig_30.png` and live in the CSV now. If the placeholder detector
+   trips on a future regression, re-extract from the same scans or verify
+   the shipped CSV header was not reverted.
 
 2. **`HARDWARE_NORMALIZATION_OFF`** — the absolute-performance gate trips
    but efficiency is clean. Fix: replace the Python proxy in
