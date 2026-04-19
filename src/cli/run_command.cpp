@@ -12,10 +12,20 @@
 #include <fstream>
 #include <ios>
 #include <iostream>
+#include <memory>
 #include <ostream>
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+#ifdef TDMD_HAVE_MPI
+#include "tdmd/comm/comm_backend.hpp"
+#include "tdmd/comm/comm_config.hpp"
+#include "tdmd/comm/mpi_host_staging_backend.hpp"
+#include "tdmd/comm/ring_backend.hpp"
+
+#include <mpi.h>
+#endif
 
 namespace tdmd::cli {
 
@@ -193,6 +203,34 @@ int run_command(const RunOptions& options, const RunStreams& streams) {
   // --- Drive the engine. Path resolution already happened above, so we hand
   // the engine an empty config_dir to prevent a second (incorrect) rewrite.
   SimulationEngine engine;
+
+  // T5.8 — construct the CommBackend when built with MPI AND an outer caller
+  // has MPI_Init'd (the top-level `tdmd` binary's MpiLifecycle does this; the
+  // in-process test_cli harness does not). Single-rank execution (nranks == 1)
+  // leaves the backend pointer nullptr so the engine's thermo reduction path
+  // short-circuits and the run is bit-for-bit identical to the pre-MPI path.
+  // This is how D-M5-12 is preserved: the same binary launched as `tdmd run`
+  // (no mpirun) must produce the same thermo stream as before.
+#ifdef TDMD_HAVE_MPI
+  std::unique_ptr<comm::CommBackend> backend;
+  {
+    int mpi_inited = 0;
+    MPI_Initialized(&mpi_inited);
+    if (mpi_inited != 0) {
+      if (config.comm.backend == io::CommBackendKind::Ring) {
+        backend = std::make_unique<comm::RingBackend>();
+      } else {
+        backend = std::make_unique<comm::MpiHostStagingBackend>();
+      }
+      comm::CommConfig cc{};
+      backend->initialize(cc);
+      if (backend->nranks() > 1) {
+        engine.set_comm_backend(backend.get());
+      }
+    }
+  }
+#endif
+
   telemetry::Telemetry telemetry;
   const bool telemetry_enabled = options.timing || !options.telemetry_jsonl_path.empty();
   try {
@@ -220,8 +258,20 @@ int run_command(const RunOptions& options, const RunStreams& streams) {
     engine.finalize();
   } catch (const std::exception& e) {
     err << "runtime error: " << e.what() << '\n';
+#ifdef TDMD_HAVE_MPI
+    if (backend) {
+      backend->shutdown();
+    }
+#endif
     return 1;
   }
+
+#ifdef TDMD_HAVE_MPI
+  if (backend) {
+    backend->barrier();
+    backend->shutdown();
+  }
+#endif
 
   // --- Emit telemetry artifacts (after finalize, before the success banner).
   if (options.timing) {

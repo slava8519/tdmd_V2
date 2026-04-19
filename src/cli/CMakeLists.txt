@@ -13,9 +13,16 @@ target_include_directories(tdmd_cli PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOU
 target_link_libraries(
   tdmd_cli
   PUBLIC tdmd::io tdmd::runtime tdmd::perfmodel tdmd::telemetry tdmd::zoning
-  PRIVATE cxxopts::cxxopts)
+  PRIVATE cxxopts::cxxopts tdmd::comm)
 
 target_compile_features(tdmd_cli PUBLIC cxx_std_20)
+
+# T5.8 — CLI runs MPI_Init_thread + constructs concrete CommBackend when TDMD_ENABLE_MPI; guard the
+# #ifdef surface with a compile-time define so main.cpp + run_command.cpp can branch.
+if(TDMD_ENABLE_MPI)
+  target_compile_definitions(tdmd_cli PUBLIC TDMD_HAVE_MPI=1)
+  target_link_libraries(tdmd_cli PUBLIC MPI::MPI_CXX)
+endif()
 
 tdmd_apply_build_flavor(tdmd_cli)
 

@@ -1,5 +1,6 @@
 #include "tdmd/runtime/simulation_engine.hpp"
 
+#include "tdmd/comm/comm_backend.hpp"
 #include "tdmd/io/lammps_data_reader.hpp"
 #include "tdmd/io/yaml_config.hpp"
 #include "tdmd/potentials/eam_alloy.hpp"
@@ -394,9 +395,36 @@ void SimulationEngine::recompute_forces() {
 ThermoRow SimulationEngine::snapshot_thermo(std::uint64_t step) const {
   ThermoRow row{};
   row.step = step;
-  row.potential_energy = last_potential_energy_;
-  row.kinetic_energy = kinetic_energy(atoms_, species_);
-  row.total_energy = row.potential_energy + row.kinetic_energy;
+
+  // Raw local aggregates. In Option-B M5 (physics replicated across ranks)
+  // each rank's local values already equal the global values; in future work
+  // partitioning (T5.11+) these become genuine per-rank partials.
+  double pe = last_potential_energy_;
+  double ke = kinetic_energy(atoms_, species_);
+  double wxx = last_virial_[0];
+  double wyy = last_virial_[1];
+  double wzz = last_virial_[2];
+
+  // T5.8 — deterministic multi-rank reduction. comm/SPEC §7.2 mandates that
+  // global_sum_double be a Kahan-compensated ring reduction in Reference
+  // profile (forbidding raw MPI_Allreduce). Divide-before-reduce keeps the
+  // contract "partial contribution + global sum → full value" stable when a
+  // future zone-owned force loop replaces replicated physics: today each
+  // rank contributes `x/nranks`, tomorrow each contributes its owned-zone
+  // partial — the sum path is identical. Division by nranks is IEEE-754
+  // exact for nranks ∈ {2, 4, 8}, preserving the K=1 P=N bit-exactness gate.
+  if (comm_backend_ != nullptr && comm_backend_->nranks() > 1) {
+    const double inv_nranks = 1.0 / static_cast<double>(comm_backend_->nranks());
+    pe = comm_backend_->global_sum_double(pe * inv_nranks);
+    ke = comm_backend_->global_sum_double(ke * inv_nranks);
+    wxx = comm_backend_->global_sum_double(wxx * inv_nranks);
+    wyy = comm_backend_->global_sum_double(wyy * inv_nranks);
+    wzz = comm_backend_->global_sum_double(wzz * inv_nranks);
+  }
+
+  row.potential_energy = pe;
+  row.kinetic_energy = ke;
+  row.total_energy = pe + ke;
 
   // Temperature with DOF = 3N−3 (three subtracted for the conserved COM
   // momentum, LAMMPS's default). T1.11 confirms this matches the oracle's
@@ -420,11 +448,15 @@ ThermoRow SimulationEngine::snapshot_thermo(std::uint64_t step) const {
   // factor the T1.11 harness applies).
   const double volume = (box_.xhi - box_.xlo) * (box_.yhi - box_.ylo) * (box_.zhi - box_.zlo);
   if (volume > 0.0) {
-    const double virial_trace = last_virial_[0] + last_virial_[1] + last_virial_[2];
+    const double virial_trace = wxx + wyy + wzz;
     row.pressure_ev_A3 = (2.0 * row.kinetic_energy - virial_trace) / (3.0 * volume);
   }
 
   return row;
+}
+
+void SimulationEngine::set_comm_backend(comm::CommBackend* backend) noexcept {
+  comm_backend_ = backend;
 }
 
 // --- T4.9 TD-mode scheduler wiring --------------------------------------

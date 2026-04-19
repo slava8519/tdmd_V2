@@ -143,6 +143,26 @@ struct SchedulerBlock {
   std::uint32_t pipeline_depth_cap = 1;
 };
 
+// SPEC: comm/SPEC.md §7.2 (deterministic reduction), master spec §14 M5
+// Exec pack: docs/development/m5_execution_pack.md T5.8.
+// Multi-rank transport selection. Empty block means "no MPI wiring" — the
+// engine stays single-rank even when linked against MPI. Populated only
+// when the CLI sees `comm:` in the YAML.
+enum class CommBackendKind : std::uint8_t {
+  MpiHostStaging,  // default — mesh topology, ANY_SOURCE receives (T5.4)
+  Ring,            // ring topology (T5.5), rank r → (r+1) % P
+};
+
+enum class CommTopologyKind : std::uint8_t {
+  Mesh,  // default — logical full-mesh, any-rank-to-any-rank
+  Ring,  // ring — each rank only talks to (r-1) and (r+1)
+};
+
+struct CommBlock {
+  CommBackendKind backend = CommBackendKind::MpiHostStaging;
+  CommTopologyKind topology = CommTopologyKind::Mesh;
+};
+
 // Aggregate. Parser produces this, preflight inspects it.
 struct YamlConfig {
   SimulationBlock simulation{};
@@ -153,6 +173,7 @@ struct YamlConfig {
   ThermoBlock thermo{};
   RunBlock run{};
   SchedulerBlock scheduler{};
+  CommBlock comm{};
 };
 
 // Thrown by `parse_yaml_config` on syntactic / schema violations. `line` is the

@@ -16,7 +16,7 @@ target_include_directories(
 target_link_libraries(
   tdmd_runtime
   PUBLIC tdmd::state tdmd::neighbor tdmd::potentials tdmd::integrator tdmd::telemetry
-  PRIVATE tdmd::io tdmd::scheduler tdmd::zoning)
+  PRIVATE tdmd::io tdmd::scheduler tdmd::zoning tdmd::comm)
 
 target_compile_features(tdmd_runtime PUBLIC cxx_std_20)
 

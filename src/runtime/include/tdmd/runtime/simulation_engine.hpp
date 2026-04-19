@@ -53,6 +53,13 @@ namespace tdmd::io {
 struct YamlConfig;
 }  // namespace tdmd::io
 
+// T5.8 — multi-rank transport. The engine only holds a pointer, so a full
+// include is unnecessary here and keeps the runtime/comm dependency private
+// to the .cpp (runtime already pulls comm transitively via scheduler).
+namespace tdmd::comm {
+class CommBackend;
+}  // namespace tdmd::comm
+
 namespace tdmd {
 
 // Thrown by `init` when the engine is already initialised (double-init) or by
@@ -118,6 +125,19 @@ public:
   // LAMMPS's `run` command convention: initialisation / neighbor setup are
   // outside the timer; only the step loop is timed.
   void set_telemetry(telemetry::Telemetry* sink) noexcept { telemetry_ = sink; }
+
+  // T5.8 — inject a multi-rank CommBackend. When the injected backend reports
+  // `nranks() > 1`, snapshot_thermo() reduces PE / KE / virial across ranks
+  // via `global_sum_double` (deterministic Kahan ring reduction, comm/SPEC
+  // §7.2). Each rank contributes its local contribution divided by nranks;
+  // the sum reproduces the scalar bit-exact when physics is replicated across
+  // ranks (K=1 P=N contract). nullptr disables the reduction and restores the
+  // single-rank thermo path verbatim. Ownership stays with the caller.
+  //
+  // The engine must be constructed before init() and the pointer held stable
+  // for the lifetime of run() — the CLI layer (src/cli/run_command.cpp) owns
+  // the backend and destroys it after engine.finalize() returns.
+  void set_comm_backend(comm::CommBackend* backend) noexcept;
 
   // Read-only accessors — useful for tests that build an engine in-process
   // without invoking the CLI layer.
@@ -198,6 +218,10 @@ private:
 
   // Optional per-section timing sink. Non-owning pointer; nullptr = off.
   telemetry::Telemetry* telemetry_ = nullptr;
+
+  // T5.8 — non-owning multi-rank transport. nullptr in single-rank / CLI
+  // built without MPI; otherwise points at a backend the CLI layer owns.
+  comm::CommBackend* comm_backend_ = nullptr;
 
   State state_ = State::Constructed;
 

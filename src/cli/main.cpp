@@ -16,6 +16,10 @@
 #include <string_view>
 #include <vector>
 
+#ifdef TDMD_HAVE_MPI
+#include <mpi.h>
+#endif
+
 namespace {
 
 void print_top_level_usage(std::ostream& out) {
@@ -30,9 +34,42 @@ void print_top_level_usage(std::ostream& out) {
       << "Run 'tdmd <command> --help' for per-command options.\n";
 }
 
+// T5.8 — RAII guard around MPI_Init_thread / MPI_Finalize. Only linked into
+// the binary when TDMD_HAVE_MPI is defined (cli/CMakeLists.txt); for non-MPI
+// builds the binary runs as a single rank exactly as before.
+class MpiLifecycle {
+public:
+  MpiLifecycle(int* argc, char*** argv) {
+#ifdef TDMD_HAVE_MPI
+    int provided = 0;
+    MPI_Init_thread(argc, argv, MPI_THREAD_SINGLE, &provided);
+    initialized_ = true;
+#else
+    (void) argc;
+    (void) argv;
+#endif
+  }
+  ~MpiLifecycle() {
+#ifdef TDMD_HAVE_MPI
+    if (initialized_) {
+      MPI_Finalize();
+    }
+#endif
+  }
+  MpiLifecycle(const MpiLifecycle&) = delete;
+  MpiLifecycle& operator=(const MpiLifecycle&) = delete;
+
+private:
+#ifdef TDMD_HAVE_MPI
+  bool initialized_ = false;
+#endif
+};
+
 }  // namespace
 
 int main(int argc, char** argv) {
+  MpiLifecycle mpi_guard(&argc, &argv);
+
   if (argc < 2) {
     print_top_level_usage(std::cerr);
     return 1;

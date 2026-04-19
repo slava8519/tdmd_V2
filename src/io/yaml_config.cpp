@@ -341,6 +341,42 @@ SchedulerBlock parse_scheduler_block(const YAML::Node& node) {
   return out;
 }
 
+// T5.8 — multi-rank comm backend selection. Parsed lazily; the block is
+// optional and defaults to {MpiHostStaging, Mesh} — the M5 canonical
+// combination. When the YAML omits `comm:` the engine runs single-rank
+// (no MPI) regardless of TDMD_ENABLE_MPI.
+CommBlock parse_comm_block(const YAML::Node& node) {
+  constexpr std::string_view path = "comm";
+  reject_unknown_keys(node, path, {"backend", "topology"});
+  CommBlock out{};
+  if (const auto b = node["backend"]; b) {
+    const auto value = as_scalar<std::string>(b, "comm.backend");
+    if (value == "mpi_host_staging") {
+      out.backend = CommBackendKind::MpiHostStaging;
+    } else if (value == "ring") {
+      out.backend = CommBackendKind::Ring;
+    } else {
+      throw YamlParseError(
+          line_of(b),
+          "comm.backend",
+          "comm.backend must be one of {mpi_host_staging, ring}; got '" + value + "'");
+    }
+  }
+  if (const auto t = node["topology"]; t) {
+    const auto value = as_scalar<std::string>(t, "comm.topology");
+    if (value == "mesh") {
+      out.topology = CommTopologyKind::Mesh;
+    } else if (value == "ring") {
+      out.topology = CommTopologyKind::Ring;
+    } else {
+      throw YamlParseError(line_of(t),
+                           "comm.topology",
+                           "comm.topology must be one of {mesh, ring}; got '" + value + "'");
+    }
+  }
+  return out;
+}
+
 // Top-level dispatch. Required blocks: simulation, atoms, potential,
 // integrator, run. Optional blocks: neighbor, thermo. Any other top-level key
 // is rejected so M2's new blocks land with a visible SPEC bump instead of
@@ -351,10 +387,17 @@ YamlConfig parse_root(const YAML::Node& root) {
                          "",
                          "expected the YAML root to be a mapping (key: value pairs)");
   }
-  reject_unknown_keys(
-      root,
-      "",
-      {"simulation", "atoms", "potential", "integrator", "run", "neighbor", "thermo", "scheduler"});
+  reject_unknown_keys(root,
+                      "",
+                      {"simulation",
+                       "atoms",
+                       "potential",
+                       "integrator",
+                       "run",
+                       "neighbor",
+                       "thermo",
+                       "scheduler",
+                       "comm"});
 
   YamlConfig cfg{};
   cfg.simulation = parse_simulation_block(require_child(root, "", "simulation"));
@@ -370,6 +413,9 @@ YamlConfig parse_root(const YAML::Node& root) {
   }
   if (const auto s = root["scheduler"]; s) {
     cfg.scheduler = parse_scheduler_block(s);
+  }
+  if (const auto c = root["comm"]; c) {
+    cfg.comm = parse_comm_block(c);
   }
   return cfg;
 }
