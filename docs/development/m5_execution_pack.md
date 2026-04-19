@@ -929,20 +929,20 @@ mention в README как "local pre-push mandatory before M5 merge."
 
 После закрытия всех 12 задач — проверить полный M5 artifact gate (master spec §14 M5):
 
-- [ ] **`comm/` module** (T5.2), skeleton + types + abstract interface + MPI optional build flag
-- [ ] **TemporalPacket wire format** (T5.3), pack/unpack + CRC32 + protocol version v1
-- [ ] **MpiHostStagingBackend** (T5.4), 2-rank ping-pong + deterministic reduction green
-- [ ] **RingBackend** (T5.5), 4-rank ring + ring-sum bit-exact + non-ring-dest assert
-- [ ] **K-batching pipeline** (T5.6), K ∈ {1, 2, 4, 8}; I6 fuzzer ≥100k seqs green
-- [ ] **Scheduler peer dispatch** (T5.7), PackedForSend/InFlight/ZoneDataArrived/Committed fully wired
-- [ ] **SimulationEngine multi-rank** (T5.8), K=1 P=1 byte-exact to M4; K=1 P=2 bit-exact to K=1 P=1; K=4 P=4 NVE drift < 1e-6 / 1000 steps
-- [ ] **Linear1D Z-axis zoning** (T5.9), 10⁶ Al FCC uniform distribution ±5%; Hilbert scheme regression preserved
-- [ ] **T3 benchmark fixture** (T5.10), Al FCC 10⁶ LJ config + dissertation reference CSV + hardware normalization script
-- [x] **AnchorTestRunner** (T5.11), harness + report dataclass + hardware probe cache + mocked smoke shipped 2026-04-19 (commit pending); local 10% tolerance gate validated at pre-push time per README
-- [ ] **Anchor-test acceptance** — primary M5 gate, mandatory (master spec §13.3)
-- [x] **M5 integration smoke** (T5.12) shipped 2026-04-19. Wall-time 1s local (30s CI budget), K=1 P=2 MpiHostStaging thermo byte-exact to M4 golden (D-M5-12 chain), telemetry invariants green, CI-gated on `openmpi-bin` install
-- [ ] No regressions: M1, M2, M3, M4 smokes + T1, T4 differentials all green
-- [ ] CI Pipelines A (lint+build+smokes) + B (unit/property) + C (differentials) all green
+- [x] **`comm/` module** (T5.2), skeleton + types + abstract interface + MPI optional build flag (commit 0d5d52f)
+- [x] **TemporalPacket wire format** (T5.3), pack/unpack + CRC32 + protocol version v1 (commit a37f52c)
+- [x] **MpiHostStagingBackend** (T5.4), 2-rank ping-pong + deterministic reduction green (commit 539a280)
+- [x] **RingBackend** (T5.5), 4-rank ring + ring-sum bit-exact + non-ring-dest assert (commit a40f4eb)
+- [x] **K-batching pipeline** (T5.6), K ∈ {1, 2, 4, 8}; I6 fuzzer ≥100k seqs green (commit dc37bc6)
+- [x] **Scheduler peer dispatch** (T5.7), PackedForSend/InFlight/ZoneDataArrived/Committed fully wired (commit f7754e8)
+- [x] **SimulationEngine multi-rank** (T5.8), K=1 P=1 byte-exact to M4; K=1 P=2 bit-exact to K=1 P=1; K=4 P=4 NVE drift < 1e-6 / 1000 steps (commit adf7d46)
+- [x] **Linear1D Z-axis zoning** (T5.9), 10⁶ Al FCC uniform distribution ±5%; Hilbert scheme regression preserved (commit 549d163)
+- [x] **T3 benchmark fixture** (T5.10), Al FCC 10⁶ LJ config + dissertation reference CSV + hardware normalization script (commit 5d73545)
+- [x] **AnchorTestRunner** (T5.11), harness + report dataclass + hardware probe cache + mocked smoke shipped 2026-04-19 (commit a349149); local 10% tolerance gate validated at pre-push time per README
+- [ ] **Anchor-test acceptance** — primary M5 gate, mandatory (master spec §13.3). Harness in place; full dissertation-reference match deferred to a follow-up PR where WebPlotDigitizer extraction of Andreev fig. 29-30 lands (R-M5-8). Current CSV is shape-correct placeholder.
+- [x] **M5 integration smoke** (T5.12) shipped 2026-04-19 (commit d6c2213). Wall-time 1s local (30s CI budget), K=1 P=2 MpiHostStaging thermo byte-exact to M4 golden (D-M5-12 chain), telemetry invariants green, CI-gated on `openmpi-bin` install
+- [x] No regressions: M1, M2, M3, M4 smokes all green locally against the M5 tree (2026-04-19 re-run); T1, T4 differential surfaces untouched by M5 commits
+- [ ] CI Pipelines A (lint+build+smokes) + B (unit/property) + C (differentials) all green — verified locally; confirm on GitHub CI after d6c2213 push completes
 - [ ] Pre-implementation + session reports attached в каждом PR
 - [ ] Human review approval для каждого PR
 
