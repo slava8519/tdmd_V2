@@ -26,6 +26,7 @@
 #include "tdmd/gpu/eam_alloy_gpu.hpp"
 #include "tdmd/gpu/neighbor_list_gpu.hpp"
 #include "tdmd/gpu/types.hpp"
+#include "tdmd/telemetry/nvtx.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -491,6 +492,8 @@ EamAlloyGpuResult EamAlloyGpu::compute(std::size_t n,
                                        double* host_fz_out,
                                        DevicePool& pool,
                                        DeviceStream& stream) {
+  TDMD_NVTX_RANGE("eam.compute");
+
   EamAlloyGpuResult result;
   ++impl_->compute_version;
   if (n == 0) {
@@ -510,27 +513,32 @@ EamAlloyGpuResult EamAlloyGpu::compute(std::size_t n,
   auto* d_x = reinterpret_cast<double*>(impl_->d_x_bytes.get());
   auto* d_y = reinterpret_cast<double*>(impl_->d_y_bytes.get());
   auto* d_z = reinterpret_cast<double*>(impl_->d_z_bytes.get());
-  check_cuda("memcpy types",
-             cudaMemcpyAsync(d_types, host_types, type_bytes, cudaMemcpyHostToDevice, s));
-  check_cuda("memcpy x", cudaMemcpyAsync(d_x, host_x, pos_bytes, cudaMemcpyHostToDevice, s));
-  check_cuda("memcpy y", cudaMemcpyAsync(d_y, host_y, pos_bytes, cudaMemcpyHostToDevice, s));
-  check_cuda("memcpy z", cudaMemcpyAsync(d_z, host_z, pos_bytes, cudaMemcpyHostToDevice, s));
-
   const std::size_t cell_offsets_bytes = (ncells + 1) * sizeof(std::uint32_t);
   const std::size_t cell_atoms_bytes = n * sizeof(std::uint32_t);
   impl_->d_cell_offsets_bytes = pool.allocate_device(cell_offsets_bytes, stream);
   impl_->d_cell_atoms_bytes = pool.allocate_device(cell_atoms_bytes, stream);
   auto* d_cell_offsets = reinterpret_cast<std::uint32_t*>(impl_->d_cell_offsets_bytes.get());
   auto* d_cell_atoms = reinterpret_cast<std::uint32_t*>(impl_->d_cell_atoms_bytes.get());
-  check_cuda("memcpy cell_offsets",
-             cudaMemcpyAsync(d_cell_offsets,
-                             host_cell_offsets,
-                             cell_offsets_bytes,
-                             cudaMemcpyHostToDevice,
-                             s));
-  check_cuda(
-      "memcpy cell_atoms",
-      cudaMemcpyAsync(d_cell_atoms, host_cell_atoms, cell_atoms_bytes, cudaMemcpyHostToDevice, s));
+  {
+    TDMD_NVTX_RANGE("eam.h2d.atoms_and_cells");
+    check_cuda("memcpy types",
+               cudaMemcpyAsync(d_types, host_types, type_bytes, cudaMemcpyHostToDevice, s));
+    check_cuda("memcpy x", cudaMemcpyAsync(d_x, host_x, pos_bytes, cudaMemcpyHostToDevice, s));
+    check_cuda("memcpy y", cudaMemcpyAsync(d_y, host_y, pos_bytes, cudaMemcpyHostToDevice, s));
+    check_cuda("memcpy z", cudaMemcpyAsync(d_z, host_z, pos_bytes, cudaMemcpyHostToDevice, s));
+    check_cuda("memcpy cell_offsets",
+               cudaMemcpyAsync(d_cell_offsets,
+                               host_cell_offsets,
+                               cell_offsets_bytes,
+                               cudaMemcpyHostToDevice,
+                               s));
+    check_cuda("memcpy cell_atoms",
+               cudaMemcpyAsync(d_cell_atoms,
+                               host_cell_atoms,
+                               cell_atoms_bytes,
+                               cudaMemcpyHostToDevice,
+                               s));
+  }
 
   // Tables — cached across compute() calls per T6.9a. Splines are immutable
   // for the lifetime of the owning potential; we re-upload only when the
@@ -542,6 +550,7 @@ EamAlloyGpuResult EamAlloyGpu::compute(std::size_t n,
                                tables.rho_coeffs != impl_->splines_rho_coeffs_host ||
                                tables.z2r_coeffs != impl_->splines_z2r_coeffs_host;
   if (splines_changed) {
+    TDMD_NVTX_RANGE("eam.h2d.splines");
     impl_->d_F_coeffs_bytes = pool.allocate_device(F_bytes, stream);
     impl_->d_rho_coeffs_bytes = pool.allocate_device(rho_bytes_tab, stream);
     impl_->d_z2r_coeffs_bytes = pool.allocate_device(z2r_bytes, stream);
@@ -586,12 +595,15 @@ EamAlloyGpuResult EamAlloyGpu::compute(std::size_t n,
   auto* d_fx = reinterpret_cast<double*>(impl_->d_fx_bytes.get());
   auto* d_fy = reinterpret_cast<double*>(impl_->d_fy_bytes.get());
   auto* d_fz = reinterpret_cast<double*>(impl_->d_fz_bytes.get());
-  check_cuda("memcpy fx in",
-             cudaMemcpyAsync(d_fx, host_fx_out, pos_bytes, cudaMemcpyHostToDevice, s));
-  check_cuda("memcpy fy in",
-             cudaMemcpyAsync(d_fy, host_fy_out, pos_bytes, cudaMemcpyHostToDevice, s));
-  check_cuda("memcpy fz in",
-             cudaMemcpyAsync(d_fz, host_fz_out, pos_bytes, cudaMemcpyHostToDevice, s));
+  {
+    TDMD_NVTX_RANGE("eam.h2d.forces_in");
+    check_cuda("memcpy fx in",
+               cudaMemcpyAsync(d_fx, host_fx_out, pos_bytes, cudaMemcpyHostToDevice, s));
+    check_cuda("memcpy fy in",
+               cudaMemcpyAsync(d_fy, host_fy_out, pos_bytes, cudaMemcpyHostToDevice, s));
+    check_cuda("memcpy fz in",
+               cudaMemcpyAsync(d_fz, host_fz_out, pos_bytes, cudaMemcpyHostToDevice, s));
+  }
 
   // ---------- 3. Kernel params ----------
   DeviceEamParams dp;
@@ -624,75 +636,87 @@ EamAlloyGpuResult EamAlloyGpu::compute(std::size_t n,
   const std::uint32_t nblocks = (n32 + kThreadsPerBlock - 1) / kThreadsPerBlock;
 
   // ---------- 4. Kernel 1: density ----------
-  density_kernel<<<nblocks, kThreadsPerBlock, 0, s>>>(n32,
+  {
+    TDMD_NVTX_RANGE("eam.density_kernel");
+    density_kernel<<<nblocks, kThreadsPerBlock, 0, s>>>(n32,
+                                                        d_types,
+                                                        d_x,
+                                                        d_y,
+                                                        d_z,
+                                                        d_cell_offsets,
+                                                        d_cell_atoms,
+                                                        d_rho_coeffs,
+                                                        dp,
+                                                        d_rho);
+    check_cuda("launch density_kernel", cudaGetLastError());
+  }
+
+  // ---------- 5. Kernel 2: embedding ----------
+  {
+    TDMD_NVTX_RANGE("eam.embedding_kernel");
+    embedding_kernel<<<nblocks, kThreadsPerBlock, 0, s>>>(n32,
+                                                          d_types,
+                                                          d_rho,
+                                                          d_F_coeffs,
+                                                          dp,
+                                                          d_dFdrho,
+                                                          d_pe_embed);
+    check_cuda("launch embedding_kernel", cudaGetLastError());
+  }
+
+  // ---------- 6. Kernel 3: force ----------
+  {
+    TDMD_NVTX_RANGE("eam.force_kernel");
+    force_kernel<<<nblocks, kThreadsPerBlock, 0, s>>>(n32,
                                                       d_types,
                                                       d_x,
                                                       d_y,
                                                       d_z,
                                                       d_cell_offsets,
                                                       d_cell_atoms,
+                                                      d_dFdrho,
                                                       d_rho_coeffs,
+                                                      d_z2r_coeffs,
                                                       dp,
-                                                      d_rho);
-  check_cuda("launch density_kernel", cudaGetLastError());
-
-  // ---------- 5. Kernel 2: embedding ----------
-  embedding_kernel<<<nblocks, kThreadsPerBlock, 0, s>>>(n32,
-                                                        d_types,
-                                                        d_rho,
-                                                        d_F_coeffs,
-                                                        dp,
-                                                        d_dFdrho,
-                                                        d_pe_embed);
-  check_cuda("launch embedding_kernel", cudaGetLastError());
-
-  // ---------- 6. Kernel 3: force ----------
-  force_kernel<<<nblocks, kThreadsPerBlock, 0, s>>>(n32,
-                                                    d_types,
-                                                    d_x,
-                                                    d_y,
-                                                    d_z,
-                                                    d_cell_offsets,
-                                                    d_cell_atoms,
-                                                    d_dFdrho,
-                                                    d_rho_coeffs,
-                                                    d_z2r_coeffs,
-                                                    dp,
-                                                    d_fx,
-                                                    d_fy,
-                                                    d_fz,
-                                                    d_pe_pair,
-                                                    d_virial);
-  check_cuda("launch force_kernel", cudaGetLastError());
+                                                      d_fx,
+                                                      d_fy,
+                                                      d_fz,
+                                                      d_pe_pair,
+                                                      d_virial);
+    check_cuda("launch force_kernel", cudaGetLastError());
+  }
 
   // ---------- 7. D2H forces + reduction buffers ----------
   std::vector<double> host_pe_embed(n);
   std::vector<double> host_pe_pair(n);
   std::vector<double> host_virial(n * 6u);
 
-  check_cuda("D2H fx", cudaMemcpyAsync(host_fx_out, d_fx, pos_bytes, cudaMemcpyDeviceToHost, s));
-  check_cuda("D2H fy", cudaMemcpyAsync(host_fy_out, d_fy, pos_bytes, cudaMemcpyDeviceToHost, s));
-  check_cuda("D2H fz", cudaMemcpyAsync(host_fz_out, d_fz, pos_bytes, cudaMemcpyDeviceToHost, s));
-  check_cuda("D2H pe_embed",
-             cudaMemcpyAsync(host_pe_embed.data(),
-                             d_pe_embed,
-                             n * sizeof(double),
-                             cudaMemcpyDeviceToHost,
-                             s));
-  check_cuda("D2H pe_pair",
-             cudaMemcpyAsync(host_pe_pair.data(),
-                             d_pe_pair,
-                             n * sizeof(double),
-                             cudaMemcpyDeviceToHost,
-                             s));
-  check_cuda("D2H virial",
-             cudaMemcpyAsync(host_virial.data(),
-                             d_virial,
-                             n * 6u * sizeof(double),
-                             cudaMemcpyDeviceToHost,
-                             s));
+  {
+    TDMD_NVTX_RANGE("eam.d2h.forces_and_reductions");
+    check_cuda("D2H fx", cudaMemcpyAsync(host_fx_out, d_fx, pos_bytes, cudaMemcpyDeviceToHost, s));
+    check_cuda("D2H fy", cudaMemcpyAsync(host_fy_out, d_fy, pos_bytes, cudaMemcpyDeviceToHost, s));
+    check_cuda("D2H fz", cudaMemcpyAsync(host_fz_out, d_fz, pos_bytes, cudaMemcpyDeviceToHost, s));
+    check_cuda("D2H pe_embed",
+               cudaMemcpyAsync(host_pe_embed.data(),
+                               d_pe_embed,
+                               n * sizeof(double),
+                               cudaMemcpyDeviceToHost,
+                               s));
+    check_cuda("D2H pe_pair",
+               cudaMemcpyAsync(host_pe_pair.data(),
+                               d_pe_pair,
+                               n * sizeof(double),
+                               cudaMemcpyDeviceToHost,
+                               s));
+    check_cuda("D2H virial",
+               cudaMemcpyAsync(host_virial.data(),
+                               d_virial,
+                               n * 6u * sizeof(double),
+                               cudaMemcpyDeviceToHost,
+                               s));
 
-  check_cuda("stream sync EAM", cudaStreamSynchronize(s));
+    check_cuda("stream sync EAM", cudaStreamSynchronize(s));
+  }
 
   // ---------- 8. Host Kahan reductions ----------
   const double pe_embed_total = kahan_sum_host(host_pe_embed.data(), n);

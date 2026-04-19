@@ -48,4 +48,11 @@ else()
   target_compile_definitions(tdmd_gpu PUBLIC TDMD_BUILD_CUDA=0)
 endif()
 
+# T6.11 NVTX bridge — telemetry's nvtx.hpp expands to `nvtx3::scoped_range` under TDMD_BUILD_CUDA.
+# nvtx3 is a **header-only** C++ API that resolves libnvToolsExt symbols lazily at first range entry
+# (dlsym path — see nvtxDetail/nvtxInit.h in CUDA 13.1). No explicit link dependency is required.
+# Inheriting tdmd::telemetry propagates the include path and the TDMD_BUILD_CUDA definition used by
+# the macro.
+target_link_libraries(tdmd_gpu PUBLIC tdmd::telemetry)
+
 tdmd_apply_build_flavor(tdmd_gpu)

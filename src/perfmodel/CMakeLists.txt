@@ -2,7 +2,7 @@
 # SPEC: docs/specs/perfmodel/SPEC.md
 # Exec pack: docs/development/m2_execution_pack.md T2.10
 
-add_library(tdmd_perfmodel STATIC perfmodel.cpp hardware_profile.cpp)
+add_library(tdmd_perfmodel STATIC perfmodel.cpp hardware_profile.cpp gpu_cost_tables.cpp)
 add_library(tdmd::perfmodel ALIAS tdmd_perfmodel)
 
 target_include_directories(

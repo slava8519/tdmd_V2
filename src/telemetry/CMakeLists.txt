@@ -14,4 +14,15 @@ target_include_directories(
 
 target_compile_features(tdmd_telemetry PUBLIC cxx_std_20)
 
+# T6.11 NVTX bridge — include/tdmd/telemetry/nvtx.hpp pulls in CUDA's <nvtx3/nvtx3.hpp> when
+# TDMD_BUILD_CUDA is defined, so propagate the CUDA toolkit include path + define publicly. nvtx3 is
+# header-only and symbols resolve through libnvToolsExt at runtime via CUDA::nvToolsExt linked by
+# consumers that actually use ranges (tdmd_gpu). This keeps tdmd_telemetry itself buildable on
+# CPU-only matrix without a CUDA link edge.
+if(TDMD_BUILD_CUDA)
+  find_package(CUDAToolkit REQUIRED)
+  target_include_directories(tdmd_telemetry PUBLIC ${CUDAToolkit_INCLUDE_DIRS})
+  target_compile_definitions(tdmd_telemetry PUBLIC TDMD_BUILD_CUDA=1)
+endif()
+
 tdmd_apply_build_flavor(tdmd_telemetry)

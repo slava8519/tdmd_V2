@@ -19,6 +19,7 @@
 #include "tdmd/gpu/device_pool.hpp"
 #include "tdmd/gpu/integrator_vv_gpu.hpp"
 #include "tdmd/gpu/types.hpp"
+#include "tdmd/telemetry/nvtx.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -142,6 +143,8 @@ void VelocityVerletGpu::pre_force_step(std::size_t n,
                                        double* host_vz,
                                        DevicePool& pool,
                                        DeviceStream& stream) {
+  TDMD_NVTX_RANGE("vv.pre_force_step");
+
   ++impl_->compute_version;
   if (n == 0) {
     return;
@@ -177,64 +180,73 @@ void VelocityVerletGpu::pre_force_step(std::size_t n,
   auto* d_vy = reinterpret_cast<double*>(d_vy_bytes.get());
   auto* d_vz = reinterpret_cast<double*>(d_vz_bytes.get());
 
-  check_cuda(
-      "cudaMemcpyAsync accel",
-      cudaMemcpyAsync(d_accel, host_accel_by_species, accel_bytes, cudaMemcpyHostToDevice, s));
-  check_cuda("cudaMemcpyAsync type",
-             cudaMemcpyAsync(d_type, host_types, type_bytes, cudaMemcpyHostToDevice, s));
-  check_cuda("cudaMemcpyAsync fx",
-             cudaMemcpyAsync(d_fx, host_fx, pos_bytes, cudaMemcpyHostToDevice, s));
-  check_cuda("cudaMemcpyAsync fy",
-             cudaMemcpyAsync(d_fy, host_fy, pos_bytes, cudaMemcpyHostToDevice, s));
-  check_cuda("cudaMemcpyAsync fz",
-             cudaMemcpyAsync(d_fz, host_fz, pos_bytes, cudaMemcpyHostToDevice, s));
-  check_cuda("cudaMemcpyAsync x",
-             cudaMemcpyAsync(d_x, host_x, pos_bytes, cudaMemcpyHostToDevice, s));
-  check_cuda("cudaMemcpyAsync y",
-             cudaMemcpyAsync(d_y, host_y, pos_bytes, cudaMemcpyHostToDevice, s));
-  check_cuda("cudaMemcpyAsync z",
-             cudaMemcpyAsync(d_z, host_z, pos_bytes, cudaMemcpyHostToDevice, s));
-  check_cuda("cudaMemcpyAsync vx",
-             cudaMemcpyAsync(d_vx, host_vx, pos_bytes, cudaMemcpyHostToDevice, s));
-  check_cuda("cudaMemcpyAsync vy",
-             cudaMemcpyAsync(d_vy, host_vy, pos_bytes, cudaMemcpyHostToDevice, s));
-  check_cuda("cudaMemcpyAsync vz",
-             cudaMemcpyAsync(d_vz, host_vz, pos_bytes, cudaMemcpyHostToDevice, s));
+  {
+    TDMD_NVTX_RANGE("vv.h2d.pre");
+    check_cuda(
+        "cudaMemcpyAsync accel",
+        cudaMemcpyAsync(d_accel, host_accel_by_species, accel_bytes, cudaMemcpyHostToDevice, s));
+    check_cuda("cudaMemcpyAsync type",
+               cudaMemcpyAsync(d_type, host_types, type_bytes, cudaMemcpyHostToDevice, s));
+    check_cuda("cudaMemcpyAsync fx",
+               cudaMemcpyAsync(d_fx, host_fx, pos_bytes, cudaMemcpyHostToDevice, s));
+    check_cuda("cudaMemcpyAsync fy",
+               cudaMemcpyAsync(d_fy, host_fy, pos_bytes, cudaMemcpyHostToDevice, s));
+    check_cuda("cudaMemcpyAsync fz",
+               cudaMemcpyAsync(d_fz, host_fz, pos_bytes, cudaMemcpyHostToDevice, s));
+    check_cuda("cudaMemcpyAsync x",
+               cudaMemcpyAsync(d_x, host_x, pos_bytes, cudaMemcpyHostToDevice, s));
+    check_cuda("cudaMemcpyAsync y",
+               cudaMemcpyAsync(d_y, host_y, pos_bytes, cudaMemcpyHostToDevice, s));
+    check_cuda("cudaMemcpyAsync z",
+               cudaMemcpyAsync(d_z, host_z, pos_bytes, cudaMemcpyHostToDevice, s));
+    check_cuda("cudaMemcpyAsync vx",
+               cudaMemcpyAsync(d_vx, host_vx, pos_bytes, cudaMemcpyHostToDevice, s));
+    check_cuda("cudaMemcpyAsync vy",
+               cudaMemcpyAsync(d_vy, host_vy, pos_bytes, cudaMemcpyHostToDevice, s));
+    check_cuda("cudaMemcpyAsync vz",
+               cudaMemcpyAsync(d_vz, host_vz, pos_bytes, cudaMemcpyHostToDevice, s));
+  }
 
   const double half_dt = 0.5 * dt;
   const std::uint32_t n32 = static_cast<std::uint32_t>(n);
   const std::uint32_t nblocks = (n32 + kThreadsPerBlock - 1) / kThreadsPerBlock;
 
-  pre_force_kernel<<<nblocks, kThreadsPerBlock, 0, s>>>(n32,
-                                                        half_dt,
-                                                        dt,
-                                                        d_accel,
-                                                        d_type,
-                                                        d_fx,
-                                                        d_fy,
-                                                        d_fz,
-                                                        d_x,
-                                                        d_y,
-                                                        d_z,
-                                                        d_vx,
-                                                        d_vy,
-                                                        d_vz);
-  check_cuda("launch pre_force_kernel", cudaGetLastError());
+  {
+    TDMD_NVTX_RANGE("vv.pre_force_kernel");
+    pre_force_kernel<<<nblocks, kThreadsPerBlock, 0, s>>>(n32,
+                                                          half_dt,
+                                                          dt,
+                                                          d_accel,
+                                                          d_type,
+                                                          d_fx,
+                                                          d_fy,
+                                                          d_fz,
+                                                          d_x,
+                                                          d_y,
+                                                          d_z,
+                                                          d_vx,
+                                                          d_vy,
+                                                          d_vz);
+    check_cuda("launch pre_force_kernel", cudaGetLastError());
+  }
 
-  check_cuda("cudaMemcpyAsync D2H x",
-             cudaMemcpyAsync(host_x, d_x, pos_bytes, cudaMemcpyDeviceToHost, s));
-  check_cuda("cudaMemcpyAsync D2H y",
-             cudaMemcpyAsync(host_y, d_y, pos_bytes, cudaMemcpyDeviceToHost, s));
-  check_cuda("cudaMemcpyAsync D2H z",
-             cudaMemcpyAsync(host_z, d_z, pos_bytes, cudaMemcpyDeviceToHost, s));
-  check_cuda("cudaMemcpyAsync D2H vx",
-             cudaMemcpyAsync(host_vx, d_vx, pos_bytes, cudaMemcpyDeviceToHost, s));
-  check_cuda("cudaMemcpyAsync D2H vy",
-             cudaMemcpyAsync(host_vy, d_vy, pos_bytes, cudaMemcpyDeviceToHost, s));
-  check_cuda("cudaMemcpyAsync D2H vz",
-             cudaMemcpyAsync(host_vz, d_vz, pos_bytes, cudaMemcpyDeviceToHost, s));
+  {
+    TDMD_NVTX_RANGE("vv.d2h.pre");
+    check_cuda("cudaMemcpyAsync D2H x",
+               cudaMemcpyAsync(host_x, d_x, pos_bytes, cudaMemcpyDeviceToHost, s));
+    check_cuda("cudaMemcpyAsync D2H y",
+               cudaMemcpyAsync(host_y, d_y, pos_bytes, cudaMemcpyDeviceToHost, s));
+    check_cuda("cudaMemcpyAsync D2H z",
+               cudaMemcpyAsync(host_z, d_z, pos_bytes, cudaMemcpyDeviceToHost, s));
+    check_cuda("cudaMemcpyAsync D2H vx",
+               cudaMemcpyAsync(host_vx, d_vx, pos_bytes, cudaMemcpyDeviceToHost, s));
+    check_cuda("cudaMemcpyAsync D2H vy",
+               cudaMemcpyAsync(host_vy, d_vy, pos_bytes, cudaMemcpyDeviceToHost, s));
+    check_cuda("cudaMemcpyAsync D2H vz",
+               cudaMemcpyAsync(host_vz, d_vz, pos_bytes, cudaMemcpyDeviceToHost, s));
 
-  check_cuda("cudaStreamSynchronize (pre_force)", cudaStreamSynchronize(s));
+    check_cuda("cudaStreamSynchronize (pre_force)", cudaStreamSynchronize(s));
+  }
 }
 
 void VelocityVerletGpu::post_force_step(std::size_t n,
@@ -250,6 +262,8 @@ void VelocityVerletGpu::post_force_step(std::size_t n,
                                         double* host_vz,
                                         DevicePool& pool,
                                         DeviceStream& stream) {
+  TDMD_NVTX_RANGE("vv.post_force_step");
+
   ++impl_->compute_version;
   if (n == 0) {
     return;
@@ -279,48 +293,57 @@ void VelocityVerletGpu::post_force_step(std::size_t n,
   auto* d_vy = reinterpret_cast<double*>(d_vy_bytes.get());
   auto* d_vz = reinterpret_cast<double*>(d_vz_bytes.get());
 
-  check_cuda(
-      "cudaMemcpyAsync accel",
-      cudaMemcpyAsync(d_accel, host_accel_by_species, accel_bytes, cudaMemcpyHostToDevice, s));
-  check_cuda("cudaMemcpyAsync type",
-             cudaMemcpyAsync(d_type, host_types, type_bytes, cudaMemcpyHostToDevice, s));
-  check_cuda("cudaMemcpyAsync fx",
-             cudaMemcpyAsync(d_fx, host_fx, pos_bytes, cudaMemcpyHostToDevice, s));
-  check_cuda("cudaMemcpyAsync fy",
-             cudaMemcpyAsync(d_fy, host_fy, pos_bytes, cudaMemcpyHostToDevice, s));
-  check_cuda("cudaMemcpyAsync fz",
-             cudaMemcpyAsync(d_fz, host_fz, pos_bytes, cudaMemcpyHostToDevice, s));
-  check_cuda("cudaMemcpyAsync vx",
-             cudaMemcpyAsync(d_vx, host_vx, pos_bytes, cudaMemcpyHostToDevice, s));
-  check_cuda("cudaMemcpyAsync vy",
-             cudaMemcpyAsync(d_vy, host_vy, pos_bytes, cudaMemcpyHostToDevice, s));
-  check_cuda("cudaMemcpyAsync vz",
-             cudaMemcpyAsync(d_vz, host_vz, pos_bytes, cudaMemcpyHostToDevice, s));
+  {
+    TDMD_NVTX_RANGE("vv.h2d.post");
+    check_cuda(
+        "cudaMemcpyAsync accel",
+        cudaMemcpyAsync(d_accel, host_accel_by_species, accel_bytes, cudaMemcpyHostToDevice, s));
+    check_cuda("cudaMemcpyAsync type",
+               cudaMemcpyAsync(d_type, host_types, type_bytes, cudaMemcpyHostToDevice, s));
+    check_cuda("cudaMemcpyAsync fx",
+               cudaMemcpyAsync(d_fx, host_fx, pos_bytes, cudaMemcpyHostToDevice, s));
+    check_cuda("cudaMemcpyAsync fy",
+               cudaMemcpyAsync(d_fy, host_fy, pos_bytes, cudaMemcpyHostToDevice, s));
+    check_cuda("cudaMemcpyAsync fz",
+               cudaMemcpyAsync(d_fz, host_fz, pos_bytes, cudaMemcpyHostToDevice, s));
+    check_cuda("cudaMemcpyAsync vx",
+               cudaMemcpyAsync(d_vx, host_vx, pos_bytes, cudaMemcpyHostToDevice, s));
+    check_cuda("cudaMemcpyAsync vy",
+               cudaMemcpyAsync(d_vy, host_vy, pos_bytes, cudaMemcpyHostToDevice, s));
+    check_cuda("cudaMemcpyAsync vz",
+               cudaMemcpyAsync(d_vz, host_vz, pos_bytes, cudaMemcpyHostToDevice, s));
+  }
 
   const double half_dt = 0.5 * dt;
   const std::uint32_t n32 = static_cast<std::uint32_t>(n);
   const std::uint32_t nblocks = (n32 + kThreadsPerBlock - 1) / kThreadsPerBlock;
 
-  post_force_kernel<<<nblocks, kThreadsPerBlock, 0, s>>>(n32,
-                                                         half_dt,
-                                                         d_accel,
-                                                         d_type,
-                                                         d_fx,
-                                                         d_fy,
-                                                         d_fz,
-                                                         d_vx,
-                                                         d_vy,
-                                                         d_vz);
-  check_cuda("launch post_force_kernel", cudaGetLastError());
+  {
+    TDMD_NVTX_RANGE("vv.post_force_kernel");
+    post_force_kernel<<<nblocks, kThreadsPerBlock, 0, s>>>(n32,
+                                                           half_dt,
+                                                           d_accel,
+                                                           d_type,
+                                                           d_fx,
+                                                           d_fy,
+                                                           d_fz,
+                                                           d_vx,
+                                                           d_vy,
+                                                           d_vz);
+    check_cuda("launch post_force_kernel", cudaGetLastError());
+  }
 
-  check_cuda("cudaMemcpyAsync D2H vx",
-             cudaMemcpyAsync(host_vx, d_vx, pos_bytes, cudaMemcpyDeviceToHost, s));
-  check_cuda("cudaMemcpyAsync D2H vy",
-             cudaMemcpyAsync(host_vy, d_vy, pos_bytes, cudaMemcpyDeviceToHost, s));
-  check_cuda("cudaMemcpyAsync D2H vz",
-             cudaMemcpyAsync(host_vz, d_vz, pos_bytes, cudaMemcpyDeviceToHost, s));
+  {
+    TDMD_NVTX_RANGE("vv.d2h.post");
+    check_cuda("cudaMemcpyAsync D2H vx",
+               cudaMemcpyAsync(host_vx, d_vx, pos_bytes, cudaMemcpyDeviceToHost, s));
+    check_cuda("cudaMemcpyAsync D2H vy",
+               cudaMemcpyAsync(host_vy, d_vy, pos_bytes, cudaMemcpyDeviceToHost, s));
+    check_cuda("cudaMemcpyAsync D2H vz",
+               cudaMemcpyAsync(host_vz, d_vz, pos_bytes, cudaMemcpyDeviceToHost, s));
 
-  check_cuda("cudaStreamSynchronize (post_force)", cudaStreamSynchronize(s));
+    check_cuda("cudaStreamSynchronize (post_force)", cudaStreamSynchronize(s));
+  }
 }
 
 #else  // CPU-only build — stubs that throw, mirroring NL/EAM pattern.

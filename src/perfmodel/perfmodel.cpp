@@ -151,6 +151,15 @@ std::uint32_t PerfModel::K_opt(std::uint64_t n_atoms) const {
   return best_k;
 }
 
+double PerfModel::predict_step_gpu_sec(std::uint64_t n_atoms,
+                                       const GpuCostTables& tables) const noexcept {
+  // Same per-rank decomposition as Pattern 3 — single-subdomain single-rank
+  // owns the full n_atoms/n_ranks slice. Pattern 1 / Pattern 2 GPU variants
+  // land with M7 when heterogeneous cost modeling arrives.
+  const std::uint64_t n_per_rank = n_atoms / hw_.n_ranks;
+  return tables.step_total_sec(n_per_rank) + hw_.scheduler_overhead_sec;
+}
+
 std::vector<PerfPrediction> PerfModel::rank(std::uint64_t n_atoms) const {
   std::vector<PerfPrediction> out;
   out.reserve(2U);

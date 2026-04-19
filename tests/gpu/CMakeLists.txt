@@ -37,7 +37,14 @@ add_test(NAME test_integrator_vv_gpu COMMAND test_integrator_vv_gpu)
 
 # T6.8: MixedFast EAM/alloy GPU kernel — ≤ 1e-6 rel force / ≤ 1e-8 rel PE vs Fp64 reference GPU
 # (D-M6-8). Compares `EamAlloyGpu` vs `EamAlloyGpuMixed` directly, bypassing the flavor-dispatched
-# adapter so the threshold applies regardless of the selected BuildFlavor.
+# adapter so the threshold applies regardless of the selected BuildFlavor. T6.11: NVTX audit —
+# asserts every kernel launch in src/gpu/*.cu sits inside a scope carrying a TDMD_NVTX_RANGE macro
+# (D-M6-14). Pure structural check, runs on CPU-only + CUDA builds.
+add_executable(test_nvtx_audit test_nvtx_audit.cpp)
+target_link_libraries(test_nvtx_audit PRIVATE tdmd::gpu Catch2::Catch2WithMain)
+target_compile_definitions(test_nvtx_audit PRIVATE TDMD_GPU_SRC_DIR="${CMAKE_SOURCE_DIR}/src/gpu")
+add_test(NAME test_nvtx_audit COMMAND test_nvtx_audit)
+
 add_executable(test_eam_mixed_fast_within_threshold test_eam_mixed_fast_within_threshold.cpp)
 target_link_libraries(
   test_eam_mixed_fast_within_threshold PRIVATE tdmd::gpu tdmd::potentials tdmd::neighbor

@@ -24,6 +24,7 @@
 #include "tdmd/gpu/device_pool.hpp"
 #include "tdmd/gpu/neighbor_list_gpu.hpp"
 #include "tdmd/gpu/types.hpp"
+#include "tdmd/telemetry/nvtx.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -298,6 +299,8 @@ void NeighborListGpu::build(std::size_t n,
                             const BoxParams& params,
                             DevicePool& pool,
                             DeviceStream& stream) {
+  TDMD_NVTX_RANGE("nl.build");
+
   impl_->atom_count = n;
   impl_->cutoff = params.cutoff;
   impl_->skin = params.skin;
@@ -324,38 +327,41 @@ void NeighborListGpu::build(std::size_t n,
   }
 
   // ---------- 1. H2D copies ----------
-  const std::size_t pos_bytes = n * sizeof(double);
-  impl_->d_x_bytes = pool.allocate_device(pos_bytes, stream);
-  impl_->d_y_bytes = pool.allocate_device(pos_bytes, stream);
-  impl_->d_z_bytes = pool.allocate_device(pos_bytes, stream);
-  impl_->d_x = reinterpret_cast<double*>(impl_->d_x_bytes.get());
-  impl_->d_y = reinterpret_cast<double*>(impl_->d_y_bytes.get());
-  impl_->d_z = reinterpret_cast<double*>(impl_->d_z_bytes.get());
-  check_cuda("cudaMemcpyAsync x",
-             cudaMemcpyAsync(impl_->d_x, host_x, pos_bytes, cudaMemcpyHostToDevice, s));
-  check_cuda("cudaMemcpyAsync y",
-             cudaMemcpyAsync(impl_->d_y, host_y, pos_bytes, cudaMemcpyHostToDevice, s));
-  check_cuda("cudaMemcpyAsync z",
-             cudaMemcpyAsync(impl_->d_z, host_z, pos_bytes, cudaMemcpyHostToDevice, s));
+  {
+    TDMD_NVTX_RANGE("nl.h2d.positions_and_cells");
+    const std::size_t pos_bytes = n * sizeof(double);
+    impl_->d_x_bytes = pool.allocate_device(pos_bytes, stream);
+    impl_->d_y_bytes = pool.allocate_device(pos_bytes, stream);
+    impl_->d_z_bytes = pool.allocate_device(pos_bytes, stream);
+    impl_->d_x = reinterpret_cast<double*>(impl_->d_x_bytes.get());
+    impl_->d_y = reinterpret_cast<double*>(impl_->d_y_bytes.get());
+    impl_->d_z = reinterpret_cast<double*>(impl_->d_z_bytes.get());
+    check_cuda("cudaMemcpyAsync x",
+               cudaMemcpyAsync(impl_->d_x, host_x, pos_bytes, cudaMemcpyHostToDevice, s));
+    check_cuda("cudaMemcpyAsync y",
+               cudaMemcpyAsync(impl_->d_y, host_y, pos_bytes, cudaMemcpyHostToDevice, s));
+    check_cuda("cudaMemcpyAsync z",
+               cudaMemcpyAsync(impl_->d_z, host_z, pos_bytes, cudaMemcpyHostToDevice, s));
 
-  const std::size_t cell_offsets_bytes = (ncells + 1) * sizeof(std::uint32_t);
-  const std::size_t cell_atoms_bytes = n * sizeof(std::uint32_t);
-  impl_->d_cell_offsets_bytes = pool.allocate_device(cell_offsets_bytes, stream);
-  impl_->d_cell_atoms_bytes = pool.allocate_device(cell_atoms_bytes, stream);
-  impl_->d_cell_offsets = reinterpret_cast<std::uint32_t*>(impl_->d_cell_offsets_bytes.get());
-  impl_->d_cell_atoms = reinterpret_cast<std::uint32_t*>(impl_->d_cell_atoms_bytes.get());
-  check_cuda("cudaMemcpyAsync cell_offsets",
-             cudaMemcpyAsync(impl_->d_cell_offsets,
-                             host_cell_offsets,
-                             cell_offsets_bytes,
-                             cudaMemcpyHostToDevice,
-                             s));
-  check_cuda("cudaMemcpyAsync cell_atoms",
-             cudaMemcpyAsync(impl_->d_cell_atoms,
-                             host_cell_atoms,
-                             cell_atoms_bytes,
-                             cudaMemcpyHostToDevice,
-                             s));
+    const std::size_t cell_offsets_bytes = (ncells + 1) * sizeof(std::uint32_t);
+    const std::size_t cell_atoms_bytes = n * sizeof(std::uint32_t);
+    impl_->d_cell_offsets_bytes = pool.allocate_device(cell_offsets_bytes, stream);
+    impl_->d_cell_atoms_bytes = pool.allocate_device(cell_atoms_bytes, stream);
+    impl_->d_cell_offsets = reinterpret_cast<std::uint32_t*>(impl_->d_cell_offsets_bytes.get());
+    impl_->d_cell_atoms = reinterpret_cast<std::uint32_t*>(impl_->d_cell_atoms_bytes.get());
+    check_cuda("cudaMemcpyAsync cell_offsets",
+               cudaMemcpyAsync(impl_->d_cell_offsets,
+                               host_cell_offsets,
+                               cell_offsets_bytes,
+                               cudaMemcpyHostToDevice,
+                               s));
+    check_cuda("cudaMemcpyAsync cell_atoms",
+               cudaMemcpyAsync(impl_->d_cell_atoms,
+                               host_cell_atoms,
+                               cell_atoms_bytes,
+                               cudaMemcpyHostToDevice,
+                               s));
+  }
 
   // ---------- 2. Pass 1 — counts ----------
   const std::size_t counts_bytes = n * sizeof(std::uint32_t);
@@ -385,40 +391,47 @@ void NeighborListGpu::build(std::size_t n,
   constexpr int kThreadsPerBlock = 128;
   const std::uint32_t nblocks = (n32 + kThreadsPerBlock - 1) / kThreadsPerBlock;
 
-  count_neighbors_kernel<<<nblocks, kThreadsPerBlock, 0, s>>>(n32,
-                                                              impl_->d_x,
-                                                              impl_->d_y,
-                                                              impl_->d_z,
-                                                              impl_->d_cell_offsets,
-                                                              impl_->d_cell_atoms,
-                                                              p,
-                                                              d_counts);
-  check_cuda("launch count_neighbors_kernel", cudaGetLastError());
+  {
+    TDMD_NVTX_RANGE("nl.count_kernel");
+    count_neighbors_kernel<<<nblocks, kThreadsPerBlock, 0, s>>>(n32,
+                                                                impl_->d_x,
+                                                                impl_->d_y,
+                                                                impl_->d_z,
+                                                                impl_->d_cell_offsets,
+                                                                impl_->d_cell_atoms,
+                                                                p,
+                                                                d_counts);
+    check_cuda("launch count_neighbors_kernel", cudaGetLastError());
+  }
 
   // ---------- 3. Exclusive scan on host ----------
   std::vector<std::uint32_t> host_counts(n);
-  check_cuda(
-      "cudaMemcpyAsync D2H counts",
-      cudaMemcpyAsync(host_counts.data(), d_counts, counts_bytes, cudaMemcpyDeviceToHost, s));
-  check_cuda("cudaStreamSynchronize (counts D2H)", cudaStreamSynchronize(s));
+  std::uint64_t total_pairs = 0;
+  {
+    TDMD_NVTX_RANGE("nl.host_scan_and_h2d_offsets");
+    check_cuda(
+        "cudaMemcpyAsync D2H counts",
+        cudaMemcpyAsync(host_counts.data(), d_counts, counts_bytes, cudaMemcpyDeviceToHost, s));
+    check_cuda("cudaStreamSynchronize (counts D2H)", cudaStreamSynchronize(s));
 
-  std::vector<std::uint64_t> host_offsets(n + 1);
-  host_offsets[0] = 0;
-  for (std::size_t i = 0; i < n; ++i) {
-    host_offsets[i + 1] = host_offsets[i] + static_cast<std::uint64_t>(host_counts[i]);
+    std::vector<std::uint64_t> host_offsets(n + 1);
+    host_offsets[0] = 0;
+    for (std::size_t i = 0; i < n; ++i) {
+      host_offsets[i + 1] = host_offsets[i] + static_cast<std::uint64_t>(host_counts[i]);
+    }
+    total_pairs = host_offsets[n];
+    impl_->pair_count = static_cast<std::size_t>(total_pairs);
+
+    const std::size_t offsets_bytes = (n + 1) * sizeof(std::uint64_t);
+    impl_->d_offsets_bytes = pool.allocate_device(offsets_bytes, stream);
+    impl_->d_offsets = reinterpret_cast<std::uint64_t*>(impl_->d_offsets_bytes.get());
+    check_cuda("cudaMemcpyAsync H2D offsets",
+               cudaMemcpyAsync(impl_->d_offsets,
+                               host_offsets.data(),
+                               offsets_bytes,
+                               cudaMemcpyHostToDevice,
+                               s));
   }
-  const std::uint64_t total_pairs = host_offsets[n];
-  impl_->pair_count = static_cast<std::size_t>(total_pairs);
-
-  const std::size_t offsets_bytes = (n + 1) * sizeof(std::uint64_t);
-  impl_->d_offsets_bytes = pool.allocate_device(offsets_bytes, stream);
-  impl_->d_offsets = reinterpret_cast<std::uint64_t*>(impl_->d_offsets_bytes.get());
-  check_cuda("cudaMemcpyAsync H2D offsets",
-             cudaMemcpyAsync(impl_->d_offsets,
-                             host_offsets.data(),
-                             offsets_bytes,
-                             cudaMemcpyHostToDevice,
-                             s));
 
   if (total_pairs == 0) {
     impl_->d_ids_bytes.reset();
@@ -430,28 +443,32 @@ void NeighborListGpu::build(std::size_t n,
   }
 
   // ---------- 4. Pass 2 — emit ----------
-  const std::size_t ids_bytes = total_pairs * sizeof(std::uint32_t);
-  const std::size_t r2_bytes = total_pairs * sizeof(double);
-  impl_->d_ids_bytes = pool.allocate_device(ids_bytes, stream);
-  impl_->d_r2_bytes = pool.allocate_device(r2_bytes, stream);
-  impl_->d_ids = reinterpret_cast<std::uint32_t*>(impl_->d_ids_bytes.get());
-  impl_->d_r2 = reinterpret_cast<double*>(impl_->d_r2_bytes.get());
+  {
+    TDMD_NVTX_RANGE("nl.emit_kernel");
+    const std::size_t ids_bytes = total_pairs * sizeof(std::uint32_t);
+    const std::size_t r2_bytes = total_pairs * sizeof(double);
+    impl_->d_ids_bytes = pool.allocate_device(ids_bytes, stream);
+    impl_->d_r2_bytes = pool.allocate_device(r2_bytes, stream);
+    impl_->d_ids = reinterpret_cast<std::uint32_t*>(impl_->d_ids_bytes.get());
+    impl_->d_r2 = reinterpret_cast<double*>(impl_->d_r2_bytes.get());
 
-  emit_neighbors_kernel<<<nblocks, kThreadsPerBlock, 0, s>>>(n32,
-                                                             impl_->d_x,
-                                                             impl_->d_y,
-                                                             impl_->d_z,
-                                                             impl_->d_cell_offsets,
-                                                             impl_->d_cell_atoms,
-                                                             impl_->d_offsets,
-                                                             p,
-                                                             impl_->d_ids,
-                                                             impl_->d_r2);
-  check_cuda("launch emit_neighbors_kernel", cudaGetLastError());
-  check_cuda("cudaStreamSynchronize (NL build)", cudaStreamSynchronize(s));
+    emit_neighbors_kernel<<<nblocks, kThreadsPerBlock, 0, s>>>(n32,
+                                                               impl_->d_x,
+                                                               impl_->d_y,
+                                                               impl_->d_z,
+                                                               impl_->d_cell_offsets,
+                                                               impl_->d_cell_atoms,
+                                                               impl_->d_offsets,
+                                                               p,
+                                                               impl_->d_ids,
+                                                               impl_->d_r2);
+    check_cuda("launch emit_neighbors_kernel", cudaGetLastError());
+    check_cuda("cudaStreamSynchronize (NL build)", cudaStreamSynchronize(s));
+  }
 }
 
 NeighborListHostSnapshot NeighborListGpu::download(DeviceStream& stream) const {
+  TDMD_NVTX_RANGE("nl.download");
   NeighborListHostSnapshot snap;
   if (!impl_ || impl_->atom_count == 0) {
     return snap;

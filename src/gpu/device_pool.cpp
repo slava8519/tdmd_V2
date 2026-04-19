@@ -10,6 +10,8 @@
 
 #include "tdmd/gpu/device_pool.hpp"
 
+#include "tdmd/telemetry/nvtx.hpp"
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -223,6 +225,8 @@ DevicePool::~DevicePool() {
 }
 
 DevicePtr<std::byte> DevicePool::allocate_device(std::size_t nbytes, DeviceStream& stream) {
+  TDMD_NVTX_RANGE("gpu.pool.alloc_device");
+
   const std::size_t class_idx = class_for(nbytes);
   cudaStream_t cs = raw_stream(stream);
 
@@ -262,6 +266,8 @@ DevicePtr<std::byte> DevicePool::allocate_device(std::size_t nbytes, DeviceStrea
 }
 
 DevicePtr<std::byte> DevicePool::allocate_pinned_host(std::size_t nbytes) {
+  TDMD_NVTX_RANGE("gpu.pool.alloc_pinned");
+
   const std::size_t class_idx = class_for(nbytes);
 
   if (class_idx < kNumClasses) {

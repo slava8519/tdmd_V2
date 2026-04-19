@@ -1,9 +1,9 @@
 # perfmodel/SPEC.md
 
 **Module:** `perfmodel/`
-**Status:** master module spec
+**Status:** master module spec v1.1 (T6.11 shipped — GPU cost tables + `predict_step_gpu_sec`)
 **Parent:** `TDMD Engineering Spec v2.1` §4, §4a, §12.7
-**Last updated:** 2026-04-16
+**Last updated:** 2026-04-19
 
 ---
 
@@ -685,7 +685,7 @@ for benchmark in [T1, T2, T3, T4, T5, T6, T7]:
 | M3 | Pattern 1 predictions; K_opt; first formulas for TD |
 | M4 | Calibration system; potential cost measurement; calibration cache |
 | M5 | Anchor test vs Andreev numbers; full Pattern 1 validation |
-| M6 | GPU HardwareProfile; NCCL/NVLink probing |
+| M6 | GPU HardwareProfile; NCCL/NVLink probing. **T6.11 shipped (v1.1):** GPU cost tables (`gpu_cost_tables.hpp`) + `predict_step_gpu_sec` + Reference/MixedFast factories with placeholder coefficients; ±20% calibration gate deferred to T6.11b (pending Nsight run on target GPU). |
 | **M7** | Pattern 2 full support; `recommend()` для hybrid; validation gates |
 | M8+ | Uncertainty quantification; ML correction layer; hardware-shopping use case |
 
@@ -701,4 +701,13 @@ for benchmark in [T1, T2, T3, T4, T5, T6, T7]:
 
 ---
 
-*Конец perfmodel/SPEC.md v1.0, дата: 2026-04-16.*
+## 11. Change log
+
+| Date       | Version | Change                                                                    |
+|------------|---------|---------------------------------------------------------------------------|
+| 2026-04-16 | v1.0    | Initial авторство. Pattern 3 predict() skeleton (M2/T2.10). Scope: CPU cost tables, `PotentialCost`, `HardwareProfile::modern_x86_64`, `predict_step_sec` single-rank baseline. |
+| 2026-04-19 | v1.1    | **T6.11 landed (M6)** — GPU cost-table infrastructure. New public header `tdmd/perfmodel/gpu_cost_tables.hpp`: `GpuKernelCost {a_sec, b_sec_per_atom}` with `predict(n_atoms) = a + b·n` linear model; `GpuCostTables` aggregate (`h2d_atom`, `nl_build`, `eam_force`, `vv_pre`, `vv_post`, `d2h_force` + `provenance` string) with `step_total_sec(n_atoms)` sum. Factory functions `gpu_cost_tables_fp64_reference()` + `gpu_cost_tables_mixed_fast()` ship **placeholder coefficients** (Ampere/Ada consumer-GPU estimates) — provenance strings tag them for replacement via T6.11b calibration harness. **New method** `PerfModel::predict_step_gpu_sec(n_atoms, tables)` divides `n_atoms` by `HardwareProfile::n_ranks` then sums `tables.step_total_sec(n_per_rank) + hw.scheduler_overhead_sec`. Scope limit: this ships the **shape**, not the **accuracy** — ±20 % gate vs measured Nsight data is deferred to T6.11b (needs profiling run on target GPU, which Option A CI cannot automate on a public repo without a self-hosted runner). When T6.11b lands, a JSON fixture will carry measured coefficients and a new test case will assert `predict_step_gpu_sec` within ±20 % of measured step wall-time. Tests: 8 new Catch2 cases in `tests/perfmodel/test_gpu_cost_tables.cpp` cover linear-model math, structural sanity bands, MixedFast ≤ Reference EAM per-atom cost invariant, and `predict_step_gpu_sec` wiring through `n_ranks`. |
+
+---
+
+*Конец perfmodel/SPEC.md v1.1, дата: 2026-04-19.*

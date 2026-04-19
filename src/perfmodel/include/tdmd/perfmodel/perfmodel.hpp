@@ -15,6 +15,7 @@
 // meaningful, without stubbing Pattern 2 fields that would leave NaN / Inf
 // traps for callers.
 
+#include "tdmd/perfmodel/gpu_cost_tables.hpp"
 #include "tdmd/perfmodel/hardware_profile.hpp"
 
 #include <cstdint>
@@ -84,6 +85,18 @@ public:
   // Deterministic ordering on ties: Pattern 3 first (lower `pattern_name`
   // string by lex sort, used as the tiebreaker).
   [[nodiscard]] std::vector<PerfPrediction> rank(std::uint64_t n_atoms) const;
+
+  // GPU per-step time, consuming pre-calibrated `GpuCostTables` (Reference
+  // or MixedFast). Returns wall-clock seconds for a single MD step on one
+  // rank owning `n_atoms`. Adds `hw_.scheduler_overhead_sec` per §3.5 — the
+  // dispatch / runtime overhead is paid regardless of CPU vs GPU backend.
+  //
+  // Used by `tdmd explain --perf --backend gpu` (CLI landing in T6.12+) and
+  // by the M7 Pattern 2 cost estimator when the inner subdomain runs on GPU.
+  // **Not** wired into `rank()` yet — ranker comparisons are CPU-only until
+  // the heterogeneous model lands (M10+, see perfmodel/SPEC §9 roadmap).
+  [[nodiscard]] double predict_step_gpu_sec(std::uint64_t n_atoms,
+                                            const GpuCostTables& tables) const noexcept;
 
   [[nodiscard]] const HardwareProfile& hardware() const noexcept { return hw_; }
   [[nodiscard]] const PotentialCost& potential() const noexcept { return potential_; }
