@@ -34,12 +34,16 @@ function(tdmd_apply_warnings target)
   # MSVC isn't supported (TDMD is Linux/GPU first), but if it ever is...
   set(TDMD_MSVC_WARNINGS /W4 /permissive-)
 
+  # Gate host warnings to C++ sources only. Without $<COMPILE_LANGUAGE:CXX>, CMake forwards them
+  # verbatim through nvcc, which then emits them on its generated stub files (the cudafe1 stubs use
+  # GCC-extension #line directives and trip -Wpedantic -Werror). CUDA warnings are handled via
+  # --Werror=all-warnings in the nvcc-specific block below.
   target_compile_options(
     ${target}
     PRIVATE
-      $<$<OR:$<CXX_COMPILER_ID:Clang>,$<CXX_COMPILER_ID:AppleClang>,$<CXX_COMPILER_ID:GNU>>:${TDMD_GCC_CLANG_WARNINGS}>
-      $<$<CXX_COMPILER_ID:GNU>:${TDMD_GCC_ONLY_WARNINGS}>
-      $<$<CXX_COMPILER_ID:MSVC>:${TDMD_MSVC_WARNINGS}>)
+      $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<OR:$<CXX_COMPILER_ID:Clang>,$<CXX_COMPILER_ID:AppleClang>,$<CXX_COMPILER_ID:GNU>>>:${TDMD_GCC_CLANG_WARNINGS}>
+      $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CXX_COMPILER_ID:GNU>>:${TDMD_GCC_ONLY_WARNINGS}>
+      $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CXX_COMPILER_ID:MSVC>>:${TDMD_MSVC_WARNINGS}>)
 
   # ----------------------------------------------------------------------------
   # CUDA — nvcc passes host flags through -Xcompiler.
@@ -54,10 +58,11 @@ function(tdmd_apply_warnings target)
   # Warnings-as-errors (opt-in; CI sets this ON).
   # ----------------------------------------------------------------------------
   if(TDMD_WARNINGS_AS_ERRORS)
+    # Only applied to C++ — CUDA uses --Werror=all-warnings via the block above.
     target_compile_options(
       ${target}
       PRIVATE
-        $<$<OR:$<CXX_COMPILER_ID:Clang>,$<CXX_COMPILER_ID:AppleClang>,$<CXX_COMPILER_ID:GNU>>:-Werror>
-        $<$<CXX_COMPILER_ID:MSVC>:/WX>)
+        $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<OR:$<CXX_COMPILER_ID:Clang>,$<CXX_COMPILER_ID:AppleClang>,$<CXX_COMPILER_ID:GNU>>>:-Werror>
+        $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CXX_COMPILER_ID:MSVC>>:/WX>)
   endif()
 endfunction()

@@ -591,11 +591,12 @@ tdmd run cfg.yaml --gpu-device=1 --gpu-streams=2 --gpu-memory-pool-mib=512 --no-
 |------------|---------|---------------------------------------------------------------------------|
 | 2026-04-19 | v1.0    | Initial авторство. Anchors D-M6-1..D-M6-20 from `docs/development/m6_execution_pack.md`. Ships alongside T6.2 skeleton (`src/gpu/` + `tests/gpu/test_gpu_types.cpp`). Change log extension in `TDMD_Engineering_Spec.md` Приложение C. |
 | 2026-04-19 | v1.0.1  | §5.1/§5.2 updated с T6.3 implementation notes: `DevicePool` ships как single class owning both device+pinned pools (1:1 rank binding); grow-on-demand free-list policy; LRU deferred (OQ-M6-1). Adds `factories.hpp` public API (probe_devices / select_device / make_stream / make_event) + `device_pool.hpp`. `cuda_handles.hpp` internal header shares PIMPL Impl defs across gpu/ TUs без leaking CUDA symbols в public API. |
+| 2026-04-19 | v1.0.2  | §7.1 resolved — T6.4 `NeighborListGpu` landed. Implementation: two-pass (count → host-scan → emit) kernel pair, identical iteration order to CPU (27-cell stencil, dz-outer → dy → dx); D-M6-7 bit-exact gate met on 864-atom Al FCC (33,696 pairs, `std::memcmp` on offsets + ids + r²). Public API takes raw primitives (positions + cell CSR + BoxParams) — keeps gpu/ data-oblivious per §1.1 and breaks would-be `gpu/ → neighbor/` cyclic include. `src/neighbor/gpu_neighbor_builder.cpp` adapter translates domain types. Host-warn gating fix in `cmake/CompilerWarnings.cmake` — host flags (`-Wpedantic`, `-Werror`) now gated to `$<COMPILE_LANGUAGE:CXX>` so nvcc stub files don't trip extension diagnostics. Micro-bench baseline at `verify/benchmarks/neighbor_gpu_vs_cpu/`: 12.9× (10⁴ atoms) / 28.5× (10⁵ atoms) speedup on sm_120 — well above T6.4 ≥5× bar. OQ-M6-7 (CUB vs custom) resolved: custom two-pass + host scan is adequate for M6; on-device scan deferred to T6.11 perf tuning. |
 
 Roadmap extensions (authored by future tasks):
 
 - **T6.3** → §5.1 pool LRU detail, resolve OQ-M6-1 (**done — deferred to T6.5**);
-- **T6.4** → §7.1 NL kernel details, SoA layout confirmation (D-M6-16);
+- **T6.4** → §7.1 NL kernel details, SoA layout confirmation (D-M6-16) (**done — v1.0.2**);
 - **T6.5** → §7.2 EAM kernel details, Kahan overhead measurement (OQ-M6-4);
 - **T6.6** → §7.3 VV details + NVE drift measurements;
 - **T6.7** → §3.2 pipeline pattern extended;
