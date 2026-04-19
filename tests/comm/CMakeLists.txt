@@ -4,8 +4,9 @@
 # test_comm: non-MPI types + serializer unit tests (always built).
 # test_mpi_host_staging_2rank: MPI-only, needs TDMD_ENABLE_MPI + mpirun.
 
-add_executable(test_comm test_comm_types.cpp test_packet_serializer.cpp
-                         test_halo_packet_serializer.cpp test_cuda_mpi_probe.cpp)
+add_executable(
+  test_comm test_comm_types.cpp test_packet_serializer.cpp test_halo_packet_serializer.cpp
+            test_cuda_mpi_probe.cpp test_nccl_probe.cpp)
 
 target_link_libraries(test_comm PRIVATE tdmd::comm Catch2::Catch2WithMain)
 
@@ -60,5 +61,14 @@ if(TDMD_ENABLE_MPI)
     target_link_libraries(test_gpu_aware_mpi_2rank PRIVATE tdmd::comm Catch2::Catch2 MPI::MPI_CXX)
     add_test(NAME test_gpu_aware_mpi_2rank COMMAND ${MPIEXEC_EXECUTABLE} ${TDMD_MPI_EXTRA_FLAGS}
                                                    -np 2 $<TARGET_FILE:test_gpu_aware_mpi_2rank>)
+
+    # --- T7.4 NcclBackend 2-rank allreduce -------------------------------
+    # Runtime-SKIPs if NCCL isn't linked (TDMD_ENABLE_NCCL=OFF or ncclGetVersion fails) or no CUDA
+    # device is visible. Always built — stub-backend path still exercises the probe-refusal
+    # contract.
+    add_executable(test_nccl_backend_2rank main_mpi.cpp test_nccl_backend.cpp)
+    target_link_libraries(test_nccl_backend_2rank PRIVATE tdmd::comm Catch2::Catch2 MPI::MPI_CXX)
+    add_test(NAME test_nccl_backend_2rank COMMAND ${MPIEXEC_EXECUTABLE} ${TDMD_MPI_EXTRA_FLAGS} -np
+                                                  2 $<TARGET_FILE:test_nccl_backend_2rank>)
   endif()
 endif()

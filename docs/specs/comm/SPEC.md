@@ -412,6 +412,19 @@ NCCL especially fast для:
 
 **Limitation:** NCCL не работает across nodes без NVSwitch. Для multi-node Pattern 2 — используется только inner level.
 
+**Implementation (T7.4, M7):**
+
+- `tdmd::comm::is_nccl_available()` / `nccl_runtime_version()` — runtime probe cached via atomic; wraps `ncclGetVersion()` when the NCCL SDK is linked, returns `false` / `0` when it isn't. Never aborts. `reset_nccl_probe_cache_for_testing()` drives the cache for unit tests.
+- `NcclBackend` constructor throws `std::runtime_error` on probe-negative. Engine preflight (T7.9) catches this and routes the inner level to `GpuAwareMpiBackend` or `MpiHostStagingBackend` per §6.4. `TDMD_ENABLE_NCCL` is a top-level CMake option that auto-disables when NCCL headers / library aren't found; the stub build path is identical (constructor always throws) so downstream code doesn't branch.
+- PIMPL firewall: public header pulls only TDMD types + abstract `CommBackend`. `<nccl.h>` + `<cuda_runtime.h>` + `<mpi.h>` live in the `.cpp` TU.
+- Init protocol: rank 0 generates `ncclUniqueId` via `ncclGetUniqueId`; broadcast over a sidecar `MPI_Comm_dup`; all ranks call `ncclCommInitRank`. Each rank picks `device_id = rank % visible_gpus` — MPS-compatible on single-GPU dev boxes, one-GPU-per-rank on multi-GPU nodes.
+- Dedicated `cudaStream_t` per backend instance. NCCL ops enqueue on it; collectives sync the stream before returning. T7.5 HybridBackend can share an external stream for overlap with compute.
+- **Determinism (D-M5-9 + D-M7-4):** NCCL is transport-only. `global_sum_double` does `ncclAllGather` → host pinned scratch → `kahan_sum_ordered` (the same rank-ordered Kahan fold used by `deterministic_sum_double(MPI_Comm)`). The M5 thermo byte-exact chain (D-M5-12) extends through the NCCL path by construction: the only floats that touch NCCL are the per-rank local sums; the global reduction order is identical to the MPI path.
+- `global_max_double`: direct `ncclAllReduce(ncclMax)`. Max is associative — no host fold needed.
+- `barrier`: `MPI_Barrier` on the sidecar communicator — NCCL has no explicit barrier primitive.
+- Temporal / halo / migration: no-op stubs at T7.4. NCCL P2P requires `ncclGroupStart`/`ncclGroupEnd` pairing which is incompatible with the scheduler's `Iprobe`-drain model; `HybridBackend` (T7.5) routes these through the outer `GpuAwareMpi` backend instead. Inner-TD grouped dispatch is a T7.9 item.
+- **Version warning** (D-M7-4): `NcclBackend::initialize` prints a `stderr` warning if `nccl_runtime_version() < 2.18`. Non-fatal so dev boxes with distro-pinned 2.12/2.16 can still exercise the path.
+
 ### 6.4. HybridBackend (Pattern 2 default)
 
 Combines:
@@ -695,6 +708,23 @@ Comm backend diagnostics:
 ---
 
 ## 14. Change log
+
+- **2026-04-19** — **T7.4 — `NcclBackend` implementation landed (M7).**
+  Second concrete delivery of §6.3 alongside T7.3's §6.2. Top-level
+  `TDMD_ENABLE_NCCL` option auto-detects NCCL at configure time (falls
+  back to a stub-throw body on absence). Probe-gated constructor mirrors
+  the T7.3 pattern: engine preflight (T7.9) catches the runtime_error
+  and routes the inner TD level through `GpuAwareMpiBackend` or
+  `MpiHostStagingBackend` per §6.4. `global_sum_double` uses
+  `ncclAllGather` + host-side `kahan_sum_ordered`, preserving the
+  D-M5-9 deterministic reduction contract and extending the D-M5-12
+  byte-exact thermo chain through the NCCL path. No SPEC-surface
+  changes — §6.3 was already authored; T7.4 is its implementation.
+  2-rank unit test SKIPs cleanly when NCCL or CUDA is unavailable
+  (Option A CI posture). See §6.3 "Implementation" subsection for
+  init protocol (uniqueId MPI-broadcast), stream ownership, temporal-
+  stub deferral rationale (T7.5 HybridBackend routing), and D-M7-4
+  version warning.
 
 - **2026-04-19** — **T7.3 — `GpuAwareMpiBackend` implementation landed
   (M7).** First concrete delivery of §6.2: probe-gated constructor,

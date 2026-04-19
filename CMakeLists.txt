@@ -27,6 +27,7 @@ option(TDMD_BUILD_TESTS "Build unit tests" ON)
 option(TDMD_BUILD_BENCHMARKS "Build microbenchmarks" OFF)
 option(TDMD_WARNINGS_AS_ERRORS "Treat warnings as errors (use ON in CI)" OFF)
 option(TDMD_ENABLE_MPI "Enable MPI-dependent comm backends (M5+)" ON)
+option(TDMD_ENABLE_NCCL "Enable NCCL backend (M7+, auto-detect at configure)" ON)
 
 set(TDMD_BUILD_FLAVOR
     "Fp64ReferenceBuild"
@@ -118,6 +119,32 @@ if(TDMD_ENABLE_MPI)
   endif()
 else()
   message(STATUS "TDMD MPI: disabled (TDMD_ENABLE_MPI=OFF)")
+endif()
+
+# ------------------------------------------------------------------------------
+# Optional NCCL — NcclBackend (M7+) links to it. TDMD_ENABLE_NCCL=ON is best-effort: we auto-detect
+# via find_path/find_library, and silently disable the backend (constructor throws at runtime,
+# engine falls back to MpiHostStaging) if NCCL is absent. This mirrors the CUDA-aware-MPI probe-gate
+# pattern from T7.3 and keeps the build green on dev machines without NCCL installed.
+# ------------------------------------------------------------------------------
+if(TDMD_ENABLE_NCCL
+   AND TDMD_BUILD_CUDA
+   AND TDMD_ENABLE_MPI)
+  find_path(NCCL_INCLUDE_DIR nccl.h HINTS $ENV{NCCL_HOME}/include /usr/include
+                                          /usr/local/cuda/include /usr/local/include)
+  find_library(
+    NCCL_LIBRARY nccl HINTS $ENV{NCCL_HOME}/lib $ENV{NCCL_HOME}/lib64 /usr/lib/x86_64-linux-gnu
+                            /usr/local/cuda/lib64 /usr/local/lib)
+  if(NCCL_INCLUDE_DIR AND NCCL_LIBRARY)
+    message(STATUS "TDMD NCCL: enabled, ${NCCL_LIBRARY} (headers ${NCCL_INCLUDE_DIR})")
+  else()
+    message(STATUS "TDMD NCCL: requested but not found — NcclBackend will stub-throw at "
+                   "construction (fallback to MpiHostStaging is engine's job).")
+    set(TDMD_ENABLE_NCCL OFF)
+  endif()
+else()
+  message(STATUS "TDMD NCCL: disabled (TDMD_ENABLE_NCCL=OFF, or CUDA/MPI missing)")
+  set(TDMD_ENABLE_NCCL OFF)
 endif()
 
 # ------------------------------------------------------------------------------

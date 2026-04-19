@@ -9,7 +9,9 @@ set(tdmd_comm_sources
     halo_packet_serializer.cpp
     deterministic_reduction.cpp
     cuda_mpi_probe.cpp
-    gpu_aware_mpi_backend.cpp)
+    gpu_aware_mpi_backend.cpp
+    nccl_probe.cpp
+    nccl_backend.cpp)
 if(TDMD_ENABLE_MPI)
   list(APPEND tdmd_comm_sources mpi_host_staging_backend.cpp ring_backend.cpp)
 endif()
@@ -32,6 +34,21 @@ if(TDMD_ENABLE_MPI)
   endif()
 else()
   target_compile_definitions(tdmd_comm PUBLIC TDMD_ENABLE_MPI=0)
+endif()
+
+# Optional NCCL — NcclBackend (T7.4) links to it. Configure-time detection in the top-level
+# CMakeLists flips TDMD_ENABLE_NCCL off when NCCL is absent; the nccl_backend.cpp stub covers that
+# build cleanly (constructor throws, engine falls back to GpuAwareMpi or MpiHostStaging per SPEC
+# §6.3 + §6.4).
+if(TDMD_ENABLE_NCCL)
+  target_compile_definitions(tdmd_comm PUBLIC TDMD_ENABLE_NCCL=1)
+  target_include_directories(tdmd_comm PUBLIC ${NCCL_INCLUDE_DIR})
+  target_link_libraries(tdmd_comm PUBLIC ${NCCL_LIBRARY})
+  if(TARGET CUDA::cudart)
+    target_link_libraries(tdmd_comm PUBLIC CUDA::cudart)
+  endif()
+else()
+  target_compile_definitions(tdmd_comm PUBLIC TDMD_ENABLE_NCCL=0)
 endif()
 
 tdmd_apply_build_flavor(tdmd_comm)
