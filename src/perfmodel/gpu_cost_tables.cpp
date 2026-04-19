@@ -49,6 +49,44 @@ constexpr const char* kMixedFastProvenance =
 
 }  // namespace
 
+namespace {
+
+// T7.10 Pattern 2 outer-halo + reduction placeholder coefficients. The four
+// stages added in T7.10 use the same starter-estimate approach as T6.11:
+// values come from published intra-node NCCL + PCIe benchmarks for
+// Ampere/Ada-class GPUs, replaced via T7.13 calibration when Nsight data
+// lands.
+//
+//   halo_pack            — D2D gather kernel (positions + types into staging
+//                          buffer). Same shape as a small element-wise kernel,
+//                          ~5 μs launch + ~2 ns/atom for 32 B/atom payload at
+//                          ~16 GB/s effective D2D bandwidth.
+//   halo_send_outer      — host-staging path on a midrange 100 Gb/s NIC:
+//                          D2H + MPI Send/Recv + H2D, ~12 GB/s effective.
+//                          Per-atom term: 32 B / 12 GB/s ≈ 2.7 ns/atom.
+//                          Launch overhead ~30 μs (MPI init + 2 cudaMemcpy).
+//   halo_unpack          — D2D scatter kernel, mirror of halo_pack.
+//   nccl_allreduce_inner — intra-subdomain thermo reduction (fixed payload
+//                          ~56 B: PE + KE + virial 6 comp). NCCL allreduce
+//                          intra-node: ~50 μs flat for tiny payloads.
+//                          `b_sec_per_atom` set to 1e-12 — nominally
+//                          present so `predict(0)` returns the a-term only,
+//                          satisfying the GpuKernelCost::predict contract.
+GpuKernelCost halo_pack_default() noexcept {
+  return {/*a_sec=*/5.0e-6, /*b_sec_per_atom=*/2.0e-9};
+}
+GpuKernelCost halo_send_outer_default() noexcept {
+  return {/*a_sec=*/30.0e-6, /*b_sec_per_atom=*/32.0 / 12.0e9};
+}
+GpuKernelCost halo_unpack_default() noexcept {
+  return {/*a_sec=*/5.0e-6, /*b_sec_per_atom=*/2.0e-9};
+}
+GpuKernelCost nccl_allreduce_inner_default() noexcept {
+  return {/*a_sec=*/50.0e-6, /*b_sec_per_atom=*/1.0e-12};
+}
+
+}  // namespace
+
 GpuCostTables gpu_cost_tables_fp64_reference() {
   GpuCostTables t;
 
@@ -73,6 +111,14 @@ GpuCostTables gpu_cost_tables_fp64_reference() {
   t.vv_pre = {/*a_sec=*/10.0e-6, /*b_sec_per_atom=*/1.0e-9};
   t.vv_post = {/*a_sec=*/10.0e-6, /*b_sec_per_atom=*/1.0e-9};
 
+  // T7.10 — Pattern 2 outer-halo + reduction. Reference and MixedFast share
+  // these because the halo pipeline doesn't touch the EAM math precision
+  // split; only the inner force kernel differs between flavors.
+  t.halo_pack = halo_pack_default();
+  t.halo_send_outer = halo_send_outer_default();
+  t.halo_unpack = halo_unpack_default();
+  t.nccl_allreduce_inner = nccl_allreduce_inner_default();
+
   t.provenance = kReferenceProvenance;
   return t;
 }
@@ -92,6 +138,12 @@ GpuCostTables gpu_cost_tables_mixed_fast() {
   // EAM force MixedFast: FP32 pair math ~1.7× faster on per-atom loop
   // (T6.8a traces). Entry cost identical (same 3 kernels).
   t.eam_force = {/*a_sec=*/50.0e-6, /*b_sec_per_atom=*/3.0e-9};
+
+  // T7.10 — Pattern 2 outer-halo + reduction (identical between flavors).
+  t.halo_pack = halo_pack_default();
+  t.halo_send_outer = halo_send_outer_default();
+  t.halo_unpack = halo_unpack_default();
+  t.nccl_allreduce_inner = nccl_allreduce_inner_default();
 
   t.provenance = kMixedFastProvenance;
   return t;

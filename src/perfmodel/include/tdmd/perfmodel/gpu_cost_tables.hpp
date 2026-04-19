@@ -53,8 +53,21 @@ struct GpuKernelCost {
 //   gpu.h2d.atoms_cells   →  h2d_atom         (per step, positions + cells)
 //   gpu.d2h.forces        →  d2h_force        (per step, f/pe/virial)
 //
-// `step_total()` sums them for a single-zone, single-subdomain step — the
-// quantity PerfModel exposes through `predict_step_time_gpu()`.
+// T7.10 — Pattern 2 (hybrid TD × SD) outer-halo + reduction stages. These are
+// **per-face-neighbor** costs on the outer SD path; PerfModel multiplies them
+// by the geometric face-neighbor count derived from the subdomain grid. Only
+// active when a Pattern 2 estimate is requested — Pattern 1/3 paths ignore
+// them and stay byte-identical to the T6.11 baseline.
+//
+//   gpu.halo.pack         →  halo_pack            (D2D gather of halo atoms)
+//   gpu.halo.send.outer   →  halo_send_outer      (D2H + MPI/NCCL send/recv + H2D)
+//   gpu.halo.unpack       →  halo_unpack          (D2D scatter into ghost zone)
+//   gpu.allreduce.inner   →  nccl_allreduce_inner (intra-subdomain thermo reduce)
+//
+// `step_total()` sums the inner stages for a single-zone, single-subdomain
+// step — the quantity PerfModel exposes through `predict_step_gpu_sec()`.
+// `step_total_hybrid()` adds the outer-halo + reduction stages — the quantity
+// `predict_step_hybrid_seconds()` exposes for Pattern 2 estimates.
 struct GpuCostTables {
   GpuKernelCost nl_build{};
   GpuKernelCost eam_force{};
@@ -62,6 +75,16 @@ struct GpuCostTables {
   GpuKernelCost vv_post{};
   GpuKernelCost h2d_atom{};
   GpuKernelCost d2h_force{};
+
+  // T7.10 Pattern 2 outer-halo + reduction stages (per-face-neighbor evaluated
+  // at the per-face halo atom count ≈ N_per_subdomain^(2/3)). The
+  // `nccl_allreduce_inner` cost is fixed-payload thermo (energy + virial 6 comp,
+  // ~56 bytes); its `b_sec_per_atom` term is set to a near-zero value so
+  // `predict(0)` returns the launch+execute cost only — see perfmodel/SPEC §11.5.
+  GpuKernelCost halo_pack{};
+  GpuKernelCost halo_send_outer{};
+  GpuKernelCost halo_unpack{};
+  GpuKernelCost nccl_allreduce_inner{};
 
   // Free-form metadata: GPU model, CUDA toolkit version, date, N-range.
   // Not machine-parsed; intended so reviewers can see at a glance whether
@@ -74,6 +97,15 @@ struct GpuCostTables {
     // acceptance smoke) → EAM force → VV pre + post → D2H forces.
     return h2d_atom.predict(n_atoms) + nl_build.predict(n_atoms) + eam_force.predict(n_atoms) +
            vv_pre.predict(n_atoms) + vv_post.predict(n_atoms) + d2h_force.predict(n_atoms);
+  }
+
+  // T7.10 — Pattern 2 outer-stage cost per face neighbor at the given per-face
+  // halo atom count. Pack + send + unpack form the round-trip; the reduction
+  // term is added once outside this helper (it's a single allreduce per step,
+  // not per-neighbor). Returns 0 if n_face_neighbors==0 (Pattern 1 collapse).
+  [[nodiscard]] double outer_halo_sec_per_neighbor(std::uint64_t n_halo_atoms) const noexcept {
+    return halo_pack.predict(n_halo_atoms) + halo_send_outer.predict(n_halo_atoms) +
+           halo_unpack.predict(n_halo_atoms);
   }
 };
 

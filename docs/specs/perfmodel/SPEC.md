@@ -686,7 +686,7 @@ for benchmark in [T1, T2, T3, T4, T5, T6, T7]:
 | M4 | Calibration system; potential cost measurement; calibration cache |
 | M5 | Anchor test vs Andreev numbers; full Pattern 1 validation |
 | M6 | GPU HardwareProfile; NCCL/NVLink probing. **T6.11 shipped (v1.1):** GPU cost tables (`gpu_cost_tables.hpp`) + `predict_step_gpu_sec` + Reference/MixedFast factories with placeholder coefficients; ±20% calibration gate deferred to T6.11b (pending Nsight run on target GPU). |
-| **M7** | Pattern 2 full support; `recommend()` для hybrid; validation gates |
+| **M7** | Pattern 2 full support; `recommend()` для hybrid; validation gates. **T7.10 shipped (v1.2):** Pattern 2 cost-prediction surface — `predict_step_hybrid_seconds()` + `recommend_pattern2()` + 4 new `GpuCostTables` stages (halo_pack/halo_send_outer/halo_unpack/nccl_allreduce_inner) + `face_neighbors_count()` geometry helper. Placeholder coefficients (T7.13 calibration TBD). See §11.5. |
 | M8+ | Uncertainty quantification; ML correction layer; hardware-shopping use case |
 
 ---
@@ -707,7 +707,45 @@ for benchmark in [T1, T2, T3, T4, T5, T6, T7]:
 |------------|---------|---------------------------------------------------------------------------|
 | 2026-04-16 | v1.0    | Initial авторство. Pattern 3 predict() skeleton (M2/T2.10). Scope: CPU cost tables, `PotentialCost`, `HardwareProfile::modern_x86_64`, `predict_step_sec` single-rank baseline. |
 | 2026-04-19 | v1.1    | **T6.11 landed (M6)** — GPU cost-table infrastructure. New public header `tdmd/perfmodel/gpu_cost_tables.hpp`: `GpuKernelCost {a_sec, b_sec_per_atom}` with `predict(n_atoms) = a + b·n` linear model; `GpuCostTables` aggregate (`h2d_atom`, `nl_build`, `eam_force`, `vv_pre`, `vv_post`, `d2h_force` + `provenance` string) with `step_total_sec(n_atoms)` sum. Factory functions `gpu_cost_tables_fp64_reference()` + `gpu_cost_tables_mixed_fast()` ship **placeholder coefficients** (Ampere/Ada consumer-GPU estimates) — provenance strings tag them for replacement via T6.11b calibration harness. **New method** `PerfModel::predict_step_gpu_sec(n_atoms, tables)` divides `n_atoms` by `HardwareProfile::n_ranks` then sums `tables.step_total_sec(n_per_rank) + hw.scheduler_overhead_sec`. Scope limit: this ships the **shape**, not the **accuracy** — ±20 % gate vs measured Nsight data is deferred to T6.11b (needs profiling run on target GPU, which Option A CI cannot automate on a public repo without a self-hosted runner). When T6.11b lands, a JSON fixture will carry measured coefficients and a new test case will assert `predict_step_gpu_sec` within ±20 % of measured step wall-time. Tests: 8 new Catch2 cases in `tests/perfmodel/test_gpu_cost_tables.cpp` cover linear-model math, structural sanity bands, MixedFast ≤ Reference EAM per-atom cost invariant, and `predict_step_gpu_sec` wiring through `n_ranks`. |
+| 2026-04-19 | v1.2    | **T7.10 landed (M7)** — Pattern 2 (two-level hybrid TD × SD) cost-prediction surface. `GpuCostTables` extended with 4 new stages: `halo_pack` + `halo_unpack` (D2D gather/scatter, ~5 μs launch + ~2 ns/atom), `halo_send_outer` (host-staging round-trip on 100 Gb/s NIC, ~30 μs launch + ~32 B/12 GB/s per atom), `nccl_allreduce_inner` (intra-subdomain thermo allreduce, fixed ~50 μs payload). Both factory functions (`gpu_cost_tables_fp64_reference` + `gpu_cost_tables_mixed_fast`) populate the four stages identically — the halo pipeline doesn't depend on EAM-math precision. New helper `GpuCostTables::outer_halo_sec_per_neighbor(n_halo)` sums pack/send/unpack. **New method** `PerfModel::predict_step_hybrid_seconds(Pattern2CostInputs, tables)` returns `t_inner_TD + n_face_neighbors · outer_halo_per_neighbor(n_halo) + nccl_allreduce_inner.predict(0) + scheduler_overhead`. Halo atom count per face uses the cubic-subdomain face-area approximation `n_halo ≈ N_per_subdomain^(2/3)` (master spec §3.2 / §3.4). **New method** `PerfModel::recommend_pattern2(n_atoms_total, subdomains, tables)` compares Pattern 1 single-subdomain estimate (all atoms on one device) against Pattern 2 estimate for the supplied grid; emits `recommended_pattern: "Pattern2"` only when margin `≥ 5 %` (OQ-M7-9 resolution). Returns `Pattern2Recommendation { recommended_pattern, t_pattern1_sec, t_pattern2_sec, margin_fraction }`. **New free function** `face_neighbors_count(subdomains)` counts axes with `N_axis ≥ 2` × 2 (periodic interior). Scope limit: this ships the Pattern 2 **shape** + recommendation logic; ±25 % calibration gate vs measured Pattern 2 hybrid wall-time is T7.13 follow-up (orthogonal to M7 critical path per D-M7-9). Pattern 1 path (`predict_step_gpu_sec`) is byte-for-byte unchanged — T7.10 is purely additive. Tests: 10 new Catch2 cases in `tests/perfmodel/test_perfmodel_pattern2.cpp` cover `face_neighbors_count` geometry (0..6), structural sanity of the 4 new stages, `outer_halo_sec_per_neighbor` linear sum, hybrid prediction collapse to Pattern 1 at `n_face_neighbors=0`, halo cost linear in n_face_neighbors, recommendation logic on degenerate / small / large inputs, determinism, and Pattern 1 regression. |
+
+### 11.5. Pattern 2 hybrid cost model (T7.10)
+
+Cost decomposition (master spec §12.7, §3.4):
+
+```
+t_hybrid = t_inner_TD + t_outer_halo + t_reduction + scheduler_overhead
+
+t_inner_TD   = GpuCostTables::step_total_sec(n_atoms_per_subdomain)
+                — same expression as Pattern 1 (T6.11 baseline)
+t_outer_halo = n_face_neighbors · outer_halo_sec_per_neighbor(n_halo_per_face)
+                = n_face_neighbors · (halo_pack(n_halo) + halo_send_outer(n_halo)
+                                                       + halo_unpack(n_halo))
+t_reduction  = nccl_allreduce_inner.predict(0)
+                — fixed payload (energy + virial 6 comp ≈ 56 B); b_sec_per_atom
+                  is set to ~1e-12 in factories so predict(0) returns the
+                  launch+execute a-term only.
+```
+
+Geometry inputs:
+
+- `n_atoms_per_subdomain = n_atoms_total / product(subdomains)` — caller computes;
+- `n_face_neighbors = face_neighbors_count(subdomains)` — count of axes with `N_axis ≥ 2`, multiplied by 2 (periodic interior subdomain has two neighbors per partitioned axis);
+- `n_halo_per_face ≈ n_atoms_per_subdomain^(2/3)` — cubic-subdomain face-area approximation (master spec §3.2). For non-cubic subdomains this is an upper bound (max-face dominates); placeholder-era accuracy is not gated by this approximation.
+
+Pattern recommendation (`recommend_pattern2`):
+
+- `Pattern1` baseline: `tables.step_total_sec(n_atoms_total) + scheduler_overhead` — represents "all atoms on one device, one subdomain";
+- `Pattern2` candidate: `predict_step_hybrid_seconds()` for the supplied grid;
+- Decision: `Pattern2` is recommended iff `margin = (t_p1 − t_p2) / t_p1 ≥ 0.05` (OQ-M7-9 — 5% margin matches the dissertation efficiency-tolerance precedent and avoids noise-limited tossups);
+- Degenerate `[1,1,1]`: returns `Pattern1` with `margin = 0`, `t_pattern2_sec = t_pattern1_sec`.
+
+Out of T7.10 scope:
+
+- ±25% calibration gate vs measured Pattern 2 hybrid wall-time (T7.13 — orthogonal to M7 critical path per D-M7-9);
+- Per-axis non-uniform subdomain shapes / dynamic load balancing (M9+);
+- NCCL collectives extended beyond intra-subdomain thermo (M8+).
 
 ---
 
-*Конец perfmodel/SPEC.md v1.1, дата: 2026-04-19.*
+*Конец perfmodel/SPEC.md v1.2, дата: 2026-04-19 (T7.10 Pattern 2 cost surface).*

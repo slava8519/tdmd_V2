@@ -160,6 +160,84 @@ double PerfModel::predict_step_gpu_sec(std::uint64_t n_atoms,
   return tables.step_total_sec(n_per_rank) + hw_.scheduler_overhead_sec;
 }
 
+// T7.10 — Pattern 2 cost model. Pure formula, no hardware probing — the
+// caller provides the per-subdomain partition (via `Pattern2CostInputs`)
+// and PerfModel composes the per-step seconds from the four cost-table
+// stages introduced in T7.10 (halo_pack/send/unpack + nccl_allreduce_inner).
+//
+// Halo atom count per face: cubic-subdomain face area = N^(2/3). For
+// non-cubic subdomains this is an upper bound (max-face dominates),
+// adequate for the placeholder-coefficient era. T7.13 calibration revisits
+// the geometry approximation if a tighter bound is warranted.
+double PerfModel::predict_step_hybrid_seconds(const Pattern2CostInputs& inputs,
+                                              const GpuCostTables& tables) const noexcept {
+  const double t_inner = tables.step_total_sec(inputs.n_atoms_per_subdomain);
+
+  // Face-area approximation: n_halo ≈ (n_per_subdomain)^(2/3). Cast to
+  // uint64 for the cost-table API; floor is fine — placeholder coefficients
+  // dominate the rounding error.
+  const auto n_per_sd = static_cast<double>(inputs.n_atoms_per_subdomain);
+  const auto n_halo_per_face =
+      (n_per_sd > 0.0) ? static_cast<std::uint64_t>(std::pow(n_per_sd, 2.0 / 3.0)) : 0U;
+
+  const double t_outer_per_neighbor = tables.outer_halo_sec_per_neighbor(n_halo_per_face);
+  const double t_outer = static_cast<double>(inputs.n_face_neighbors) * t_outer_per_neighbor;
+
+  // Reduction: thermo allreduce, fixed payload — `predict(0)` returns the
+  // a-term (launch + execute) only; the b-term is set to ~0 in the table
+  // factories so n_atoms-scaling is structurally absent for this stage.
+  const double t_reduction = tables.nccl_allreduce_inner.predict(0U);
+
+  return t_inner + t_outer + t_reduction + hw_.scheduler_overhead_sec;
+}
+
+std::uint32_t face_neighbors_count(const std::array<std::uint32_t, 3>& subdomains) noexcept {
+  std::uint32_t n = 0U;
+  for (const auto axis : subdomains) {
+    if (axis >= 2U) {
+      n += 2U;  // periodic interior subdomain has two neighbors per partitioned axis
+    }
+  }
+  return n;
+}
+
+Pattern2Recommendation PerfModel::recommend_pattern2(std::uint64_t n_atoms_total,
+                                                     const std::array<std::uint32_t, 3>& subdomains,
+                                                     const GpuCostTables& tables) const noexcept {
+  Pattern2Recommendation rec;
+
+  // Pattern 1 baseline: all atoms on one subdomain on one device — bypass
+  // hw_.n_ranks because that field reflects the *current* deployment, not
+  // the hypothetical Pattern-1-collapse scenario we're comparing against.
+  rec.t_pattern1_sec = tables.step_total_sec(n_atoms_total) + hw_.scheduler_overhead_sec;
+
+  const std::uint64_t product = static_cast<std::uint64_t>(subdomains[0]) *
+                                static_cast<std::uint64_t>(subdomains[1]) *
+                                static_cast<std::uint64_t>(subdomains[2]);
+
+  if (product < 2U) {
+    // Degenerate input — caller passed [1,1,1]. No Pattern 2 to compare.
+    rec.t_pattern2_sec = rec.t_pattern1_sec;
+    rec.margin_fraction = 0.0;
+    rec.recommended_pattern = "Pattern1";
+    return rec;
+  }
+
+  Pattern2CostInputs p2;
+  p2.n_atoms_per_subdomain = n_atoms_total / product;
+  p2.n_face_neighbors = face_neighbors_count(subdomains);
+  rec.t_pattern2_sec = predict_step_hybrid_seconds(p2, tables);
+
+  rec.margin_fraction = (rec.t_pattern1_sec > 0.0)
+                            ? (rec.t_pattern1_sec - rec.t_pattern2_sec) / rec.t_pattern1_sec
+                            : 0.0;
+
+  // OQ-M7-9: 5% margin threshold. Below this Pattern 1 is the safe default
+  // (less coordination overhead, simpler debugging path).
+  rec.recommended_pattern = (rec.margin_fraction >= 0.05) ? "Pattern2" : "Pattern1";
+  return rec;
+}
+
 std::vector<PerfPrediction> PerfModel::rank(std::uint64_t n_atoms) const {
   std::vector<PerfPrediction> out;
   out.reserve(2U);

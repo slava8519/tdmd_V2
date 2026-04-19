@@ -9,3 +9,9 @@ add_test(NAME test_perfmodel COMMAND test_perfmodel)
 add_executable(test_gpu_cost_tables test_gpu_cost_tables.cpp)
 target_link_libraries(test_gpu_cost_tables PRIVATE tdmd::perfmodel Catch2::Catch2WithMain)
 add_test(NAME test_gpu_cost_tables COMMAND test_gpu_cost_tables)
+
+# T7.10: Pattern 2 (two-level hybrid TD × SD) cost prediction — geometry helper, hybrid step
+# formula, halo linear scaling with face-neighbor count, recommendation decision logic.
+add_executable(test_perfmodel_pattern2 test_perfmodel_pattern2.cpp)
+target_link_libraries(test_perfmodel_pattern2 PRIVATE tdmd::perfmodel Catch2::Catch2WithMain)
+add_test(NAME test_perfmodel_pattern2 COMMAND test_perfmodel_pattern2)

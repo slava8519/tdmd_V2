@@ -18,6 +18,7 @@
 #include "tdmd/perfmodel/gpu_cost_tables.hpp"
 #include "tdmd/perfmodel/hardware_profile.hpp"
 
+#include <array>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -98,6 +99,31 @@ public:
   [[nodiscard]] double predict_step_gpu_sec(std::uint64_t n_atoms,
                                             const GpuCostTables& tables) const noexcept;
 
+  // T7.10 — Pattern 2 (two-level hybrid TD × SD) per-step prediction.
+  // Cost model (master spec §12.7, perfmodel/SPEC §3.4 + §11.5):
+  //   t_hybrid = t_inner_TD + t_outer_halo + t_reduction
+  //   t_inner_TD   = step_total_sec(n_atoms_per_subdomain)        — T6.11 path
+  //   t_outer_halo = n_face_neighbors · outer_halo_sec_per_neighbor(n_halo)
+  //                  with n_halo ≈ n_atoms_per_subdomain^(2/3)    — §3.2 face area
+  //   t_reduction  = nccl_allreduce_inner.predict(0)              — fixed payload
+  //
+  // Pure cost — caller computes geometry. Returns 0 if `n_face_neighbors == 0`
+  // for the outer term, collapsing to `predict_step_gpu_sec(n_atoms_per_subdomain)`
+  // plus the fixed reduction overhead. Adds `hw_.scheduler_overhead_sec` once
+  // per step (matches T6.11 Pattern 1 path).
+  [[nodiscard]] double predict_step_hybrid_seconds(const struct Pattern2CostInputs& inputs,
+                                                   const GpuCostTables& tables) const noexcept;
+
+  // T7.10 — Pattern recommendation. Compares the Pattern 1 single-subdomain
+  // estimate against the Pattern 2 estimate for the given subdomain grid;
+  // recommends Pattern 2 only when it wins by >= 5% (OQ-M7-9 resolution —
+  // matches dissertation efficiency-tolerance precedent). Pattern 1 is the
+  // default tiebreaker when Pattern 2 is within noise.
+  [[nodiscard]] struct Pattern2Recommendation recommend_pattern2(
+      std::uint64_t n_atoms_total,
+      const std::array<std::uint32_t, 3>& subdomains,
+      const GpuCostTables& tables) const noexcept;
+
   [[nodiscard]] const HardwareProfile& hardware() const noexcept { return hw_; }
   [[nodiscard]] const PotentialCost& potential() const noexcept { return potential_; }
 
@@ -109,5 +135,49 @@ private:
   // avoid repeating `N · C_force / FLOPS` across the three predictors.
   [[nodiscard]] double compute_time_sec(std::uint64_t n_atoms_per_rank) const noexcept;
 };
+
+// T7.10 — input bundle for `predict_step_hybrid_seconds()`. Caller computes
+// the per-subdomain partition + face-neighbor count from the engine-side
+// `zoning.subdomains` array. See `face_neighbors_count()` helper below for
+// the canonical geometry formula (periodic interior subdomain).
+struct Pattern2CostInputs {
+  // Per-subdomain atom count = N_total / product(subdomains). Caller does
+  // the division so PerfModel doesn't need the full grid struct.
+  std::uint64_t n_atoms_per_subdomain = 0;
+
+  // Number of face-adjacent peer subdomains (0..6). Computed from the grid
+  // by counting axes with N_axis >= 2; periodic boundaries assumed (M7
+  // default). 0 collapses Pattern 2 to the Pattern 1 inner-only cost.
+  std::uint32_t n_face_neighbors = 0;
+};
+
+// T7.10 — output of `recommend_pattern2()`. Carries both candidate timings
+// for explainability (`tdmd explain --perf` consumer in M9+) plus the
+// dimensionless margin so CLI / telemetry can decide whether the prediction
+// is "Pattern 2 wins decisively" or "noise-limited tossup".
+struct Pattern2Recommendation {
+  // "Pattern1" or "Pattern2" — uses the same naming convention as
+  // `PerfPrediction::pattern_name` for downstream consistency.
+  std::string recommended_pattern;
+
+  // Pattern 1 estimate: all atoms on one subdomain, one device. Computed as
+  // `tables.step_total_sec(n_atoms_total) + scheduler_overhead`.
+  double t_pattern1_sec = 0.0;
+
+  // Pattern 2 estimate from `predict_step_hybrid_seconds()` for the
+  // requested subdomain grid.
+  double t_pattern2_sec = 0.0;
+
+  // (t_pattern1 - t_pattern2) / t_pattern1. Positive → Pattern 2 faster.
+  // `recommended_pattern == "Pattern2"` iff margin >= 0.05 (OQ-M7-9).
+  double margin_fraction = 0.0;
+};
+
+// T7.10 — geometry helper: count face-neighbors of an interior subdomain in
+// a periodic [Nx, Ny, Nz] grid. Each axis with N_axis >= 2 contributes 2
+// face neighbors (one per face along that axis); axes with N_axis == 1
+// contribute 0. Range: 0 (Pattern 1, [1,1,1]) to 6 (full 3D Pattern 2).
+[[nodiscard]] std::uint32_t face_neighbors_count(
+    const std::array<std::uint32_t, 3>& subdomains) noexcept;
 
 }  // namespace tdmd
