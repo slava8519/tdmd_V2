@@ -222,6 +222,59 @@ try HybridBackend (GpuAwareMpi + NCCL) → if intra-node MPI-CUDA works
   fallback: MpiHostStagingBackend (always works)
 ```
 
+### 3.4. TopologyResolver
+
+```cpp
+namespace tdmd::comm {
+
+struct CartesianGrid {
+    int nx{1}, ny{1}, nz{1};
+    bool periodic_x{false}, periodic_y{false}, periodic_z{false};
+    [[nodiscard]] int total() const noexcept;          // = nx * ny * nz
+};
+
+class TopologyResolver {
+public:
+    explicit TopologyResolver(CartesianGrid grid);     // throws on non-positive dims
+    [[nodiscard]] int subdomain_id(int ix, int iy, int iz) const;
+    void coords(int sd, int& ix, int& iy, int& iz) const;
+    [[nodiscard]] std::vector<int> owner_ranks(int sd) const;       // M7: identity (D-M7-2)
+    [[nodiscard]] std::vector<int> peer_neighbors(int sd) const;    // Moore neighborhood
+    [[nodiscard]] const CartesianGrid& grid() const noexcept;
+};
+
+}  // namespace tdmd::comm
+```
+
+Pure stateless Cartesian-grid helper. `HybridBackend` (§6.4) and the engine
+preflight (T7.9) use it as the single source of truth for `subdomain → rank`
+mapping and per-subdomain peer enumeration. Two queries:
+
+- **`owner_ranks(sd)`** — D-M7-2: 1:1 subdomain↔rank binding at M7 → returns
+  exactly `{ sd }`. Vector return shape is reserved for M8+ subdomain sharding.
+- **`peer_neighbors(sd)`** — Moore neighborhood (3³ - 1 = 26 in 3D, 8 in 2D,
+  2 in 1D) within the Cartesian grid. Non-periodic boundaries drop out-of-grid
+  offsets. Periodic boundaries wrap, with dedup so tiny grids like 2×2×2
+  periodic produce 7 unique peers (not 26 with duplicates).
+
+**Determinism:** iteration order is fixed (z then y then x), so `peer_neighbors`
+returns a sorted vector that is bit-identical for the same grid config across
+runs and ranks. This matters for D-M5-12 byte-exact reduction chains where
+peer-iteration order affects the order of partial sums.
+
+**Pattern 1 (single subdomain):** `peer_neighbors(0)` on a 1×1×1 grid (with or
+without periodicity) returns empty. `HybridBackend` therefore never issues an
+outer halo send in Pattern 1 — the wrapped behavior is bit-identical to the
+inner backend alone.
+
+**Implementation (T7.5, M7):** `src/comm/{include/tdmd/comm/topology_resolver.hpp,
+topology_resolver.cpp}`. Validation throws `std::invalid_argument` for
+non-positive dimensions and `std::out_of_range` for invalid `sd` / coordinate
+queries. `std::set` provides the dedup + sort in `peer_neighbors`. Unit
+coverage in `tests/comm/test_topology_resolver.cpp` (always-built, no MPI):
+1D / 2D / 3D round-trip, boundary counts (3 / 5 / 7 / 8 / 26), 2×2×2 periodic
+dedup, single-subdomain Pattern 1 emptiness, deterministic re-construction.
+
 ---
 
 ## 4. Protocol specifications
@@ -447,6 +500,17 @@ Automatic dispatch: `send_temporal_packet` → NCCL; `send_subdomain_halo` → M
 Topology resolution — runtime probe at `init()`: per-rank `cudaDeviceGetP2PStatus` against rank-0's GPU, plus `MPI_Comm_split_type(MPI_COMM_TYPE_SHARED)` to identify node-local subset. Per-rank decision cached in `BackendInfo` struct, surfaced to `cli/explain` per cli/SPEC.
 
 **Pattern 2 startup contract (cross-link scheduler/SPEC §2.4):** at `SimulationEngine::init()` after `HybridBackend::init()`, runtime constructs `OuterSdCoordinator(grid, K_max)` (master §12.7a / scheduler/SPEC §2.4) and binds the outer backend's `drain_halo_arrived` poll into the coordinator's input pipeline. Inner-backend send/receive остаётся owned by `InnerTdScheduler` без изменений relative to M5.
+
+**Implementation (T7.5, M7):**
+
+- `src/comm/{include/tdmd/comm/hybrid_backend.hpp, hybrid_backend.cpp}` — composition, **not** duplication. Owns `unique_ptr<CommBackend>` for inner + outer plus a `TopologyResolver` (§3.4); each method dispatches per the routing table above. No I/O of its own — every wire-level operation is a forward call.
+- Construction policy is policy-free: caller passes already-built inner + outer backends. The fallback chain (try `NcclBackend`, fall back to `GpuAwareMpiBackend`, fall back to `MpiHostStagingBackend`) lives in the engine preflight (T7.9), not in `HybridBackend` itself. Constructor throws `std::invalid_argument` on null backends.
+- `initialize` calls inner first, then outer; validates `inner->rank() == outer->rank()` and `inner->nranks() == outer->nranks()` and `inner->nranks() == grid.total()` (D-M7-2 guard). Mismatch → `std::runtime_error` rather than silent corruption later.
+- `shutdown` reverses construction: outer first, inner second — collectives remain available during outer teardown.
+- `global_sum_double` / `global_max_double` / `barrier` route to **inner only** so the D-M5-12 byte-exact thermo chain stays on a single reduction tree; never use the outer backend's collective even if the outer probe succeeds.
+- `progress` ticks **both** backends once per call; deterministic order (inner then outer) keeps any progress-driven side effect reproducible.
+- `info()` composes `name = "HybridBackend(inner=...,outer=...)"` and unions both backends' capability lists so `cli/explain` shows the effective transport surface.
+- Unit coverage in `tests/comm/test_hybrid_backend.cpp` (always-built, no MPI): a `SpyBackend` mock records each call so the routing matrix, init parity guard, D-M7-2 grid mismatch guard, Pattern 1 single-subdomain empty-peer behavior, capability union, and shutdown order are verified deterministically across all CI flavors. The 4-rank end-to-end exercise lands with `SimulationEngine` Pattern 2 wire (T7.9).
 
 ### 6.5. RingBackend (legacy / anchor-test)
 
@@ -708,6 +772,22 @@ Comm backend diagnostics:
 ---
 
 ## 14. Change log
+
+- **2026-04-19** — **T7.5 — `HybridBackend` composition + `TopologyResolver`
+  landed (M7).** New §3.4 (`TopologyResolver`) and §6.4 "Implementation"
+  subsection authored. `HybridBackend` is policy-free composition of inner
+  (NCCL/GpuAwareMpi/MpiHostStaging fallback chain — choice owned by engine
+  preflight T7.9) and outer (GpuAwareMpi/MpiHostStaging) backends, dispatching
+  per the §6.4 routing matrix. Collectives go inner-only to preserve the
+  D-M5-12 byte-exact thermo chain on a single reduction tree. `TopologyResolver`
+  is the single source of truth for D-M7-2 (`owner_ranks(sd) = {sd}` at M7) and
+  Cartesian Moore-neighborhood enumeration (up to 26 peers in 3D), with
+  deterministic z→y→x iteration so the same grid produces the same peer vector
+  on every rank. Pattern 1 (single-subdomain) returns empty peers, so
+  HybridBackend wraps inner without ever touching the outer path — bit-identical
+  to the inner backend alone. Unit coverage via `SpyBackend` mock — runs in
+  every CI flavor (cpu-strict, mixed, default) without requiring MPI / NCCL /
+  CUDA. End-to-end 4-rank dispatch lands with the engine wire in T7.9.
 
 - **2026-04-19** — **T7.4 — `NcclBackend` implementation landed (M7).**
   Second concrete delivery of §6.3 alongside T7.3's §6.2. Top-level

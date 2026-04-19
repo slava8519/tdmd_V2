@@ -11,7 +11,9 @@ set(tdmd_comm_sources
     cuda_mpi_probe.cpp
     gpu_aware_mpi_backend.cpp
     nccl_probe.cpp
-    nccl_backend.cpp)
+    nccl_backend.cpp
+    topology_resolver.cpp
+    hybrid_backend.cpp)
 if(TDMD_ENABLE_MPI)
   list(APPEND tdmd_comm_sources mpi_host_staging_backend.cpp ring_backend.cpp)
 endif()

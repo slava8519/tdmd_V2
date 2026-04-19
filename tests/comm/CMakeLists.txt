@@ -5,8 +5,14 @@
 # test_mpi_host_staging_2rank: MPI-only, needs TDMD_ENABLE_MPI + mpirun.
 
 add_executable(
-  test_comm test_comm_types.cpp test_packet_serializer.cpp test_halo_packet_serializer.cpp
-            test_cuda_mpi_probe.cpp test_nccl_probe.cpp)
+  test_comm
+  test_comm_types.cpp
+  test_packet_serializer.cpp
+  test_halo_packet_serializer.cpp
+  test_cuda_mpi_probe.cpp
+  test_nccl_probe.cpp
+  test_topology_resolver.cpp
+  test_hybrid_backend.cpp)
 
 target_link_libraries(test_comm PRIVATE tdmd::comm Catch2::Catch2WithMain)
 
