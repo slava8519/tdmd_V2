@@ -44,3 +44,31 @@ target_link_libraries(fuzz_k_batching_invariants PRIVATE tdmd::scheduler tdmd::z
                                                          Catch2::Catch2WithMain)
 
 add_test(NAME fuzz_k_batching_invariants COMMAND fuzz_k_batching_invariants)
+
+# ---------------------------------------------------------------------------
+# T5.7 — 2-rank peer dispatch integration test. Requires TDMD_ENABLE_MPI + mpirun. Drives Completed
+# → Packed → InFlight → Committed on the sender and verifies on_zone_data_arrived fires on the
+# receiver's peer zone.
+# ---------------------------------------------------------------------------
+if(TDMD_ENABLE_MPI)
+  find_program(MPIEXEC_EXECUTABLE NAMES mpirun mpiexec)
+  if(NOT MPIEXEC_EXECUTABLE)
+    message(WARNING "TDMD_ENABLE_MPI=ON but mpirun/mpiexec not found; "
+                    "skipping test_peer_dispatch_2rank.")
+  else()
+    add_executable(test_peer_dispatch_2rank main_mpi.cpp test_peer_dispatch_2rank.cpp)
+
+    # Catch2::Catch2 (library-only, no WithMain) — main_mpi.cpp wraps MPI_Init/Finalize.
+    target_link_libraries(test_peer_dispatch_2rank PRIVATE tdmd::scheduler tdmd::zoning tdmd::comm
+                                                           Catch2::Catch2 MPI::MPI_CXX)
+
+    if(MPIEXEC_EXECUTABLE MATCHES "mpirun$")
+      set(TDMD_MPI_EXTRA_FLAGS "--oversubscribe")
+    else()
+      set(TDMD_MPI_EXTRA_FLAGS "")
+    endif()
+
+    add_test(NAME test_peer_dispatch_2rank COMMAND ${MPIEXEC_EXECUTABLE} ${TDMD_MPI_EXTRA_FLAGS}
+                                                   -np 2 $<TARGET_FILE:test_peer_dispatch_2rank>)
+  endif()
+endif()

@@ -41,6 +41,13 @@
 #include <string>
 #include <vector>
 
+// Forward declare CommBackend — scheduler only holds a pointer, so a full
+// include is unnecessary here and keeps the scheduler/comm dependency
+// one-directional (scheduler dispatches into comm, never the reverse).
+namespace tdmd::comm {
+class CommBackend;
+}  // namespace tdmd::comm
+
 namespace tdmd::scheduler {
 
 class CausalWavefrontScheduler final : public TdScheduler {
@@ -128,6 +135,32 @@ public:
   // this orchestration; tests call it to drive synthetic lifecycles.
   void release_committed();
 
+  // --- T5.7 peer dispatch ----------------------------------------------
+  //
+  // `set_comm_backend(b)` injects the transport used by `commit_completed`
+  // to move a zone's state to its downstream peer. Nullptr disables peer
+  // dispatch and restores the M4 Pattern 1 short-circuit (every Completed
+  // zone commits via `commit_completed_no_peer`). Ownership stays with the
+  // caller — the engine owns the backend and outlives the scheduler.
+  //
+  // `set_peer_routing(r)` sets `r[zone_id] = dest_rank` for zones that
+  // must forward their state on commit (or -1 for zones that stay local).
+  // The vector must have size == total_zones() at call time; a mismatched
+  // size or use of negative values other than -1 throws.
+  //
+  // `poll_arrivals()` is the receiver-side pump — it calls
+  // `backend->progress()` then drains every arrived `TemporalPacket` and
+  // fires `on_zone_data_arrived` for the matching zone. CRC / protocol-
+  // version drops are counted by the backend; cert-hash drops are counted
+  // by the scheduler (they trigger a retry via `invalidate_certificates_for`).
+  void set_comm_backend(comm::CommBackend* backend) noexcept;
+  void set_peer_routing(std::vector<int> routing);
+  void poll_arrivals();
+
+  [[nodiscard]] std::uint64_t dropped_cert_hash_count() const noexcept {
+    return dropped_cert_hash_;
+  }
+
 private:
   void require_initialized(const char* op) const;
 
@@ -145,6 +178,14 @@ private:
 
   const CertificateInputSource* cert_source_ = nullptr;
   OuterSdCoordinator* outer_coord_ = nullptr;
+
+  // T5.7 peer dispatch. `peer_routing_[z] = -1` means zone z has no
+  // off-rank downstream peer and commits via the Pattern 1 short-circuit.
+  // Any non-negative entry names the dest MPI rank the scheduler sends to
+  // when the zone enters Completed.
+  comm::CommBackend* comm_backend_ = nullptr;
+  std::vector<int> peer_routing_;
+  std::uint64_t dropped_cert_hash_ = 0;
 
   TimeLevel target_time_level_ = 0;
 

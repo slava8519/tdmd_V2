@@ -24,6 +24,11 @@ target_include_directories(
 # accumulate a double include.
 target_link_libraries(tdmd_scheduler PRIVATE tdmd::zoning)
 
+# T5.7 peer dispatch: the scheduler's commit_completed / poll_arrivals call into CommBackend +
+# TemporalPacket. Kept PUBLIC because the header exposes set_comm_backend(CommBackend*) — callers
+# need the type visible to pass an argument.
+target_link_libraries(tdmd_scheduler PUBLIC tdmd::comm)
+
 target_compile_features(tdmd_scheduler PUBLIC cxx_std_20)
 
 tdmd_apply_build_flavor(tdmd_scheduler)

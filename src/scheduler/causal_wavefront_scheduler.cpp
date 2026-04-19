@@ -4,6 +4,8 @@
 
 #include "tdmd/scheduler/causal_wavefront_scheduler.hpp"
 
+#include "tdmd/comm/comm_backend.hpp"
+#include "tdmd/comm/types.hpp"
 #include "tdmd/scheduler/queues.hpp"
 #include "tdmd/zoning/zoning.hpp"
 
@@ -66,6 +68,11 @@ void CausalWavefrontScheduler::initialize(const tdmd::zoning::ZoningPlan& plan) 
   total_zones_ = static_cast<std::size_t>(total);
   metas_.assign(total_zones_, ZoneMeta{});
   canonical_order_ = plan.canonical_order;  // copy by value (invariant)
+  // Peer routing defaults to all-"-1" (no off-rank peer). T5.7 peer
+  // dispatch only fires when set_peer_routing() is called with a vector
+  // containing non-negative dest ranks.
+  peer_routing_.assign(total_zones_, -1);
+  dropped_cert_hash_ = 0;
 
   // Every zone id in the canonical order must be in [0, total).
   for (const auto z : canonical_order_) {
@@ -114,6 +121,9 @@ void CausalWavefrontScheduler::shutdown() {
   spatial_dep_mask_.clear();
   cert_source_ = nullptr;
   outer_coord_ = nullptr;
+  comm_backend_ = nullptr;
+  peer_routing_.clear();
+  dropped_cert_hash_ = 0;
   total_zones_ = 0;
   target_time_level_ = 0;
   min_zones_per_rank_ = 1;
@@ -375,25 +385,111 @@ void CausalWavefrontScheduler::mark_committed(const ZoneTask& task) {
 }
 
 void CausalWavefrontScheduler::commit_completed() {
-  // Phase B (SPEC §6.2). In M4 Pattern 1 single-rank (D-M4-6) every zone
-  // is internal with no downstream peer, so each Completed zone commits
-  // via the no-peer short-circuit (SPEC §6.2 bullet 2) → Committed. Peer
-  // path (mark_packed → mark_inflight → mark_committed) arrives in M5.
+  // Phase B (SPEC §6.2). Each Completed zone commits via one of two paths:
+  //   (a) Pattern 1 short-circuit (`commit_completed_no_peer`) when the
+  //       zone has no off-rank downstream peer. Matches M4 single-rank and
+  //       stays canonical for local-only zones in multi-rank runs too.
+  //   (b) T5.7 peer cycle: mark_packed → pack() + comm->send_temporal_packet
+  //       → mark_inflight → mark_committed. The Isend's buffer lifetime is
+  //       owned by the CommBackend; "Committed" on the scheduler side means
+  //       "handed off to transport", not "acked by peer" — that semantics
+  //       arrives with the full two-phase ack in M7+.
   //
   // I5: this is the ONLY legal entry point for Completed → Committed —
   // mark_completed is Phase A and cannot set Committed as a side-effect.
   require_initialized("commit_completed");
   std::uint32_t committed = 0;
-  for (auto& meta : metas_) {
-    if (meta.state == ZoneState::Completed) {
+  std::uint32_t peer_dispatched = 0;
+  for (ZoneId z = 0; z < metas_.size(); ++z) {
+    auto& meta = metas_[z];
+    if (meta.state != ZoneState::Completed) {
+      continue;
+    }
+
+    const bool has_peer =
+        comm_backend_ != nullptr && z < peer_routing_.size() && peer_routing_[z] >= 0;
+    if (!has_peer) {
       state_machine_.commit_completed_no_peer(meta);
       ++committed;
+      continue;
     }
+
+    // Peer path. Build a minimal TemporalPacket carrying the zone's meta
+    // + cert hash — payload bytes stay empty for T5.7 (the full atom-data
+    // bridge lives in T5.8 when SimulationEngine owns multi-rank zones).
+    state_machine_.mark_packed(meta);
+    comm::TemporalPacket pkt;
+    pkt.protocol_version = comm::kCommProtocolVersion;
+    pkt.zone_id = z;
+    pkt.time_level = meta.time_level;
+    pkt.version = meta.version;
+    pkt.atom_count = 0;
+    pkt.certificate_hash = meta.cert_id;  // M5 MVP: cert_id doubles as hash
+    pkt.payload.clear();
+    comm_backend_->send_temporal_packet(pkt, peer_routing_[z]);
+    state_machine_.mark_inflight(meta);
+    state_machine_.mark_committed(meta);
+    ++committed;
+    ++peer_dispatched;
   }
   if (committed > 0) {
     last_progress_ = std::chrono::steady_clock::now();
   }
   record_event(SchedulerEvent::CommitCompleted, 0xFFFFFFFFU, 0, committed);
+  // Intentionally no separate event kind for peer_dispatched — the event
+  // log is a byte-stable trace and adding a new kind would churn M4
+  // determinism baselines. Peer counts surface via DiagnosticReport.
+  (void) peer_dispatched;
+}
+
+void CausalWavefrontScheduler::set_comm_backend(comm::CommBackend* backend) noexcept {
+  comm_backend_ = backend;
+}
+
+void CausalWavefrontScheduler::set_peer_routing(std::vector<int> routing) {
+  require_initialized("set_peer_routing");
+  if (routing.size() != total_zones_) {
+    throw std::logic_error(
+        "CausalWavefrontScheduler::set_peer_routing: routing.size() must equal total_zones()");
+  }
+  for (const int r : routing) {
+    if (r < -1) {
+      throw std::logic_error(
+          "CausalWavefrontScheduler::set_peer_routing: only -1 or non-negative rank IDs allowed");
+    }
+  }
+  peer_routing_ = std::move(routing);
+}
+
+void CausalWavefrontScheduler::poll_arrivals() {
+  require_initialized("poll_arrivals");
+  if (comm_backend_ == nullptr) {
+    return;
+  }
+  comm_backend_->progress();
+  auto arrivals = comm_backend_->drain_arrived_temporal();
+  for (const auto& pkt : arrivals) {
+    if (pkt.zone_id >= metas_.size()) {
+      // Packet targeting a zone outside this rank's scheduler's plan.
+      // Treat as a cert-hash-class drop — the sender and receiver disagree
+      // on zone identity, which is a scheduler-level contract violation
+      // worth counting distinctly from backend-level CRC/version drops.
+      ++dropped_cert_hash_;
+      continue;
+    }
+    auto& meta = metas_[pkt.zone_id];
+    // Only Empty zones accept an arrival. A non-Empty state means the
+    // local scheduler hasn't released the zone yet (stale prior step);
+    // dropping keeps the state machine consistent (I1 on_zone_data_arrived
+    // preconditions) and is the canonical response per SPEC §7.2 retry.
+    if (meta.state != ZoneState::Empty) {
+      ++dropped_cert_hash_;
+      continue;
+    }
+    on_zone_data_arrived(pkt.zone_id,
+                         static_cast<TimeLevel>(pkt.time_level),
+                         static_cast<Version>(pkt.version));
+  }
 }
 
 void CausalWavefrontScheduler::release_committed() {
