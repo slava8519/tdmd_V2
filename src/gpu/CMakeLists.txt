@@ -8,13 +8,13 @@
 # T6.4+: .cu kernel translation units layered on top.
 
 set(tdmd_gpu_sources gpu_types.cpp device_allocator.cpp factories.cpp device_pool.cpp
-                     neighbor_list_gpu.cu)
+                     neighbor_list_gpu.cu eam_alloy_gpu.cu)
 
-# T6.4: neighbor_list_gpu.cu carries both CUDA kernels (TDMD_BUILD_CUDA=1 branch) and a pure-C++
-# throwing stub (TDMD_BUILD_CUDA=0 branch). Under CPU-only builds we retag its language so the host
-# compiler picks it up — the file never contains kernel syntax outside the CUDA guard.
+# T6.4 / T6.5: the .cu TUs carry both CUDA kernels (TDMD_BUILD_CUDA=1 branch) and a pure-C++
+# throwing stub (TDMD_BUILD_CUDA=0 branch). Under CPU-only builds we retag their language so the
+# host compiler picks them up — the files never contain kernel syntax outside the CUDA guard.
 if(NOT TDMD_BUILD_CUDA)
-  set_source_files_properties(neighbor_list_gpu.cu PROPERTIES LANGUAGE CXX)
+  set_source_files_properties(neighbor_list_gpu.cu eam_alloy_gpu.cu PROPERTIES LANGUAGE CXX)
 endif()
 
 add_library(tdmd_gpu STATIC ${tdmd_gpu_sources})

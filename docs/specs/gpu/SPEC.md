@@ -340,14 +340,28 @@ Registered в `verify/SPEC.md` threshold registry as `cpu_gpu_reference_force_bi
 - Determinism: sort within each bucket by neighbor atom ID. Bit-exact to CPU CellGrid в Reference build;
 - Launch: `stream_compute`, 1 block per cell bucket, 32-thread warps per block. Cooperative 1-block launch для prefix-sum phase.
 
-### 7.2. EAM/alloy force (T6.5)
+### 7.2. EAM/alloy force (T6.5 — v1.0.3)
 
 **Contract:**
 
-- Three passes: (1) density accumulation ρᵢ = Σⱼ φ(rᵢⱼ), (2) embedding fᵢ = F(ρᵢ), (3) pair force per bond через табулированные splines;
-- Kahan accumulation на ρᵢ and fᵢ (D-M6-15);
-- Half-list input — заведомо `i<j`, kernel emits symmetric updates в `fᵢ += Δ, fⱼ -= Δ` через deterministic scatter;
-- MixedFast: FP32 math в splines evaluation; FP64 accumulator для ρᵢ, Fᵢ, fᵢ (Philosophy B).
+- Three kernels per `compute()` launch, thread-per-atom, identical cell-stencil iteration order across all three:
+  - **density_kernel** — ρᵢ = Σⱼ ρ_{β}(rᵢⱼ) via 27-cell stencil, full-list per-atom (no `j<=i` filter);
+  - **embedding_kernel** — pe_embed[i] = F_α(ρᵢ); dFdrho[i] = F'_α(ρᵢ); thread-per-atom, no reduction;
+  - **force_kernel** — f[i] += Σⱼ (dE/dr · Δ / r) · r̂; pe_pair[i] and per-atom 6-component virial written to dedicated output buffers.
+- Full-list iteration chosen over half-list because each thread writes only to its own atom's slot (no atomics needed, no deterministic-scatter machinery). Pair PE + virial are consequently double-counted; the **host reduction halves them** during Kahan summation. Forces are emitted once per ordered pair (each direction gets its own thread's contribution), so no halving applies.
+- Device spline evaluation bit-exactly mirrors CPU `TabulatedFunction::locate` + Horner form, with the 7-doubles-per-cell layout reproduced verbatim:
+  - `locate_dev(x) → (cell_idx, p)` with LAMMPS-style 1-based clamp;
+  - `eval = ((c[3]·p + c[4])·p + c[5])·p + c[6]`;
+  - `deriv = (c[0]·p + c[1])·p + c[2]`.
+- Minimum-image formula identical to CPU `state::minimum_image_axis` (same branch conditions + same `ceil` usage), preserving FP sequence.
+- Host-side **Kahan compensated reduction** of per-atom PE and per-atom 6-component virial buffers (D-M6-15). Per-atom force buffers are D2H'd and returned directly — no cross-atom reduction needed.
+- Public API (`tdmd::gpu::EamAlloyGpu`) takes raw primitives (positions + cell CSR + flattened spline coefficient arrays + `BoxParams`) — keeps gpu/ data-oblivious per §1.1. Domain translation in `src/potentials/eam_alloy_gpu_adapter.cpp`.
+- MixedFast: FP32 math в splines evaluation; FP64 accumulator для ρᵢ, Fᵢ, fᵢ (Philosophy B) — activated in T6.8.
+
+**Acceptance gate (D-M6-7):**
+
+- Per-atom forces + total PE + virial Voigt tensor agree **≤ 1e-12 rel** CPU ↔ GPU on Al FCC 864-atom + Ni-Al B2 1024-atom (Mishin 2004).
+- Gate is relative, not byte-equal: absorbs FP64 reduction-order drift between CPU half-list and GPU full-list sums. Math kernels themselves use identical FP sequences, so any divergence above 1e-12 indicates a real bug.
 
 ### 7.3. Velocity-Verlet NVE (T6.6)
 
@@ -592,12 +606,13 @@ tdmd run cfg.yaml --gpu-device=1 --gpu-streams=2 --gpu-memory-pool-mib=512 --no-
 | 2026-04-19 | v1.0    | Initial авторство. Anchors D-M6-1..D-M6-20 from `docs/development/m6_execution_pack.md`. Ships alongside T6.2 skeleton (`src/gpu/` + `tests/gpu/test_gpu_types.cpp`). Change log extension in `TDMD_Engineering_Spec.md` Приложение C. |
 | 2026-04-19 | v1.0.1  | §5.1/§5.2 updated с T6.3 implementation notes: `DevicePool` ships как single class owning both device+pinned pools (1:1 rank binding); grow-on-demand free-list policy; LRU deferred (OQ-M6-1). Adds `factories.hpp` public API (probe_devices / select_device / make_stream / make_event) + `device_pool.hpp`. `cuda_handles.hpp` internal header shares PIMPL Impl defs across gpu/ TUs без leaking CUDA symbols в public API. |
 | 2026-04-19 | v1.0.2  | §7.1 resolved — T6.4 `NeighborListGpu` landed. Implementation: two-pass (count → host-scan → emit) kernel pair, identical iteration order to CPU (27-cell stencil, dz-outer → dy → dx); D-M6-7 bit-exact gate met on 864-atom Al FCC (33,696 pairs, `std::memcmp` on offsets + ids + r²). Public API takes raw primitives (positions + cell CSR + BoxParams) — keeps gpu/ data-oblivious per §1.1 and breaks would-be `gpu/ → neighbor/` cyclic include. `src/neighbor/gpu_neighbor_builder.cpp` adapter translates domain types. Host-warn gating fix in `cmake/CompilerWarnings.cmake` — host flags (`-Wpedantic`, `-Werror`) now gated to `$<COMPILE_LANGUAGE:CXX>` so nvcc stub files don't trip extension diagnostics. Micro-bench baseline at `verify/benchmarks/neighbor_gpu_vs_cpu/`: 12.9× (10⁴ atoms) / 28.5× (10⁵ atoms) speedup on sm_120 — well above T6.4 ≥5× bar. OQ-M6-7 (CUB vs custom) resolved: custom two-pass + host scan is adequate for M6; on-device scan deferred to T6.11 perf tuning. |
+| 2026-04-19 | v1.0.3  | §7.2 resolved — T6.5 `EamAlloyGpu` landed. Three-kernel path (density → embedding → force), thread-per-atom with **full-list per-atom iteration** (no `j<=i` filter) so every write is thread-local — eliminates the atomics that would otherwise be needed for half-list Newton-3 scatter. Pair PE + virial are counted twice in the full-list sweep and halved on host during Kahan reduction; forces are emitted once per ordered pair (both directions — thread `i` scatters `+Δ`, thread `j` scatters `−Δ`) so no halving applies. Device spline eval mirrors `TabulatedFunction::locate` + Horner bit-exactly; same `minimum_image_axis` formula as CPU. Gate is **≤1e-12 rel**, not byte-equal (spec §7.2) — absorbs the reduction-order drift between CPU half-list and GPU full-list accumulation. Acceptance: Al FCC 864-atom + Ni-Al B2 1024-atom (Mishin 2004) both ≤1e-12 rel on per-atom forces, total PE, and virial Voigt tensor. Public API borrows flattened Hermite-cubic coefficient tables from the `src/potentials/eam_alloy_gpu_adapter.cpp` layer — gpu/ remains data-oblivious. Micro-bench at `verify/benchmarks/eam_gpu_vs_cpu/`: 5.3× (10⁴) / 6.8× (10⁵) on sm_120 vs CPU reference — above T6.5 ≥5× bar. OQ-M6-4 (Kahan overhead on per-atom PE+virial) deferred to T6.11 — current impl does all reductions host-side and is not the bottleneck at these sizes. |
 
 Roadmap extensions (authored by future tasks):
 
 - **T6.3** → §5.1 pool LRU detail, resolve OQ-M6-1 (**done — deferred to T6.5**);
 - **T6.4** → §7.1 NL kernel details, SoA layout confirmation (D-M6-16) (**done — v1.0.2**);
-- **T6.5** → §7.2 EAM kernel details, Kahan overhead measurement (OQ-M6-4);
+- **T6.5** → §7.2 EAM kernel details, Kahan overhead measurement (OQ-M6-4) (**done — v1.0.3; OQ-M6-4 deferred to T6.11**);
 - **T6.6** → §7.3 VV details + NVE drift measurements;
 - **T6.7** → §3.2 pipeline pattern extended;
 - **T6.8** → §8.3 threshold registry wired;

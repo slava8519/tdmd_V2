@@ -18,3 +18,13 @@ add_executable(test_neighbor_list_gpu test_neighbor_list_gpu.cpp)
 target_link_libraries(test_neighbor_list_gpu PRIVATE tdmd::gpu tdmd::neighbor tdmd::state
                                                      Catch2::Catch2WithMain)
 add_test(NAME test_neighbor_list_gpu COMMAND test_neighbor_list_gpu)
+
+# T6.5: EAM/alloy GPU kernel — ≤1e-12 rel vs CPU reference (gpu/SPEC §7.2).
+add_executable(test_eam_alloy_gpu test_eam_alloy_gpu.cpp)
+target_link_libraries(test_eam_alloy_gpu PRIVATE tdmd::gpu tdmd::potentials tdmd::neighbor
+                                                 tdmd::state Catch2::Catch2WithMain)
+target_compile_definitions(
+  test_eam_alloy_gpu
+  PRIVATE TDMD_TEST_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/potentials/fixtures"
+          TDMD_VERIFY_POTENTIALS_DIR="${CMAKE_SOURCE_DIR}/verify/third_party/potentials")
+add_test(NAME test_eam_alloy_gpu COMMAND test_eam_alloy_gpu)
