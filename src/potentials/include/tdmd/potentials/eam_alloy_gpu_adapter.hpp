@@ -31,8 +31,8 @@
 #include <vector>
 
 namespace tdmd {
-class AtomSoA;
-class Box;
+struct AtomSoA;
+struct Box;
 class CellGrid;
 }  // namespace tdmd
 
