@@ -893,7 +893,7 @@ class ObservablesComparator:
 
 ### 7.4. Anchor test runner
 
-`verify/harness/anchor_test_runner/`:
+`verify/harness/anchor_test_runner/` (shipped T5.11, 2026-04-19):
 
 ```python
 class AnchorTestRunner:
@@ -908,6 +908,26 @@ class AnchorTestRunner:
     """
     def run(self) -> AnchorTestReport
 ```
+
+**Files:**
+
+- `runner.py` — `AnchorTestRunner.run()` orchestrator + telemetry parse.
+- `report.py` — `AnchorTestReport` / `AnchorTestPoint` dataclasses;
+  `STATUS_{GREEN,YELLOW,RED}` tri-state; JSON round-trip.
+- `hardware_probe.py` — wraps T5.10 `hardware_normalization.py`;
+  24h on-disk cache at `~/.cache/tdmd/hardware_flops.json`;
+  `--force-probe` bypass flag.
+- `__main__.py` — CLI: `python -m verify.harness.anchor_test_runner
+  --tdmd-bin … --output report.json`. Exit codes 0/1/2/3 =
+  GREEN/YELLOW/RED/infra-error.
+- `test_anchor_runner.py` — mocked-TDMD smoke suite (8 cases).
+- `tests/integration/m5_anchor_test/` — local-only wrapper
+  (`run_anchor_test.sh` + README); pre-push mandatory per D-M5-13.
+
+The runner NEVER invokes LAMMPS for comparison (T3 is dissertation
+match, not oracle diff); LAMMPS is only consulted transparently when
+`setup.data` regeneration is required on a fresh workspace (T1
+precedent; see `verify/data/t3_al_fcc_large_anchor/regen_setup.sh`).
 
 ### 7.5. Perfmodel validator
 

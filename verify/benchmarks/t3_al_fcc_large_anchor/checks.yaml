@@ -23,7 +23,7 @@ ranks_to_probe: [4, 8, 16]
 # Both primary gates come from the dissertation CSV; values under each key
 # are per-point relative tolerances (fraction of the reference value).
 dissertation_comparison:
-  # Parallel efficiency = (1-rank steps/s) * N / (N-rank steps/s) * 100.
+  # Parallel efficiency E(N) = (N-rank steps/s) / ((1-rank steps/s) * N) * 100.
   # Primary gate. 10% tolerance = R-M5-8 (±2% extraction + ±5% hardware +
   # ±1% run-to-run + ±2% model mismatch).
   efficiency_relative: 0.10

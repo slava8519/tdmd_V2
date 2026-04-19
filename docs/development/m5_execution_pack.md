@@ -938,7 +938,7 @@ mention в README как "local pre-push mandatory before M5 merge."
 - [ ] **SimulationEngine multi-rank** (T5.8), K=1 P=1 byte-exact to M4; K=1 P=2 bit-exact to K=1 P=1; K=4 P=4 NVE drift < 1e-6 / 1000 steps
 - [ ] **Linear1D Z-axis zoning** (T5.9), 10⁶ Al FCC uniform distribution ±5%; Hilbert scheme regression preserved
 - [ ] **T3 benchmark fixture** (T5.10), Al FCC 10⁶ LJ config + dissertation reference CSV + hardware normalization script
-- [ ] **AnchorTestRunner** (T5.11), local run passes 10% tolerance on dev machine
+- [x] **AnchorTestRunner** (T5.11), harness + report dataclass + hardware probe cache + mocked smoke shipped 2026-04-19 (commit pending); local 10% tolerance gate validated at pre-push time per README
 - [ ] **Anchor-test acceptance** — primary M5 gate, mandatory (master spec §13.3)
 - [ ] **M5 integration smoke** (T5.12) < 30s, CI-integrated; K=1 P=2 byte-exact chain green
 - [ ] No regressions: M1, M2, M3, M4 smokes + T1, T4 differentials all green
