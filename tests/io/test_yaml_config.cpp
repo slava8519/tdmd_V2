@@ -443,6 +443,58 @@ integrator: { style: velocity_verlet, dt: 0.001 }
                   "run");
 }
 
+TEST_CASE("zoning block: defaults to Auto when omitted", "[io][yaml][zoning]") {
+  // T5.9 — no zoning: key means M3 auto-select (Hilbert/Decomp2D/Linear1D
+  // per §3.4 aspect-ratio tree). This preserves M3/M4 regressions.
+  constexpr std::string_view yaml = R"(
+simulation: { units: metal }
+atoms: { source: lammps_data, path: ./a.data }
+potential: { style: morse, params: { D: 0.1, alpha: 1.0, r0: 3.0, cutoff: 7.0 } }
+integrator: { style: velocity_verlet, dt: 0.001 }
+run: { n_steps: 1 }
+)";
+  const auto cfg = parse_string(yaml);
+  CHECK(cfg.zoning.scheme == tdmd::io::ZoningSchemeKind::Auto);
+}
+
+TEST_CASE("zoning.scheme parses the three allowed literals", "[io][yaml][zoning]") {
+  constexpr std::string_view head = R"(
+simulation: { units: metal }
+atoms: { source: lammps_data, path: ./a.data }
+potential: { style: morse, params: { D: 0.1, alpha: 1.0, r0: 3.0, cutoff: 7.0 } }
+integrator: { style: velocity_verlet, dt: 0.001 }
+run: { n_steps: 1 }
+zoning: { scheme: )";
+
+  {
+    const auto cfg = parse_string(std::string(head) + "auto }");
+    CHECK(cfg.zoning.scheme == tdmd::io::ZoningSchemeKind::Auto);
+  }
+  {
+    const auto cfg = parse_string(std::string(head) + "hilbert }");
+    CHECK(cfg.zoning.scheme == tdmd::io::ZoningSchemeKind::Hilbert);
+  }
+  {
+    const auto cfg = parse_string(std::string(head) + "linear_1d }");
+    CHECK(cfg.zoning.scheme == tdmd::io::ZoningSchemeKind::Linear1D);
+  }
+}
+
+TEST_CASE("zoning.scheme rejects unknown literals and unknown keys", "[io][yaml][zoning]") {
+  constexpr std::string_view base = R"(
+simulation: { units: metal }
+atoms: { source: lammps_data, path: ./a.data }
+potential: { style: morse, params: { D: 0.1, alpha: 1.0, r0: 3.0, cutoff: 7.0 } }
+integrator: { style: velocity_verlet, dt: 0.001 }
+run: { n_steps: 1 }
+)";
+
+  REQUIRE_THROWS_AS(parse_string(std::string(base) + "zoning: { scheme: auto_magic }"),
+                    tdmd::io::YamlParseError);
+  REQUIRE_THROWS_AS(parse_string(std::string(base) + "zoning: { schema: linear_1d }"),
+                    tdmd::io::YamlParseError);
+}
+
 TEST_CASE("missing_units fixture reproduces on disk", "[io][yaml]") {
   // Sanity: fixture + parser agree on what "required units" means.
   REQUIRE_THROWS_AS(tdmd::io::parse_yaml_config(fixture_path("missing_units.yaml")),

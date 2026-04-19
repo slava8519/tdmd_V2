@@ -236,6 +236,12 @@ private:
   // D-M5-1: K-batching depth cap from YAML (scheduler.pipeline_depth_cap);
   // {1, 2, 4, 8} only, default 1 for M4 byte-exact regression.
   std::uint32_t td_pipeline_depth_cap_ = 1;
+  // T5.9: zoning scheme override from YAML (zoning.scheme). `Auto` runs
+  // the M3 decision tree; explicit values bypass it via
+  // DefaultZoningPlanner::plan_with_scheme — anchor-test (T5.11) pins
+  // this to Linear1D to reproduce Andreev §2.2.
+  enum class ZoningSchemeOverride : std::uint8_t { Auto, Hilbert, Linear1D };
+  ZoningSchemeOverride td_zoning_scheme_override_ = ZoningSchemeOverride::Auto;
   std::unique_ptr<zoning::ZoningPlan> td_plan_;
   std::unique_ptr<scheduler::CausalWavefrontScheduler> td_scheduler_;
   std::unique_ptr<scheduler::CertificateInputSource> td_cert_source_;

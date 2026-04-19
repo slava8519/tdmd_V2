@@ -222,6 +222,17 @@ void SimulationEngine::init(const io::YamlConfig& config, const std::string& con
   // requested by YAML.
   td_mode_ = config.scheduler.td_mode;
   td_pipeline_depth_cap_ = config.scheduler.pipeline_depth_cap;
+  switch (config.zoning.scheme) {
+    case io::ZoningSchemeKind::Auto:
+      td_zoning_scheme_override_ = ZoningSchemeOverride::Auto;
+      break;
+    case io::ZoningSchemeKind::Hilbert:
+      td_zoning_scheme_override_ = ZoningSchemeOverride::Hilbert;
+      break;
+    case io::ZoningSchemeKind::Linear1D:
+      td_zoning_scheme_override_ = ZoningSchemeOverride::Linear1D;
+      break;
+  }
   if (td_mode_) {
     td_initialize_scheduler();
   }
@@ -467,11 +478,27 @@ void SimulationEngine::td_initialize_scheduler() {
   // produces a canonical_order permutation the scheduler consumes
   // verbatim (D-M4-4). 1-rank single-subdomain target (D-M4-2) — no
   // subdomain_box, no halo peers.
+  // T5.9: YAML `zoning.scheme` overrides the M3 auto-select tree.
+  // `Auto` preserves the M4 byte-exact default; `Hilbert` / `Linear1D`
+  // dispatch through plan_with_scheme so the anchor-test can pin
+  // Andreev's §2.2 1D-slab layout without touching the Hilbert M3
+  // regression path.
   zoning::DefaultZoningPlanner planner;
   zoning::PerformanceHint hint{};
   hint.preferred_K_pipeline = 1;
-  td_plan_ =
-      std::make_unique<zoning::ZoningPlan>(planner.plan(box_, cutoff_, skin_, /*n_ranks=*/1, hint));
+  zoning::ZoningPlan plan;
+  switch (td_zoning_scheme_override_) {
+    case ZoningSchemeOverride::Auto:
+      plan = planner.plan(box_, cutoff_, skin_, /*n_ranks=*/1, hint);
+      break;
+    case ZoningSchemeOverride::Hilbert:
+      plan = planner.plan_with_scheme(box_, cutoff_, skin_, zoning::ZoningScheme::Hilbert3D, hint);
+      break;
+    case ZoningSchemeOverride::Linear1D:
+      plan = planner.plan_with_scheme(box_, cutoff_, skin_, zoning::ZoningScheme::Linear1D, hint);
+      break;
+  }
+  td_plan_ = std::make_unique<zoning::ZoningPlan>(std::move(plan));
 
   scheduler::SchedulerPolicy policy = scheduler::PolicyFactory::for_reference();
   policy.k_max_pipeline_depth = td_pipeline_depth_cap_;  // D-M5-1 (K ∈ {1,2,4,8})

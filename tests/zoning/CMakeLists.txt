@@ -2,6 +2,7 @@ add_executable(
   test_zoning
   test_zoning_types.cpp
   test_linear1d.cpp
+  test_linear_1d_scheme.cpp
   test_decomp2d.cpp
   test_hilbert.cpp
   test_hilbert3d.cpp

@@ -377,6 +377,32 @@ CommBlock parse_comm_block(const YAML::Node& node) {
   return out;
 }
 
+// T5.9 — opt-in zoning scheme override. When absent the M3 auto-select
+// decision tree runs unchanged (Hilbert for cubic/near-cubic, Decomp2D /
+// Linear1D for long aspect ratios). `linear_1d` is what the anchor test
+// sets to reproduce Andreev §2.2.
+ZoningBlock parse_zoning_block(const YAML::Node& node) {
+  constexpr std::string_view path = "zoning";
+  reject_unknown_keys(node, path, {"scheme"});
+  ZoningBlock out{};
+  if (const auto s = node["scheme"]; s) {
+    const auto value = as_scalar<std::string>(s, "zoning.scheme");
+    if (value == "auto") {
+      out.scheme = ZoningSchemeKind::Auto;
+    } else if (value == "hilbert") {
+      out.scheme = ZoningSchemeKind::Hilbert;
+    } else if (value == "linear_1d") {
+      out.scheme = ZoningSchemeKind::Linear1D;
+    } else {
+      throw YamlParseError(
+          line_of(s),
+          "zoning.scheme",
+          "zoning.scheme must be one of {auto, hilbert, linear_1d}; got '" + value + "'");
+    }
+  }
+  return out;
+}
+
 // Top-level dispatch. Required blocks: simulation, atoms, potential,
 // integrator, run. Optional blocks: neighbor, thermo. Any other top-level key
 // is rejected so M2's new blocks land with a visible SPEC bump instead of
@@ -397,7 +423,8 @@ YamlConfig parse_root(const YAML::Node& root) {
                        "neighbor",
                        "thermo",
                        "scheduler",
-                       "comm"});
+                       "comm",
+                       "zoning"});
 
   YamlConfig cfg{};
   cfg.simulation = parse_simulation_block(require_child(root, "", "simulation"));
@@ -416,6 +443,9 @@ YamlConfig parse_root(const YAML::Node& root) {
   }
   if (const auto c = root["comm"]; c) {
     cfg.comm = parse_comm_block(c);
+  }
+  if (const auto z = root["zoning"]; z) {
+    cfg.zoning = parse_zoning_block(z);
   }
   return cfg;
 }

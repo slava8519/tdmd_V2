@@ -163,6 +163,23 @@ struct CommBlock {
   CommTopologyKind topology = CommTopologyKind::Mesh;
 };
 
+// SPEC: zoning/SPEC.md §3.1, master spec §13.3 (anchor-test premise).
+// Exec pack: docs/development/m5_execution_pack.md T5.9.
+// Opt-in zoning scheme override. `Auto` keeps the M3 behaviour — the
+// DefaultZoningPlanner's §3.4 decision tree picks between Linear1D /
+// Decomp2D / Hilbert3D based on box aspect ratio. `Hilbert` and
+// `Linear1D` force a specific scheme via plan_with_scheme(); the anchor
+// test (T5.11) uses Linear1D to reproduce Andreev §2.2 verbatim.
+enum class ZoningSchemeKind : std::uint8_t {
+  Auto,      // default — DefaultZoningPlanner::select_scheme()
+  Hilbert,   // force ZoningScheme::Hilbert3D (M3 fallback default)
+  Linear1D,  // force ZoningScheme::Linear1D (anchor-test T5.11)
+};
+
+struct ZoningBlock {
+  ZoningSchemeKind scheme = ZoningSchemeKind::Auto;
+};
+
 // Aggregate. Parser produces this, preflight inspects it.
 struct YamlConfig {
   SimulationBlock simulation{};
@@ -174,6 +191,7 @@ struct YamlConfig {
   RunBlock run{};
   SchedulerBlock scheduler{};
   CommBlock comm{};
+  ZoningBlock zoning{};
 };
 
 // Thrown by `parse_yaml_config` on syntactic / schema violations. `line` is the
