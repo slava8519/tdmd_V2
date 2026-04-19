@@ -1,0 +1,53 @@
+# T7 mixed-scaling benchmark threshold declarations.
+#
+# Consumed by verify/harness/scaling_runner/. The harness reads `ranks_to_probe`
+# and `efficiency_gates`, runs `mpirun -np N tdmd run` per N, computes
+# strong-scaling efficiency, and compares against the per-tier gate.
+#
+# Efficiency formula (canonical, matches M5 dissertation precedent):
+#     E(N) = rate(N) / (rate(1) × N) × 100  [percent]
+# where rate = n_steps / total_wall_sec from the telemetry payload.
+
+benchmark: t7_mixed_scaling
+
+# Backend dispatch (parallel to T3-gpu checks.yaml::backend). T7 always runs
+# on GPU — the 1-rank baseline goes through Pattern 1 single-subdomain path
+# (zoning.subdomains:[1,1,1]) and N-rank goes through Pattern 2 (the scaling
+# probe). The runner never mutates `runtime.backend` because the fixture
+# config already declares `comm.backend: hybrid` which implies GPU.
+backend: gpu
+
+# Strong-scaling sweep. Tested in order; harness aborts on first launch
+# failure (subsequent points cannot be efficiency-normalised without their
+# anchor). 1 must be present — it is the efficiency anchor by construction.
+#
+# Single-node ceiling is 8 (D-M7-8 spec target); 16 is the 2-node target
+# and is opportunistic (cloud-burst dependent).
+ranks_to_probe: [1, 2, 4]
+
+# Per-tier efficiency gate. Format: list of {min_rank_inclusive, gate_pct}.
+# A probe point at N triggers the gate matching the largest min_rank ≤ N.
+# This lets us encode "N=2..8 ≥ 80%, N=16 ≥ 70%" without a per-N table.
+efficiency_gates:
+  single_node:
+    min_rank_inclusive: 2
+    max_rank_inclusive: 8
+    gate_pct: 80.0
+    rationale: D-M7-8 single-node Pattern 2 strong-scaling target
+  two_node:
+    min_rank_inclusive: 9
+    max_rank_inclusive: 16
+    gate_pct: 70.0
+    rationale: D-M7-8 2-node Pattern 2 target (honorable best-effort)
+
+# Pattern 1 byte-exactness regression at N=1. When True and the harness
+# is invoked with --baseline-thermo <path>, the runner compares the N=1
+# thermo trace byte-for-byte against the supplied baseline. Mirrors the
+# D-M7-10 chain extension (M3 ≡ M4 ≡ M5 ≡ M6 ≡ M7 thermo).
+pattern1_baseline_byte_exact: true
+
+# Runtime budget — single-node 131k-atom 100-step Pattern 2 on a dev GPU
+# should complete each probe in well under 5 minutes; 60-minute aggregate
+# budget pads for cold-start + 3 probe points + telemetry I/O.
+runtime:
+  wall_clock_budget_minutes: 60

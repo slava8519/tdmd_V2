@@ -1,0 +1,51 @@
+# T7 mixed-scaling benchmark — base config (Pattern 2 GPU strong-scaling probe).
+#
+# Intentionally NO `zoning.subdomains` here — the scaling_runner harness injects
+# the per-N value before launch (`[N, 1, 1]` for the strong-scaling sweep).
+# Same omission pattern as the T3-gpu fixture's `runtime.backend` injection.
+#
+# Same Mishin 2004 EAM/alloy potential as T4, T6.7, T6.13. Larger 32×32×32
+# unit-cell lattice → 131,072 atoms (~1.3×10⁵) — `generate_setup.py` produces
+# this from the T4 generator with the canonical seed=12345 chain.
+
+simulation:
+  units: metal
+  seed: 12345
+
+atoms:
+  source: lammps_data
+  path: ../../data/t7_mixed_scaling/setup.data
+
+potential:
+  style: eam/alloy
+  params:
+    file: ../../third_party/potentials/NiAl_Mishin_2004.eam.alloy
+
+integrator:
+  style: velocity_verlet
+  dt: 0.001                # ps (1 fs) — matches T4 / T6.7 / T6.13 chain
+
+neighbor:
+  skin: 0.3                # Å — matches T6.7 GPU smoke + T6.13 anchor
+
+thermo:
+  every: 1                 # full per-step trace; harness captures via --thermo
+
+run:
+  n_steps: 100             # amortises kernel JIT + warm-up; matches T6.13
+
+# Pattern 2 base — harness adds `zoning.subdomains: [N, 1, 1]` per probe point.
+# Pipeline depth K=1 in M7 default (auto-K is M9+; see master spec §6.5a).
+zoning:
+  scheme: linear_1d
+
+scheduler:
+  td_mode: true
+  pipeline_depth_cap: 1
+
+# Hybrid backend — intra-node NCCL + inter-node GpuAwareMPI (T7.5).
+# Falls back to mpi_host_staging on environments where CUDA-aware MPI
+# isn't available (T7.3 fail-fast preflight catches the user-explicit case).
+comm:
+  backend: hybrid
+  topology: mesh

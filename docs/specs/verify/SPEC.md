@@ -3,7 +3,7 @@
 **Module:** `verify/`
 **Status:** master module spec
 **Parent:** `TDMD Engineering Spec v2.1` §13 (testing), §3.2 (positioning)
-**Last updated:** 2026-04-16
+**Last updated:** 2026-04-19 (T7.11 — added §4.6 T7 mixed-scaling benchmark)
 
 ---
 
@@ -623,6 +623,77 @@ exercise the full differential against the built-in LAMMPS oracle.
 **Known non-issues.** Listed in `verify/benchmarks/t4_nial_alloy/README.md`
 under "Known non-issues"; the setfl-mass-override and the temperature kB
 gap are the two with persistent cross-release implications.
+
+### 4.6. T7 (`t7_mixed_scaling`) — M7 Pattern 2 strong-scaling probe
+
+**Status:** landed at M7 (T7.11). Strong-scaling probe of the Pattern 2
+TD×SD stack on a Ni-Al EAM 131k-atom (~10⁵) system. Per Option A, multi-rank
+runs execute locally pre-push (single-node mandatory, 2-node opportunistic
+via cloud burst); CI itself does not exercise the harness because public
+runners have no GPU.
+
+**System:**
+
+- Ni-Al FCC 32×32×32 = 131,072 atoms, lattice `a₀ = 3.52 Å`, 50:50 random
+  Ni:Al shuffle (`random.Random(12345)`) — same algorithmic chain as T4
+  (the `generate_setup.py` here delegates to T4's `generate()` symbol);
+- Same Mishin 2004 EAM/alloy potential as T4, T6.7, T6.13;
+- NVE Velocity-Verlet, `dt = 0.001 ps`, 100 steps, thermo every step;
+- Pattern 2 base config: `comm.backend: hybrid` (T7.5),
+  `scheduler.pipeline_depth_cap: 1`, `zoning.scheme: linear_1d`. The
+  harness injects `zoning.subdomains: [N, 1, 1]` per probe point so the
+  fixture config is N-agnostic.
+- Fully periodic box, skin = 0.3 Å.
+
+**Layout:** `verify/benchmarks/t7_mixed_scaling/{README.md, config.yaml,
+checks.yaml, generate_setup.py, hardware_normalization.py}`. Unlike T4,
+`setup.data` is **not committed** (~7.5 MB at 131k atoms) — the harness
+lazily regenerates it via `generate_setup.py` on first invocation. The
+default output path is `verify/data/t7_mixed_scaling/setup.data`,
+mirroring T3's data-vs-fixture split.
+
+**Driver:** `verify/harness/scaling_runner/` (Python, stdlib + PyYAML
+only — same dependency profile as `anchor_test_runner`). Public API:
+
+- `RunnerConfig` — paths + knobs;
+- `ScalingRunner.run() → ScalingReport` — orchestrator;
+- `ScalingProbePoint` — per-N record (steps/sec, efficiency, gate match,
+  status);
+- `python -m verify.harness.scaling_runner` — CLI front-end.
+
+**Gates:**
+
+- **Efficiency `E(N) = rate(N) / (rate(1) × N) × 100`** vs per-tier gate
+  from `checks.yaml::efficiency_gates`. Default tiers:
+  - `single_node` (N ∈ [2,8]): ≥80% (D-M7-8 single-node target),
+  - `two_node` (N ∈ [9,16]): ≥70% (D-M7-8 2-node target, opportunistic).
+- **Pattern 1 byte-exact regression at N=1.** When
+  `checks.yaml::pattern1_baseline_byte_exact: true` AND the harness is
+  invoked with `--baseline-thermo <path>`, the N=1 thermo trace is
+  byte-compared against the supplied baseline. Mirrors D-M7-10 chain
+  extension (M3 ≡ M4 ≡ M5 ≡ M6 ≡ M7 thermo).
+
+**Out of scope at M7:**
+
+- Inter-node NCCL physics (M8+); the 2-node tier exercises HybridBackend
+  composition (intra-node NCCL + inter-node GpuAwareMPI) but the absolute
+  inter-node SNAP-class workload is reserved for M8.
+- Dissertation Morse fidelity (M9+ per D-M7-16); T7 ships an EAM
+  substitute. The dissertation efficiency-curve match remains a CPU
+  property of the T3 anchor.
+- PerfModel-based hardware normalisation: `hardware_normalization.py` is
+  a stub returning `perfmodel_calibration_ratio: 1.0`. The real loader
+  (read JSON measured-coefficient fixture, apply per-(GPU,
+  n_atoms_per_subdomain) scaling) lands with T7.13.
+
+**CI wiring.** Per Option A (`project_option_a_ci.md`), no GPU CI runner
+exists; the harness is exercised pre-push via
+`tests/integration/t7_scaling_local/run_t7_scaling.sh`, which auto-skips
+(exit 77) when `nvidia-smi -L` reports no enumerated device. The Python
+unit suite (`verify/harness/scaling_runner/test_scaling_runner.py`) runs
+in every CI flavor — covers efficiency formula, gate dispatch, augmented
+config injection, Pattern 1 byte-exact gate, launch-failure handling, and
+report serialisation. 13 cases, ~25 ms wall.
 
 ### 4.8. Adding new benchmark
 
