@@ -2,7 +2,14 @@
 # SPEC: docs/specs/comm/SPEC.md (v1.0, 2026-04-16)
 # Exec pack: docs/development/m5_execution_pack.md T5.2–T5.12
 
-set(tdmd_comm_sources comm_backend.cpp crc32.cpp packet_serializer.cpp deterministic_reduction.cpp)
+set(tdmd_comm_sources
+    comm_backend.cpp
+    crc32.cpp
+    packet_serializer.cpp
+    halo_packet_serializer.cpp
+    deterministic_reduction.cpp
+    cuda_mpi_probe.cpp
+    gpu_aware_mpi_backend.cpp)
 if(TDMD_ENABLE_MPI)
   list(APPEND tdmd_comm_sources mpi_host_staging_backend.cpp ring_backend.cpp)
 endif()

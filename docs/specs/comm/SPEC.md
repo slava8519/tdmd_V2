@@ -385,6 +385,16 @@ send_temporal_packet(packet, dest):
 
 Requirement check at init: probe via `MPIX_Query_cuda_support()` или try MPI_Isend with device pointer; if fails — fallback to MpiHostStaging with warning.
 
+**Implementation (T7.3, M7):**
+
+- `tdmd::comm::is_cuda_aware_mpi()` — runtime probe cached via atomic; checks `MPIX_Query_cuda_support()` under `__has_include(<mpi-ext.h>)`, then env overrides `OMPI_MCA_opal_cuda_support` / `MV2_USE_CUDA`. **Never aborts**; returns `false` on any MPI implementation without CUDA symbols. `reset_cuda_mpi_probe_cache_for_testing()` lets unit tests drive the cache.
+- `GpuAwareMpiBackend` constructor throws `std::runtime_error` if the probe is negative. Engine preflight (T7.9) catches this and dispatches `MpiHostStagingBackend` as the fallback, satisfying SPEC §6.2 above.
+- PIMPL firewall: public header pulls only TDMD types + abstract `CommBackend`; `<mpi.h>` / `<mpi-ext.h>` live in the `.cpp`. Downstream targets including `gpu_aware_mpi_backend.hpp` don't force an MPI transitive dependency.
+- MPI tags: `kTagTemporal = 1011`, `kTagHalo = 1012`. Distinct from `MpiHostStagingBackend` (which uses `1001`) so a composed `HybridBackend` (T7.5) that shares an MPI communicator across both transports cannot crosstalk at drain.
+- Halo wire format (T7.3): mirror of `TemporalPacket` serializer — see §4.2; CRC32 is validated **before** payload allocation so a corrupted `payload_size` header cannot trigger a multi-GB alloc. Telemetry: `dropped_halo_crc_count()`, `dropped_halo_version_count()`.
+- `send_migration_packet` is a no-op stub at T7.3. Migration routing over the outer communicator is wired by `HybridBackend` (T7.5) + engine Pattern 2 (T7.9).
+- At T7.3 the halo send path uses a host `std::vector<uint8_t>` buffer (CUDA-aware MPI accepts host and device pointers interchangeably, so this is semantically identical — GPU-direct payload routing will land when the halo snapshot builder writes directly into pinned/device memory in T7.9).
+
 ### 6.3. NcclBackend
 
 **Best for:** intra-node, SM-to-SM transfers.
@@ -685,6 +695,19 @@ Comm backend diagnostics:
 ---
 
 ## 14. Change log
+
+- **2026-04-19** — **T7.3 — `GpuAwareMpiBackend` implementation landed
+  (M7).** First concrete delivery of §6.2: probe-gated constructor,
+  PIMPL firewall, halo + temporal multiplexed on distinct MPI tags
+  (1011 / 1012, distinct from `MpiHostStaging`'s 1001), 2-rank halo
+  echo test with runtime SKIP on probe-negative nodes (Option A CI
+  posture — no self-hosted CUDA-aware-MPI runner). `HaloPacket` wire
+  format mirrors `TemporalPacket`: 26 B header + payload + 4 B CRC32,
+  CRC validated before payload allocation. No SPEC-surface changes —
+  §6.2 was already specified; T7.3 is its implementation. See §6.2
+  "Implementation" subsection for integration notes (engine preflight
+  fallback contract, PIMPL rationale, migration-packet stub deferral
+  to T7.5/T7.9).
 
 - **2026-04-19** — **T7.2 — Pattern 2 SPEC integration sister edit
   (M7 entry).** Pure SPEC delta paired with `scheduler/SPEC §2.4 / §2.5

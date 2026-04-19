@@ -4,7 +4,8 @@
 # test_comm: non-MPI types + serializer unit tests (always built).
 # test_mpi_host_staging_2rank: MPI-only, needs TDMD_ENABLE_MPI + mpirun.
 
-add_executable(test_comm test_comm_types.cpp test_packet_serializer.cpp)
+add_executable(test_comm test_comm_types.cpp test_packet_serializer.cpp
+                         test_halo_packet_serializer.cpp test_cuda_mpi_probe.cpp)
 
 target_link_libraries(test_comm PRIVATE tdmd::comm Catch2::Catch2WithMain)
 
@@ -51,5 +52,13 @@ if(TDMD_ENABLE_MPI)
     # machines with ≥4 real cores. (The 2-rank test works with --oversubscribe alone.)
     set_tests_properties(test_ring_4rank PROPERTIES ENVIRONMENT
                                                     "OMPI_MCA_rmaps_base_oversubscribe=1")
+
+    # --- T7.3 GpuAwareMpiBackend 2-rank halo echo ------------------------
+    # Runtime-SKIPs if the CUDA-aware MPI probe is negative; passes cleanly on both CUDA-aware and
+    # non-CUDA-aware nodes.
+    add_executable(test_gpu_aware_mpi_2rank main_mpi.cpp test_gpu_aware_mpi_backend.cpp)
+    target_link_libraries(test_gpu_aware_mpi_2rank PRIVATE tdmd::comm Catch2::Catch2 MPI::MPI_CXX)
+    add_test(NAME test_gpu_aware_mpi_2rank COMMAND ${MPIEXEC_EXECUTABLE} ${TDMD_MPI_EXTRA_FLAGS}
+                                                   -np 2 $<TARGET_FILE:test_gpu_aware_mpi_2rank>)
   endif()
 endif()
