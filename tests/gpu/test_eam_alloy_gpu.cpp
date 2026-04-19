@@ -226,6 +226,11 @@ TEST_CASE("EamAlloyGpu — Al FCC single-species ≤1e-12 rel vs CPU", "[gpu][ea
   if (!cuda_device_available()) {
     SKIP("no CUDA device available");
   }
+#ifndef TDMD_FLAVOR_FP64_REFERENCE
+  SKIP(
+      "D-M6-7 bit-exact EAM gate is Fp64ReferenceBuild-only; MixedFast path "
+      "covered by test_eam_mixed_fast_within_threshold (D-M6-8 thresholds)");
+#endif
 
   const auto data = tp::parse_eam_alloy(
       (std::filesystem::path(test_fixtures_dir()) / "Al_small.eam.alloy").string());
@@ -289,6 +294,11 @@ TEST_CASE("EamAlloyGpu — Ni-Al B2 two-species ≤1e-12 rel vs CPU", "[gpu][eam
   if (!cuda_device_available()) {
     SKIP("no CUDA device available");
   }
+#ifndef TDMD_FLAVOR_FP64_REFERENCE
+  SKIP(
+      "D-M6-7 bit-exact EAM gate is Fp64ReferenceBuild-only; MixedFast path "
+      "covered by test_eam_mixed_fast_within_threshold (D-M6-8 thresholds)");
+#endif
 
   const auto nial_path =
       std::filesystem::path(verify_potentials_dir()) / "NiAl_Mishin_2004.eam.alloy";

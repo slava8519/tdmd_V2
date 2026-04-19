@@ -4,7 +4,10 @@
 #include "tdmd/potentials/eam_alloy_gpu_adapter.hpp"
 
 #include "tdmd/gpu/device_pool.hpp"
-#include "tdmd/gpu/eam_alloy_gpu.hpp"
+#include "tdmd/gpu/eam_alloy_gpu.hpp"  // Reference EAM backend + shared Tables / Result structs
+#ifdef TDMD_FLAVOR_MIXED_FAST
+#include "tdmd/gpu/eam_alloy_gpu_mixed.hpp"  // MixedFast EAM backend (T6.8, D-M6-5)
+#endif
 #include "tdmd/gpu/neighbor_list_gpu.hpp"  // BoxParams
 #include "tdmd/neighbor/cell_grid.hpp"
 #include "tdmd/state/atom_soa.hpp"
@@ -36,7 +39,7 @@ void flatten_tab_into(const TabulatedFunction& tab, std::vector<double>& out) {
 }  // namespace
 
 EamAlloyGpuAdapter::EamAlloyGpuAdapter(const EamAlloyData& data)
-    : data_(&data), gpu_(std::make_unique<tdmd::gpu::EamAlloyGpu>()) {
+    : data_(&data), gpu_(std::make_unique<tdmd::gpu::EamAlloyGpuActive>()) {
   const std::size_t n_species = data.species_names.size();
   if (n_species == 0) {
     throw std::invalid_argument("EamAlloyGpuAdapter: EamAlloyData has zero species");

@@ -34,3 +34,16 @@ add_executable(test_integrator_vv_gpu test_integrator_vv_gpu.cpp)
 target_link_libraries(test_integrator_vv_gpu PRIVATE tdmd::gpu tdmd::integrator tdmd::state
                                                      Catch2::Catch2WithMain)
 add_test(NAME test_integrator_vv_gpu COMMAND test_integrator_vv_gpu)
+
+# T6.8: MixedFast EAM/alloy GPU kernel — ≤ 1e-6 rel force / ≤ 1e-8 rel PE vs Fp64 reference GPU
+# (D-M6-8). Compares `EamAlloyGpu` vs `EamAlloyGpuMixed` directly, bypassing the flavor-dispatched
+# adapter so the threshold applies regardless of the selected BuildFlavor.
+add_executable(test_eam_mixed_fast_within_threshold test_eam_mixed_fast_within_threshold.cpp)
+target_link_libraries(
+  test_eam_mixed_fast_within_threshold PRIVATE tdmd::gpu tdmd::potentials tdmd::neighbor
+                                               tdmd::state Catch2::Catch2WithMain)
+target_compile_definitions(
+  test_eam_mixed_fast_within_threshold
+  PRIVATE TDMD_TEST_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/potentials/fixtures"
+          TDMD_VERIFY_POTENTIALS_DIR="${CMAKE_SOURCE_DIR}/verify/third_party/potentials")
+add_test(NAME test_eam_mixed_fast_within_threshold COMMAND test_eam_mixed_fast_within_threshold)

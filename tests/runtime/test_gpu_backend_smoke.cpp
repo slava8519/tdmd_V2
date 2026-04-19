@@ -70,6 +70,12 @@ TEST_CASE("T6.7 — CPU ≡ GPU thermo byte-exact on Ni-Al EAM (Reference)",
   if (!has_cuda_device()) {
     SKIP("no CUDA device visible");
   }
+#ifndef TDMD_FLAVOR_FP64_REFERENCE
+  SKIP(
+      "D-M6-7 byte-exact CPU≡GPU thermo gate is Fp64ReferenceBuild-only; MixedFast "
+      "runs FP32 math on the force path so thermo strings diverge (D-M6-8 covers the "
+      "non-Reference accuracy envelope separately)");
+#endif
   constexpr std::uint64_t kSteps = 100;
   const std::string cpu = run_and_capture_thermo(tdmd::io::RuntimeBackendKind::Cpu, kSteps);
   const std::string gpu = run_and_capture_thermo(tdmd::io::RuntimeBackendKind::Gpu, kSteps);

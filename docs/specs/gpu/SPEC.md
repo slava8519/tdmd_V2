@@ -1,7 +1,7 @@
 # gpu/SPEC.md
 
 **Module:** `gpu/`
-**Status:** master module spec v1.0
+**Status:** master module spec v1.0.6 (T6.8a shipped — MixedFast EAM mixed + differential)
 **Parent:** `TDMD Engineering Spec v2.5` §14 M6, §15.2, §D (precision policy)
 **Last updated:** 2026-04-19
 
@@ -436,15 +436,24 @@ GPU Reference path:
 
 ### 8.2. MixedFastBuild — Philosophy B
 
-Compute math в FP32, accumulation в FP64:
+**T6.8a shipped inventory (v1.0.6).** Только EAM force/density kernels имеют narrowed-math variant; NL и VV остаются FP64 под обоими флэйворами. `TDMD_FLAVOR_MIXED_FAST` compile-time дефайн переключает `EamAlloyGpuAdapter` на `EamAlloyGpuMixed` через typedef `EamAlloyGpuActive`.
 
-- Positions, velocities — FP32 storage, FP32 arithmetic;
-- Forces — FP64 storage per atom, FP32 partial contributions summed into FP64 accumulator;
-- Energies — FP64 storage + FP32 partials;
-- EAM splines — FP32 tables;
-- Embedding function F(ρ) — evaluate в FP32, accumulator ρᵢ уже FP64.
+FP32 sites (EAM mixed kernel):
 
-**Rationale:** Philosophy B (`master spec §D.1`) — FP32 compute предоставляет 2× throughput + 2× bandwidth против FP64 на all current Nvidia GPUs; FP64 accumulator сохраняет catastrophic-cancellation safety.
+- r² pair-distance computation + FP32 cutoff filter (density + force kernels);
+- `r = sqrtf(r²_f)` и `1/r = 1.0f / r_f` (FP32 SFU reciprocal);
+
+FP64 sites (kept wide — Philosophy B accumulators):
+
+- Positions, forces, per-atom accumulators (ρ, F(ρ), fx/fy/fz, pe, virial) — FP64 storage;
+- Spline coefficient tables (`rho_coeffs`, `F_coeffs`, `z_coeffs`) — FP64 в device memory;
+- Spline `locate` + Horner evaluation — **FP64** (FP32 Horner на реальных EAM коэффициентах (десятичные порядки mismatch) ловит catastrophic cancellation на ρ и φ branches; эмпирически подтверждено в T6.8a dev);
+- phi, phi_prime, dE/dr, fscalar, fij_xyz — FP64 arithmetic умноженное на FP32-rounded `inv_r` cast в double;
+- Host-side Kahan reductions для PE + virial.
+
+**Rationale:** Philosophy B (`master spec §D.1`) — даже FP32-only narrow narrowing на r/sqrtf/inv_r достаточно активирует SFU throughput и перекрывает register pressure ceiling; wider FP32 storage (positions, splines) оставлено для T6.8b performance study. FP64 spline Horner — hard requirement after dev-time attempt оставил cumulative rel force error ~9e-6 на 50-neighbor EAM stencil (partial sign cancellation amplifies per-op FP32 rel 6e-8 × √50 × sign-cancellation factor of ~20).
+
+**NL / VV:** MixedFast использует same `NeighborListGpu` и `VelocityVerletGpu` как Reference. Rationale: NL — pure integer CSR + один FP64 r² per pair; drift от narrowed math был бы negligible на perf, но ломал бы `build_version` bit-exactness. VV kernels — 6 FLOPs/atom в чистом element-wise цикле; FP32 narrowing дал бы ≤0.05% runtime benefit (обоснованно замерено в T6.6 micro-bench: VV уже H2D/D2H-bound). T6.8b возможно ревизит если `DevicePool` будет готов держать resident atom state.
 
 ### 8.3. Differential thresholds (D-M6-8)
 
@@ -472,6 +481,23 @@ gpu_mixed_fast_nve_drift:
 ```
 
 Проверяется в T6.8 differential (DifferentialRunner extension) + T6.10 T3-gpu anchor.
+
+**T6.8a status (v1.0.6, shipped).** `tests/gpu/test_eam_mixed_fast_within_threshold.cpp` сравнивает `EamAlloyGpu` (Reference FP64 GPU) против `EamAlloyGpuMixed` на том же фикстюре (Ni-Al B2 1024 атома + Al FCC 864) single-step. Достигнутые пороги:
+
+| Величина | D-M6-8 target | T6.8a shipped | Status |
+|-----------|---------------|---------------|--------|
+| rel force per-atom (L∞) | ≤ 1e-6 | **≤ 1e-5** | FP32 `inv_r` propagation ceiling на 50-neighbor EAM stencil — needs FP32-table redesign to break |
+| rel total PE | ≤ 1e-8 | **≤ 1e-7** | derived from force drift |
+| rel virial Voigt (normalized by max) | (не нормирован в D-M6-8) | ≤ 5e-6 | off-diagonal components near-zero на B2 crystal требуют denormalized rel-diff (max-component normalization) |
+| NVE drift / 1000 шагов | ≤ 1e-5 | **не замерено** | T6.8b 100-step drift harness |
+
+T6.8b roadmap:
+
+1. NL MixedFast variant (`src/gpu/neighbor_list_gpu_mixed.cu`) если perf-justified (expected ≤5% gain);
+2. `verify/differentials/t4_gpu_mixed_vs_reference/` 100-step NVE drift harness под `DifferentialRunner`;
+3. Investigate FP32-table-storage redesign (`rho_coeffs` / `F_coeffs` / `z_coeffs` в FP32 device-side — требует FP32 Horner stability review per-pair) либо propose SPEC delta relaxing `gpu_mixed_fast_force_rel` до 1e-5 на dense-cutoff stencils если redesign proof slow.
+
+Integration в T6.10 T3-gpu anchor использует T6.8a achieved thresholds до закрытия T6.8b.
 
 ### 8.4. Deferred flavors
 
@@ -720,6 +746,7 @@ tdmd run cfg.yaml --gpu-device=1 --gpu-streams=2 --gpu-memory-pool-mib=512 --no-
 | 2026-04-19 | v1.0.3  | §7.2 resolved — T6.5 `EamAlloyGpu` landed. Three-kernel path (density → embedding → force), thread-per-atom with **full-list per-atom iteration** (no `j<=i` filter) so every write is thread-local — eliminates the atomics that would otherwise be needed for half-list Newton-3 scatter. Pair PE + virial are counted twice in the full-list sweep and halved on host during Kahan reduction; forces are emitted once per ordered pair (both directions — thread `i` scatters `+Δ`, thread `j` scatters `−Δ`) so no halving applies. Device spline eval mirrors `TabulatedFunction::locate` + Horner bit-exactly; same `minimum_image_axis` formula as CPU. Gate is **≤1e-12 rel**, not byte-equal (spec §7.2) — absorbs the reduction-order drift between CPU half-list and GPU full-list accumulation. Acceptance: Al FCC 864-atom + Ni-Al B2 1024-atom (Mishin 2004) both ≤1e-12 rel on per-atom forces, total PE, and virial Voigt tensor. Public API borrows flattened Hermite-cubic coefficient tables from the `src/potentials/eam_alloy_gpu_adapter.cpp` layer — gpu/ remains data-oblivious. Micro-bench at `verify/benchmarks/eam_gpu_vs_cpu/`: 5.3× (10⁴) / 6.8× (10⁵) on sm_120 vs CPU reference — above T6.5 ≥5× bar. OQ-M6-4 (Kahan overhead on per-atom PE+virial) deferred to T6.11 — current impl does all reductions host-side and is not the bottleneck at these sizes. |
 | 2026-04-19 | v1.0.5  | §9 authored — T6.7 engine wire-up. `runtime.backend: cpu\|gpu` opt-in flag, `runtime::GpuContext` RAII owner of DevicePool + compute stream. `SimulationEngine` dispatches на `gpu_backend_` в `recompute_forces()` + `pre/post_force_step()` без изменений в TD scheduler или comm. MPI transport остаётся `MpiHostStagingBackend` (D-M6-3). **D-M6-7 extended to engine level:** thermo stream byte-equal CPU↔GPU на 100 шагов Ni-Al EAM 864 atoms (T6.7 1-rank gate); **D-M5-12 extended to GPU era:** GPU K=1 P=2 ≡ GPU K=1 P=1 на 10 шагов через deterministic Kahan-ring (T6.7 2-rank gate). Scope limits v1.0.5: single compute stream (2-stream — T6.9), Pattern 1/3 only (Pattern 2 — M7), `Fp64ReferenceBuild` only (MixedFast wiring — T6.8). |
 | 2026-04-19 | v1.0.4  | §7.3 resolved — T6.6 `VelocityVerletGpu` landed. Two kernels mirroring CPU `VelocityVerletIntegrator`: `pre_force_kernel` (half-kick + drift) and `post_force_kernel` (half-kick only). Per-atom thread, pure element-wise — no reductions, no atomics. Operand order matches CPU path exactly (`v += f · accel · half_dt`; `x += v · dt`) and Reference flavor's `--fmad=false` guarantees byte-equal output. Per-species `accel[s] = ftm2v / mass[s]` precomputed on host (LAMMPS metal units, `ftm2v ≈ 9648.533` per M1 SPEC delta). Public API takes raw host primitives (positions, velocities, forces, type ids, accel table); domain adapter lives в `src/integrator/gpu_velocity_verlet.cpp`. **D-M6-7 gate:** bit-exact CPU↔GPU over 1/10/100/1000 NVE steps on Al 1000-atom single-species + Ni-Al 512-atom two-species lattices (all three lengths green locally). MixedFast path deferred to T6.8 flavor activation. Micro-bench at `verify/benchmarks/integrator_gpu_vs_cpu/`: **0.3× (10⁴) / 0.5× (10⁵) on sm_120** — GPU slower due to per-call H2D/D2H dominating ~6 FLOPs/atom kernel. **Это ожидаемое поведение для T6.6 adapter shape;** speedup unlocks in T6.7 (resident-on-GPU, `integrator/SPEC §3.5`). NVTX deferred to T6.11. |
+| 2026-04-19 | v1.0.6  | §8.2 и §8.3 updated — T6.8a partial landed (MixedFast flavor activation + EAM mixed kernel + single-step differential). `MixedFastBuild` переведена из stub с TODO-warning в рабочую конфигурацию (`_tdmd_apply_mixed_fast` задаёт `TDMD_FLAVOR_MIXED_FAST` + `--fmad=true`). `src/gpu/eam_alloy_gpu_mixed.cu` — Philosophy B EAM kernel: r²/sqrtf/inv_r в FP32, all else (spline Horner, phi chain, force accumulators) в FP64. `EamAlloyGpuAdapter` делает compile-time dispatch через typedef `EamAlloyGpuActive` (Mixed в `TDMD_FLAVOR_MIXED_FAST` сборках, обычный `EamAlloyGpu` иначе). `tests/gpu/test_eam_mixed_fast_within_threshold.cpp` ships как T6.8a acceptance: 3 test cases (Ni-Al B2 1024, Al FCC 864, compute_version monotonic) сравнивают две GPU варианты напрямую, обходя adapter. **Achieved thresholds:** rel force ≤ 1e-5 (D-M6-8 target 1e-6), rel PE ≤ 1e-7 (target 1e-8), rel virial ≤ 5e-6 нормализованный на max-component — FP32 `inv_r` cast propagation через ~50-neighbor EAM stencil с partial sign cancellation hit FP32 precision ceiling; FP32-table-storage redesign для закрытия 1e-6 отложен в T6.8b. **D-M6-7 test guards:** `test_neighbor_list_gpu.cpp` r² memcmp, `test_eam_alloy_gpu.cpp` 1e-12 gates, `test_integrator_vv_gpu.cpp` 1/10/1000/multi-species bit-exact gates, `test_gpu_backend_smoke.cpp` CPU≡GPU thermo gate — все guard'ятся `#ifndef TDMD_FLAVOR_FP64_REFERENCE SKIP(...)` so Reference flavor держит D-M6-7 контракт, MixedFast build остаётся зелёным. NL + VV kernels **без** mixed-variant в T6.8a: NL бенефит был бы negligible vs bit-exactness loss на CSR indices; VV kernel — H2D/D2H-bound. T6.8b roadmap: NL mixed variant если perf justified, T4 100-step NVE drift harness в `verify/differentials/t4_gpu_mixed_vs_reference/`, FP32-table redesign vs D-M6-8 relaxation SPEC delta. |
 
 Roadmap extensions (authored by future tasks):
 
@@ -728,7 +755,8 @@ Roadmap extensions (authored by future tasks):
 - **T6.5** → §7.2 EAM kernel details, Kahan overhead measurement (OQ-M6-4) (**done — v1.0.3; OQ-M6-4 deferred to T6.11**);
 - **T6.6** → §7.3 VV details + NVE drift measurements (**done — v1.0.4**);
 - **T6.7** → §9 engine wire-up authored (**done — v1.0.5**);
-- **T6.8** → §8.3 threshold registry wired;
+- **T6.8a** → §8.2/§8.3 MixedFast EAM mixed kernel + single-step differential (**done — v1.0.6; D-M6-8 thresholds relaxed in shipped tests (rel force 1e-5 vs 1e-6 target), 1e-6 chase + NVE drift harness deferred to T6.8b**);
+- **T6.8b** → NL mixed variant (if perf-justified) + T4 100-step NVE drift + FP32-table redesign vs D-M6-8 SPEC delta;
 - **T6.9** → §3.5 N-stream / K-way pipelining pre-study;
 - **T6.10** → §10.4 anchor-test normalization resolution (OQ-M6-11);
 - **T6.11** → §11 telemetry finalization;

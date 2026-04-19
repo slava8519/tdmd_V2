@@ -167,6 +167,11 @@ TEST_CASE("VelocityVerletGpu: 1-step bit-exact CPU↔GPU (1000 atoms)",
   if (!cuda_device_available()) {
     SKIP("No CUDA device available");
   }
+#ifndef TDMD_FLAVOR_FP64_REFERENCE
+  SKIP(
+      "D-M6-7 bit-exact VV gate is Fp64ReferenceBuild-only; non-Reference flavors "
+      "compile with --fmad=true so CPU↔GPU literal equality is not guaranteed");
+#endif
 
   tdmd::SpeciesRegistry species;
   register_al(species);
@@ -206,6 +211,11 @@ TEST_CASE("VelocityVerletGpu: 10-step bit-exact CPU↔GPU (1000 atoms)",
   if (!cuda_device_available()) {
     SKIP("No CUDA device available");
   }
+#ifndef TDMD_FLAVOR_FP64_REFERENCE
+  SKIP(
+      "D-M6-7 bit-exact VV gate is Fp64ReferenceBuild-only; non-Reference flavors "
+      "compile with --fmad=true so CPU↔GPU literal equality is not guaranteed");
+#endif
 
   tdmd::SpeciesRegistry species;
   register_al(species);
@@ -247,6 +257,11 @@ TEST_CASE("VelocityVerletGpu: 1000-step bit-exact CPU↔GPU (1000 atoms)",
   if (!cuda_device_available()) {
     SKIP("No CUDA device available");
   }
+#ifndef TDMD_FLAVOR_FP64_REFERENCE
+  SKIP(
+      "D-M6-7 bit-exact VV gate is Fp64ReferenceBuild-only; non-Reference flavors "
+      "compile with --fmad=true so CPU↔GPU literal equality is not guaranteed");
+#endif
 
   tdmd::SpeciesRegistry species;
   register_al(species);
@@ -288,6 +303,11 @@ TEST_CASE("VelocityVerletGpu: two-species mass handling (Ni + Al)",
   if (!cuda_device_available()) {
     SKIP("No CUDA device available");
   }
+#ifndef TDMD_FLAVOR_FP64_REFERENCE
+  SKIP(
+      "D-M6-7 bit-exact VV gate is Fp64ReferenceBuild-only; non-Reference flavors "
+      "compile with --fmad=true so CPU↔GPU literal equality is not guaranteed");
+#endif
 
   tdmd::SpeciesRegistry species;
   const tdmd::SpeciesId al = register_al(species);

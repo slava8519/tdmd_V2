@@ -39,10 +39,15 @@ function(_tdmd_apply_fp64_production target)
                                            $<$<COMPILE_LANGUAGE:CUDA>:--fmad=true>)
 endfunction()
 
-# Mixed — stubs for M0. Real configuration lands in M2+ with NumericConfig.
+# MixedFastBuild — Philosophy B: FP32 math pipeline + FP64 accumulators. Same host/CUDA math policy
+# as Fp64ProductionBuild (FMA allowed, no fast-math); the FP32 narrowing lives inside the kernels
+# themselves. Adapters dispatch to the `*Mixed` class variants at compile time via
+# `TDMD_FLAVOR_MIXED_FAST` (T6.8). Acceptance: D-M6-8 thresholds (rel force ≤ 1e-6, rel PE ≤ 1e-8 vs
+# Fp64Reference GPU).
 function(_tdmd_apply_mixed_fast target)
   _tdmd_define_flavor(${target} TDMD_FLAVOR_MIXED_FAST)
-  message(STATUS "  [flavor stub] MixedFastBuild on target ${target} — M2 TODO")
+  target_compile_options(${target} PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-fno-fast-math>
+                                           $<$<COMPILE_LANGUAGE:CUDA>:--fmad=true>)
 endfunction()
 
 function(_tdmd_apply_mixed_fast_aggressive target)

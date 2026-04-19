@@ -39,6 +39,16 @@ namespace tdmd::gpu {
 class DevicePool;
 class DeviceStream;
 class EamAlloyGpu;
+class EamAlloyGpuMixed;
+// Compile-time dispatch between Fp64 reference and Philosophy-B MixedFast
+// EAM backends. Selected by the `TDMD_FLAVOR_MIXED_FAST` PUBLIC define that
+// `tdmd_apply_build_flavor` sets on every tdmd target, so the adapter's
+// ABI is consistent across all consumers of this header (D-M6-5).
+#ifdef TDMD_FLAVOR_MIXED_FAST
+using EamAlloyGpuActive = EamAlloyGpuMixed;
+#else
+using EamAlloyGpuActive = EamAlloyGpu;
+#endif
 }  // namespace tdmd::gpu
 
 namespace tdmd::potentials {
@@ -82,7 +92,7 @@ private:
   std::vector<double> rho_coeffs_flat_;
   std::vector<double> z2r_coeffs_flat_;
 
-  std::unique_ptr<tdmd::gpu::EamAlloyGpu> gpu_;
+  std::unique_ptr<tdmd::gpu::EamAlloyGpuActive> gpu_;
 };
 
 }  // namespace tdmd::potentials
