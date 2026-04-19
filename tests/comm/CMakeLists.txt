@@ -45,5 +45,11 @@ if(TDMD_ENABLE_MPI)
     target_link_libraries(test_ring_4rank PRIVATE tdmd::comm Catch2::Catch2 MPI::MPI_CXX)
     add_test(NAME test_ring_4rank COMMAND ${MPIEXEC_EXECUTABLE} ${TDMD_MPI_EXTRA_FLAGS} -np 4
                                           $<TARGET_FILE:test_ring_4rank>)
+
+    # OpenMPI 3.1 on 2-core CI runners rejects -np 4 even with --oversubscribe unless the MCA
+    # parameter rmaps_base_oversubscribe is set in the environment. Belt-and-suspenders; harmless on
+    # machines with ≥4 real cores. (The 2-rank test works with --oversubscribe alone.)
+    set_tests_properties(test_ring_4rank PROPERTIES ENVIRONMENT
+                                                    "OMPI_MCA_rmaps_base_oversubscribe=1")
   endif()
 endif()
