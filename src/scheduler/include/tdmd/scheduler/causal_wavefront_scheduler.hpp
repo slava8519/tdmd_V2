@@ -25,6 +25,8 @@
 #include "tdmd/scheduler/certificate_store.hpp"
 #include "tdmd/scheduler/diagnostic_dump.hpp"
 #include "tdmd/scheduler/event_log.hpp"
+#include "tdmd/scheduler/halo_snapshot.hpp"
+#include "tdmd/scheduler/outer_sd_coordinator.hpp"
 #include "tdmd/scheduler/policy.hpp"
 #include "tdmd/scheduler/retry_state.hpp"
 #include "tdmd/scheduler/safety_certificate.hpp"
@@ -37,6 +39,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <string>
 #include <vector>
@@ -161,6 +164,42 @@ public:
     return dropped_cert_hash_;
   }
 
+  // --- T7.7 Pattern 2 boundary wiring ----------------------------------
+  //
+  // `set_boundary_zone_flags(flags)` declares which zones are SD-boundary
+  // touching (size must equal total_zones()). Zones with flags[z]==true
+  // gate against `outer_coord_->can_advance_boundary_zone(z, t)` in
+  // select_ready_tasks (SPEC §5.1 Pattern-2 branch). Default: all-false
+  // (Pattern 1 byte-exact).
+  //
+  // `set_boundary_snapshot_builder(fn)` provides the runtime-supplied
+  // packing function called during Phase B when committing a boundary
+  // zone — its return value is forwarded to
+  // `outer_coord_->register_boundary_snapshot`. Without this builder,
+  // boundary commits skip the registration call (counted in
+  // `boundary_register_skips_count()` for diagnostics). T7.5 / T7.9 wire
+  // a real builder; T7.7 ships the hook only.
+  //
+  // `set_boundary_stall_max(t)` configures the per-boundary watchdog
+  // threshold forwarded to `outer_coord_->check_stall_boundaries`.
+  // Default: 10× t_watchdog (a conservative ceiling, not the OQ-M7-2
+  // tighter `5× T_inner_step_typical` — that calibration lands when T7.9
+  // wires the integrator's actual step time).
+  void set_boundary_zone_flags(std::vector<bool> flags);
+  void set_boundary_snapshot_builder(
+      std::function<HaloSnapshot(ZoneId, TimeLevel)> builder) noexcept;
+  void set_boundary_stall_max(std::chrono::milliseconds t) noexcept;
+  [[nodiscard]] bool is_boundary_zone(ZoneId zone) const noexcept;
+  [[nodiscard]] std::uint64_t boundary_gates_blocked_count() const noexcept {
+    return boundary_gates_blocked_;
+  }
+  [[nodiscard]] std::uint64_t boundary_registers_emitted_count() const noexcept {
+    return boundary_registers_emitted_;
+  }
+  [[nodiscard]] std::uint64_t boundary_register_skips_count() const noexcept {
+    return boundary_register_skips_;
+  }
+
 private:
   void require_initialized(const char* op) const;
 
@@ -186,6 +225,18 @@ private:
   comm::CommBackend* comm_backend_ = nullptr;
   std::vector<int> peer_routing_;
   std::uint64_t dropped_cert_hash_ = 0;
+
+  // T7.7 Pattern 2 boundary state. `is_boundary_zone_[z]` is the per-zone
+  // SD-touching flag wired from T7.9 (zoning); empty in Pattern 1. The
+  // builder closure is the runtime-supplied snapshot packer; absent in
+  // T7.7 (Phase B emits a skip count + advances). Stall watchdog
+  // threshold defaults to 0 = use `t_watchdog` from check_deadlock.
+  std::vector<bool> is_boundary_zone_;
+  std::function<HaloSnapshot(ZoneId, TimeLevel)> boundary_snap_builder_;
+  std::chrono::milliseconds boundary_stall_max_{0};
+  std::uint64_t boundary_gates_blocked_ = 0;
+  std::uint64_t boundary_registers_emitted_ = 0;
+  std::uint64_t boundary_register_skips_ = 0;
 
   TimeLevel target_time_level_ = 0;
 

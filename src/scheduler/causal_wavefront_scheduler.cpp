@@ -124,6 +124,16 @@ void CausalWavefrontScheduler::shutdown() {
   comm_backend_ = nullptr;
   peer_routing_.clear();
   dropped_cert_hash_ = 0;
+  // T7.7: clear Pattern 2 boundary state. Counters reset to 0 so a fresh
+  // initialize starts from a clean diagnostic baseline; the empty
+  // is_boundary_zone_ vector restores Pattern 1 byte-exact behaviour
+  // (is_boundary_zone(z) returns false for any z).
+  is_boundary_zone_.clear();
+  boundary_snap_builder_ = {};
+  boundary_stall_max_ = std::chrono::milliseconds{0};
+  boundary_gates_blocked_ = 0;
+  boundary_registers_emitted_ = 0;
+  boundary_register_skips_ = 0;
   total_zones_ = 0;
   target_time_level_ = 0;
   min_zones_per_rank_ = 1;
@@ -285,11 +295,16 @@ std::vector<ZoneTask> CausalWavefrontScheduler::select_ready_tasks() {
         continue;
       }
 
-      // Pattern 2 boundary gate — M4 is Pattern 1 only (D-M4-2); a
-      // non-null outer_coord_ is accepted for M7 test doubles but never
-      // consulted here.
-      // if (outer_coord_ != nullptr && is_boundary_zone(z) &&
-      //     !outer_coord_->can_advance_boundary_zone(z, t)) continue;
+      // Pattern 2 boundary gate (SPEC §5.1 Pattern-2 branch + §2.5 bit 4).
+      // The gate fires only when (a) an outer coordinator is attached AND
+      // (b) the zone is flagged is_boundary_zone — keeping Pattern 1 runs
+      // byte-exact (`is_boundary_zone_` is empty / all-false). T7.6 OC-1
+      // guarantees `can_advance_boundary_zone` is non-blocking + idempotent.
+      if (outer_coord_ != nullptr && is_boundary_zone(z) &&
+          !outer_coord_->can_advance_boundary_zone(z, t)) {
+        ++boundary_gates_blocked_;
+        continue;
+      }
 
       TaskCandidate tc{};
       tc.zone_id = z;
@@ -404,6 +419,30 @@ void CausalWavefrontScheduler::commit_completed() {
     auto& meta = metas_[z];
     if (meta.state != ZoneState::Completed) {
       continue;
+    }
+
+    // T7.7 Phase B hook: register outgoing snapshot with the outer
+    // coordinator before the local commit transitions. Done *before* the
+    // state-machine bump so that a builder failure (Reference: throws)
+    // leaves the zone in Completed and lets the caller retry. SPEC §2.4
+    // OC-2: exactly one register per (zone, level) — duplicate is hard
+    // error in Reference (ConcreteOuterSdCoordinator::Mode::kReference).
+    //
+    // Snapshot level is `meta.time_level + 1` because the zone has
+    // *computed* the next level in Phase A but `meta.time_level` itself
+    // is only bumped externally by `on_zone_data_arrived` after the
+    // engine's step. The snapshot represents the state needed by peers
+    // for that next level.
+    if (outer_coord_ != nullptr && is_boundary_zone(z)) {
+      const TimeLevel snap_level = meta.time_level + 1;
+      if (boundary_snap_builder_) {
+        outer_coord_->register_boundary_snapshot(z,
+                                                 snap_level,
+                                                 boundary_snap_builder_(z, snap_level));
+        ++boundary_registers_emitted_;
+      } else {
+        ++boundary_register_skips_;
+      }
     }
 
     const bool has_peer =
@@ -620,6 +659,14 @@ void CausalWavefrontScheduler::check_deadlock(std::chrono::milliseconds t_watchd
   if (!initialized_ || finished()) {
     return;
   }
+  // T7.7 Pattern 2 boundary watchdog (SPEC §2.4 OC-6). Distinct from the
+  // inner deadlock detector below: drains stall reports onto the
+  // coordinator's queue but does not throw on its own — a boundary stall
+  // surfaces as inner deadlock once `last_progress_` ages out below.
+  if (outer_coord_ != nullptr) {
+    const auto t_stall = boundary_stall_max_.count() > 0 ? boundary_stall_max_ : t_watchdog;
+    outer_coord_->check_stall_boundaries(t_stall);
+  }
   const auto now = std::chrono::steady_clock::now();
   const auto idle = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_progress_);
   if (idle > t_watchdog) {
@@ -731,6 +778,32 @@ void CausalWavefrontScheduler::set_target_time_level(TimeLevel target) noexcept 
 
 TimeLevel CausalWavefrontScheduler::target_time_level() const noexcept {
   return target_time_level_;
+}
+
+// --- T7.7 Pattern 2 boundary wiring ---------------------------------------
+
+void CausalWavefrontScheduler::set_boundary_zone_flags(std::vector<bool> flags) {
+  require_initialized("set_boundary_zone_flags");
+  if (flags.size() != total_zones_) {
+    throw std::logic_error(
+        "CausalWavefrontScheduler::set_boundary_zone_flags: flags.size() must equal "
+        "total_zones()");
+  }
+  is_boundary_zone_ = std::move(flags);
+}
+
+void CausalWavefrontScheduler::set_boundary_snapshot_builder(
+    std::function<HaloSnapshot(ZoneId, TimeLevel)> builder) noexcept {
+  boundary_snap_builder_ = std::move(builder);
+}
+
+void CausalWavefrontScheduler::set_boundary_stall_max(std::chrono::milliseconds t) noexcept {
+  boundary_stall_max_ = t;
+}
+
+bool CausalWavefrontScheduler::is_boundary_zone(ZoneId zone) const noexcept {
+  // Pattern 1 byte-exact: empty flags vector → every zone reports false.
+  return zone < is_boundary_zone_.size() && is_boundary_zone_[zone];
 }
 
 }  // namespace tdmd::scheduler

@@ -12,7 +12,9 @@ add_executable(
   test_queue_ordering_determinism.cpp
   test_k_batching_pipeline.cpp
   # T7.6: Pattern 2 outer coordinator + halo snapshot ring buffer contract.
-  test_outer_sd_coordinator.cpp)
+  test_outer_sd_coordinator.cpp
+  # T7.7: Pattern 2 boundary-dep wiring (gate + Phase B hook + watchdog forward).
+  test_pattern2_boundary_dep.cpp)
 
 target_link_libraries(test_scheduler PRIVATE tdmd::scheduler tdmd::zoning tdmd::runtime tdmd::io
                                              Catch2::Catch2WithMain)
