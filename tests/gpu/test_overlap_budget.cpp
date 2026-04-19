@@ -127,6 +127,20 @@ double rel(double a, double b) {
 
 }  // namespace
 
+// CPU-only build path: Catch2 demands ≥1 TEST_CASE per binary or it exits with
+// code 2 ("No tests ran") and ctest fails. The CUDA-specific overlap test
+// lives под `#if TDMD_BUILD_CUDA` ниже; this stub guarantees the binary
+// always has at least one assertion to run on CPU-only-strict.
+TEST_CASE("GpuDispatchAdapter — CPU-only build skips overlap gate", "[gpu][overlap][t78][cpu]") {
+#if TDMD_BUILD_CUDA
+  SUCCEED("CUDA build — overlap gate exercised in the TDMD_BUILD_CUDA test below");
+#else
+  // Cannot construct DevicePool / DeviceStream / GpuDispatchAdapter on CPU-only
+  // (DevicePool ctor throws). Just confirm the SKIP path is reachable.
+  SUCCEED("CPU-only build — overlap pipeline test skipped (no CUDA runtime)");
+#endif
+}
+
 #if TDMD_BUILD_CUDA
 
 namespace {
