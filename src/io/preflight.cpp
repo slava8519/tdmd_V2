@@ -188,6 +188,24 @@ void check_run(const RunBlock& run, std::vector<PreflightError>& out) {
   }
 }
 
+// T6.7 — GPU backend potential compatibility. M6 wires EAM/alloy on GPU only
+// (Morse stays CPU-only per exec pack). Build-time CUDA availability and
+// runtime device probing are checked at SimulationEngine::init() — preflight
+// only enforces the YAML-schema-level invariants and does not pull a CUDA dep.
+void check_runtime(const RuntimeBlock& rt,
+                   const PotentialBlock& pot,
+                   std::vector<PreflightError>& out) {
+  if (rt.backend != RuntimeBackendKind::Gpu) {
+    return;
+  }
+  if (pot.style != PotentialStyle::EamAlloy) {
+    push(out,
+         PreflightSeverity::Error,
+         "runtime.backend",
+         "runtime.backend='gpu' currently only supports potential.style=eam/alloy (M6 scope)");
+  }
+}
+
 }  // namespace
 
 std::vector<PreflightError> preflight(const YamlConfig& config) {
@@ -202,6 +220,7 @@ std::vector<PreflightError> preflight(const YamlConfig& config) {
   check_integrator(config.integrator, out);
   check_neighbor(config.neighbor, out);
   check_run(config.run, out);
+  check_runtime(config.runtime, config.potential, out);
   return out;
 }
 

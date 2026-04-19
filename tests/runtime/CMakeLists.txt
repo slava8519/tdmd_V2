@@ -1,13 +1,21 @@
 add_executable(
-  test_runtime test_unit_converter.cpp test_unit_converter_lj.cpp test_simulation_engine.cpp
-               test_td_mode_smoke.cpp test_k1_regression_smoke.cpp)
+  test_runtime
+  test_unit_converter.cpp
+  test_unit_converter_lj.cpp
+  test_simulation_engine.cpp
+  test_td_mode_smoke.cpp
+  test_k1_regression_smoke.cpp
+  test_gpu_context.cpp
+  test_gpu_backend_smoke.cpp)
 
-target_link_libraries(test_runtime PRIVATE tdmd::runtime tdmd::io Catch2::Catch2WithMain)
+target_link_libraries(test_runtime PRIVATE tdmd::runtime tdmd::io tdmd::gpu Catch2::Catch2WithMain)
 
 # test_simulation_engine.cpp reuses the T1.3/T1.4 io fixtures (32-atom Al FCC .data + valid
-# tdmd.yaml) instead of shipping a runtime-specific copy.
-target_compile_definitions(test_runtime
-                           PRIVATE TDMD_IO_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/io/fixtures")
+# tdmd.yaml) instead of shipping a runtime-specific copy. T6.7 smokes reach into
+# verify/benchmarks/t4_nial_alloy + verify/third_party/potentials for the Ni-Al EAM fixture.
+target_compile_definitions(
+  test_runtime PRIVATE TDMD_IO_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/io/fixtures"
+                       TDMD_REPO_ROOT="${CMAKE_SOURCE_DIR}")
 
 add_test(NAME test_runtime COMMAND test_runtime)
 
@@ -39,5 +47,20 @@ if(TDMD_ENABLE_MPI)
     add_test(NAME test_multirank_td_smoke_2rank
              COMMAND ${MPIEXEC_EXECUTABLE} ${TDMD_MPI_EXTRA_FLAGS} -np 2
                      $<TARGET_FILE:test_multirank_td_smoke_2rank>)
+
+    # -----------------------------------------------------------------------
+    # T6.7 — 2-rank GPU smoke. GPU K=1 P=2 thermo bit-exact to GPU K=1 P=1 via MpiHostStagingBackend
+    # + deterministic Kahan ring (D-M5-12 extended to GPU era per D-M6-7). Auto-skips on CPU-only
+    # builds via the runtime probe_devices() guard inside the test.
+    # -----------------------------------------------------------------------
+    add_executable(test_gpu_2rank_smoke main_mpi.cpp test_gpu_2rank_smoke.cpp)
+
+    target_link_libraries(test_gpu_2rank_smoke PRIVATE tdmd::runtime tdmd::io tdmd::comm tdmd::gpu
+                                                       Catch2::Catch2 MPI::MPI_CXX)
+
+    target_compile_definitions(test_gpu_2rank_smoke PRIVATE TDMD_REPO_ROOT="${CMAKE_SOURCE_DIR}")
+
+    add_test(NAME test_gpu_2rank_smoke COMMAND ${MPIEXEC_EXECUTABLE} ${TDMD_MPI_EXTRA_FLAGS} -np 2
+                                               $<TARGET_FILE:test_gpu_2rank_smoke>)
   endif()
 endif()

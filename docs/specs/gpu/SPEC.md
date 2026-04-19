@@ -481,7 +481,76 @@ gpu_mixed_fast_nve_drift:
 
 ---
 
-## 9. NVTX instrumentation (D-M6-14)
+## 9. Engine wire-up (T6.7 — v1.0.5)
+
+`runtime/` consumes gpu/ через opt-in YAML flag `runtime.backend` (see `runtime/SPEC.md §2.3`). Этот раздел фиксирует contract как gpu/ types подключаются к `SimulationEngine` без leakage CUDA headers за пределы `tdmd::gpu`.
+
+### 9.1. Ownership topology
+
+`runtime::GpuContext` (RAII) — единственный owner pool + compute stream внутри engine:
+
+```
+SimulationEngine
+  └── GpuContext                    # RAII — bound to engine lifetime
+        ├── DevicePool  (§5.1)       # cudaMallocAsync cached pool
+        └── DeviceStream compute     # single stream in M6 (§3.1; 2nd stream — T6.9)
+```
+
+Все GPU сущности (`EamAlloyGpuAdapter`, `GpuVelocityVerletIntegrator`, `GpuNeighborBuilder`) получают `DevicePool&` / `DeviceStream&` **по ссылке в compute() / pre_force_step() / post_force_step()** — они **не владеют** ресурсами. Это гарантирует, что при `finalize()` pool и stream освобождаются ровно один раз.
+
+### 9.2. Dispatch pattern в SimulationEngine
+
+`init()` создаёт CPU модули всегда (parser / preflight / YAML layer остаются CPU-oblivious в M6), затем при `runtime.backend == Gpu`:
+
+1. `gpu_context_ = std::make_unique<GpuContext>(gpu_cfg)` — throws на CPU-only build или отсутствии sm_XX hardware;
+2. `auto* eam = dynamic_cast<EamAlloyPotential*>(potential_.get())` — M6 scope: только EAM/alloy; non-EAM отвергается preflight'ом;
+3. `gpu_potential_ = std::make_unique<EamAlloyGpuAdapter>(eam->data())` — borrows parsed `EamAlloyData&` from CPU potential (no re-parsing);
+4. `gpu_integrator_ = std::make_unique<GpuVelocityVerletIntegrator>(species_)`.
+
+Hot path (recompute_forces / integrator pre/post):
+
+```cpp
+if (gpu_backend_) {
+  gpu_potential_->compute(atoms_, box_, cell_grid_, pool, stream);
+  // ... then
+  gpu_integrator_->pre_force_step(atoms_, dt_, pool, stream);
+} else {
+  potential_->compute(atoms_, neighbor_list_, box_);
+  integrator_->pre_force_step(atoms_, species_, dt_);
+}
+```
+
+CPU `potential_` / `integrator_` **остаются живыми** при `backend: gpu` — parsed potential data принадлежит им; GPU adapter borrows. Это explicit single-owner, dual-binding pattern.
+
+### 9.3. MPI transport (D-M6-3 host-staging)
+
+v1.0 ships **host-staged MPI only**: `comm::MpiHostStagingBackend` остаётся единственной implementation of `CommBackend`. D2H → MPI → H2D per packet. NCCL / GPUDirect RDMA (`stream_aux` 3rd stream, Pattern 2 halo) — M7+ roadmap.
+
+**Multi-rank determinism (D-M5-12 extended):** GPU K=1 P=N ≡ GPU K=1 P=1 через тот же deterministic Kahan-ring в `comm/` (T6.7 2-rank gate, Ni-Al EAM 10 шагов bit-exact). Это расширяет CPU-only M5 chain на GPU эру без изменений в `comm/`.
+
+### 9.4. Byte-exact gate (D-M6-7 engine-level)
+
+T6.7 acceptance gate закрывает D-M6-7 на engine уровень (выше kernel-level gates из T6.5/T6.6):
+
+| Gate | Scope | Tolerance |
+|------|-------|-----------|
+| T6.5 EAM kernel | per-atom forces, total PE, virial | ≤1e-12 rel |
+| T6.6 VV kernel | velocities + positions (Reference flavor) | byte-equal |
+| **T6.7 (1-rank)** | **thermo stream (step+ke+pe+te)** на 100 шагов Ni-Al EAM 864 atoms | **byte-equal** |
+| **T6.7 (2-rank)** | **thermo stream** на 10 шагов, `backend: gpu` + MpiHostStaging 2 ranks vs 1 rank | **byte-equal** |
+
+Композиция всех трёх gate'ов (EAM ≤1e-12 + VV byte-equal + thermo byte-equal) — эмпирическое подтверждение, что кумулятивный drift от EAM 1e-12 tolerance не выходит за double-ULP за 100 шагов на данном фикстюре; Reference flavor's `--fmad=false` + strict reduction order делают это reliable.
+
+### 9.5. Scope limits (M6)
+
+- Single compute stream — 2-stream compute/mem overlap в T6.9 (D-M6-13);
+- Pattern 1/3 only — Pattern 2 GPU planning в M7;
+- `Fp64ReferenceBuild` only — MixedFast/MixedFastAggressive активируются T6.8 поверх того же wiring'а (differential harness переиспользует T6.7 1-rank comparer с ≤ D-M6-8 threshold вместо byte-equal);
+- Resident-on-GPU atom state — M7 (T6.7 делает H2D per step из engine's SoA; T6.9 оценивает gain от резидентности).
+
+---
+
+## 10. NVTX instrumentation (D-M6-14)
 
 NVTX_RANGE wrapping обязателен для:
 
@@ -502,9 +571,9 @@ Overhead: `nvtxRangePushA` + `nvtxRangePop` — ~20 ns per pair. С thousands of
 
 ---
 
-## 10. Tests
+## 11. Tests
 
-### 10.1. T6.2 skeleton tests (этот PR)
+### 11.1. T6.2 skeleton tests (этот PR)
 
 `tests/gpu/test_gpu_types.cpp` — compile-time shape invariants + runtime defaults:
 
@@ -521,7 +590,7 @@ Overhead: `nvtxRangePushA` + `nvtxRangePop` — ~20 ns per pair. С thousands of
 
 Budget: <2 sec CI (pure C++ tests, no CUDA runtime).
 
-### 10.2. T6.3+ runtime tests (local-only gated on TDMD_BUILD_CUDA)
+### 11.2. T6.3+ runtime tests (local-only gated on TDMD_BUILD_CUDA)
 
 - **T6.3**: `test_device_pool_alloc_free` — 1000 alloc+free cycles across size classes, verify no leak + hit rate ≥95%;
 - **T6.3**: `test_pinned_host_pool_mpi_symmetry` — allocate pinned host, D2H, MPI send-to-self, receive, H2D, bit-compare;
@@ -530,11 +599,11 @@ Budget: <2 sec CI (pure C++ tests, no CUDA runtime).
 - **T6.5**: `test_eam_mixed_fast_within_threshold` — same fixture, MixedFast within D-M6-8 thresholds;
 - **T6.6**: `test_vv_nve_drift` — 1000 steps, drift < 1e-5 rel.
 
-### 10.3. M6 integration smoke (T6.13)
+### 11.3. M6 integration smoke (T6.13)
 
 Extends M1 smoke — same Ni-Al 10⁴ thermodynamic trajectory run on GPU Reference path. Thermo at step {0, 100, 500, 1000} byte-exact to CPU Reference from M1. MixedFast variant (second run) within D-M6-8 thresholds.
 
-### 10.4. T3-gpu anchor (T6.10)
+### 11.4. T3-gpu anchor (T6.10)
 
 Extends T3 harness на GPU:
 
@@ -546,7 +615,7 @@ Hardware normalization: extra `hardware_normalization_gpu.py` computes `gpu_flop
 
 ---
 
-## 11. Telemetry
+## 12. Telemetry
 
 Exposed через `TelemetryFrame` extension в M6:
 
@@ -578,9 +647,9 @@ Dumped в JSON при `tdmd run --telemetry-json=out.json`. Consumed Nsight Syst
 
 ---
 
-## 12. Configuration и tuning
+## 13. Configuration и tuning
 
-### 12.1. YAML `gpu:` block
+### 13.1. YAML `gpu:` block
 
 ```yaml
 gpu:
@@ -592,7 +661,7 @@ gpu:
 
 All optional. Omission → defaults. Breaking-change-free extension от M5 YAML (M5 configs не имеют `gpu:` block и работают как есть — gpu code не активируется если `scheduler.backend != "cuda"`).
 
-### 12.2. CLI overrides
+### 13.2. CLI overrides
 
 ```
 tdmd run cfg.yaml --gpu-device=1 --gpu-streams=2 --gpu-memory-pool-mib=512 --no-nvtx
@@ -600,7 +669,7 @@ tdmd run cfg.yaml --gpu-device=1 --gpu-streams=2 --gpu-memory-pool-mib=512 --no-
 
 Добавляются в `cli/SPEC.md` (change log entry в T6.2).
 
-### 12.3. Environment variables
+### 13.3. Environment variables
 
 | Var                     | Effect                                      |
 |-------------------------|---------------------------------------------|
@@ -610,7 +679,7 @@ tdmd run cfg.yaml --gpu-device=1 --gpu-streams=2 --gpu-memory-pool-mib=512 --no-
 
 ---
 
-## 13. Roadmap alignment
+## 14. Roadmap alignment
 
 | Milestone | GPU scope                                                               |
 |-----------|-------------------------------------------------------------------------|
@@ -623,7 +692,7 @@ tdmd run cfg.yaml --gpu-device=1 --gpu-streams=2 --gpu-memory-pool-mib=512 --no-
 
 ---
 
-## 14. Open questions
+## 15. Open questions
 
 | ID          | Question                                                                 | Resolution path |
 |-------------|--------------------------------------------------------------------------|-----------------|
@@ -641,7 +710,7 @@ tdmd run cfg.yaml --gpu-device=1 --gpu-streams=2 --gpu-memory-pool-mib=512 --no-
 
 ---
 
-## 15. Change log
+## 16. Change log
 
 | Date       | Version | Change                                                                    |
 |------------|---------|---------------------------------------------------------------------------|
@@ -649,6 +718,7 @@ tdmd run cfg.yaml --gpu-device=1 --gpu-streams=2 --gpu-memory-pool-mib=512 --no-
 | 2026-04-19 | v1.0.1  | §5.1/§5.2 updated с T6.3 implementation notes: `DevicePool` ships как single class owning both device+pinned pools (1:1 rank binding); grow-on-demand free-list policy; LRU deferred (OQ-M6-1). Adds `factories.hpp` public API (probe_devices / select_device / make_stream / make_event) + `device_pool.hpp`. `cuda_handles.hpp` internal header shares PIMPL Impl defs across gpu/ TUs без leaking CUDA symbols в public API. |
 | 2026-04-19 | v1.0.2  | §7.1 resolved — T6.4 `NeighborListGpu` landed. Implementation: two-pass (count → host-scan → emit) kernel pair, identical iteration order to CPU (27-cell stencil, dz-outer → dy → dx); D-M6-7 bit-exact gate met on 864-atom Al FCC (33,696 pairs, `std::memcmp` on offsets + ids + r²). Public API takes raw primitives (positions + cell CSR + BoxParams) — keeps gpu/ data-oblivious per §1.1 and breaks would-be `gpu/ → neighbor/` cyclic include. `src/neighbor/gpu_neighbor_builder.cpp` adapter translates domain types. Host-warn gating fix in `cmake/CompilerWarnings.cmake` — host flags (`-Wpedantic`, `-Werror`) now gated to `$<COMPILE_LANGUAGE:CXX>` so nvcc stub files don't trip extension diagnostics. Micro-bench baseline at `verify/benchmarks/neighbor_gpu_vs_cpu/`: 12.9× (10⁴ atoms) / 28.5× (10⁵ atoms) speedup on sm_120 — well above T6.4 ≥5× bar. OQ-M6-7 (CUB vs custom) resolved: custom two-pass + host scan is adequate for M6; on-device scan deferred to T6.11 perf tuning. |
 | 2026-04-19 | v1.0.3  | §7.2 resolved — T6.5 `EamAlloyGpu` landed. Three-kernel path (density → embedding → force), thread-per-atom with **full-list per-atom iteration** (no `j<=i` filter) so every write is thread-local — eliminates the atomics that would otherwise be needed for half-list Newton-3 scatter. Pair PE + virial are counted twice in the full-list sweep and halved on host during Kahan reduction; forces are emitted once per ordered pair (both directions — thread `i` scatters `+Δ`, thread `j` scatters `−Δ`) so no halving applies. Device spline eval mirrors `TabulatedFunction::locate` + Horner bit-exactly; same `minimum_image_axis` formula as CPU. Gate is **≤1e-12 rel**, not byte-equal (spec §7.2) — absorbs the reduction-order drift between CPU half-list and GPU full-list accumulation. Acceptance: Al FCC 864-atom + Ni-Al B2 1024-atom (Mishin 2004) both ≤1e-12 rel on per-atom forces, total PE, and virial Voigt tensor. Public API borrows flattened Hermite-cubic coefficient tables from the `src/potentials/eam_alloy_gpu_adapter.cpp` layer — gpu/ remains data-oblivious. Micro-bench at `verify/benchmarks/eam_gpu_vs_cpu/`: 5.3× (10⁴) / 6.8× (10⁵) on sm_120 vs CPU reference — above T6.5 ≥5× bar. OQ-M6-4 (Kahan overhead on per-atom PE+virial) deferred to T6.11 — current impl does all reductions host-side and is not the bottleneck at these sizes. |
+| 2026-04-19 | v1.0.5  | §9 authored — T6.7 engine wire-up. `runtime.backend: cpu\|gpu` opt-in flag, `runtime::GpuContext` RAII owner of DevicePool + compute stream. `SimulationEngine` dispatches на `gpu_backend_` в `recompute_forces()` + `pre/post_force_step()` без изменений в TD scheduler или comm. MPI transport остаётся `MpiHostStagingBackend` (D-M6-3). **D-M6-7 extended to engine level:** thermo stream byte-equal CPU↔GPU на 100 шагов Ni-Al EAM 864 atoms (T6.7 1-rank gate); **D-M5-12 extended to GPU era:** GPU K=1 P=2 ≡ GPU K=1 P=1 на 10 шагов через deterministic Kahan-ring (T6.7 2-rank gate). Scope limits v1.0.5: single compute stream (2-stream — T6.9), Pattern 1/3 only (Pattern 2 — M7), `Fp64ReferenceBuild` only (MixedFast wiring — T6.8). |
 | 2026-04-19 | v1.0.4  | §7.3 resolved — T6.6 `VelocityVerletGpu` landed. Two kernels mirroring CPU `VelocityVerletIntegrator`: `pre_force_kernel` (half-kick + drift) and `post_force_kernel` (half-kick only). Per-atom thread, pure element-wise — no reductions, no atomics. Operand order matches CPU path exactly (`v += f · accel · half_dt`; `x += v · dt`) and Reference flavor's `--fmad=false` guarantees byte-equal output. Per-species `accel[s] = ftm2v / mass[s]` precomputed on host (LAMMPS metal units, `ftm2v ≈ 9648.533` per M1 SPEC delta). Public API takes raw host primitives (positions, velocities, forces, type ids, accel table); domain adapter lives в `src/integrator/gpu_velocity_verlet.cpp`. **D-M6-7 gate:** bit-exact CPU↔GPU over 1/10/100/1000 NVE steps on Al 1000-atom single-species + Ni-Al 512-atom two-species lattices (all three lengths green locally). MixedFast path deferred to T6.8 flavor activation. Micro-bench at `verify/benchmarks/integrator_gpu_vs_cpu/`: **0.3× (10⁴) / 0.5× (10⁵) on sm_120** — GPU slower due to per-call H2D/D2H dominating ~6 FLOPs/atom kernel. **Это ожидаемое поведение для T6.6 adapter shape;** speedup unlocks in T6.7 (resident-on-GPU, `integrator/SPEC §3.5`). NVTX deferred to T6.11. |
 
 Roadmap extensions (authored by future tasks):
@@ -657,7 +727,7 @@ Roadmap extensions (authored by future tasks):
 - **T6.4** → §7.1 NL kernel details, SoA layout confirmation (D-M6-16) (**done — v1.0.2**);
 - **T6.5** → §7.2 EAM kernel details, Kahan overhead measurement (OQ-M6-4) (**done — v1.0.3; OQ-M6-4 deferred to T6.11**);
 - **T6.6** → §7.3 VV details + NVE drift measurements (**done — v1.0.4**);
-- **T6.7** → §3.2 pipeline pattern extended;
+- **T6.7** → §9 engine wire-up authored (**done — v1.0.5**);
 - **T6.8** → §8.3 threshold registry wired;
 - **T6.9** → §3.5 N-stream / K-way pipelining pre-study;
 - **T6.10** → §10.4 anchor-test normalization resolution (OQ-M6-11);

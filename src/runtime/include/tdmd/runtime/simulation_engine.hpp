@@ -60,6 +60,23 @@ namespace tdmd::comm {
 class CommBackend;
 }  // namespace tdmd::comm
 
+// T6.7 — GPU backend wiring. The GpuContext + potentials/integrator GPU
+// adapters are allocated lazily (`runtime.backend: gpu`), so the engine
+// header forward-declares and the .cpp includes the real types. On CPU-only
+// builds the pointers stay nullptr and the code paths guarding them never
+// fire.
+namespace tdmd::runtime {
+class GpuContext;
+}  // namespace tdmd::runtime
+
+namespace tdmd {
+class GpuVelocityVerletIntegrator;
+}  // namespace tdmd
+
+namespace tdmd::potentials {
+class EamAlloyGpuAdapter;
+}  // namespace tdmd::potentials
+
 namespace tdmd {
 
 // Thrown by `init` when the engine is already initialised (double-init) or by
@@ -222,6 +239,16 @@ private:
   // T5.8 — non-owning multi-rank transport. nullptr in single-rank / CLI
   // built without MPI; otherwise points at a backend the CLI layer owns.
   comm::CommBackend* comm_backend_ = nullptr;
+
+  // T6.7 — GPU backend wiring. All four fields remain nullptr / false when
+  // `runtime.backend: cpu` (the default), so the M1..M5 legacy path is
+  // byte-exact unchanged. When `gpu` is requested, `gpu_context_` is built
+  // in init() and the potential + integrator point at GPU adapters; the
+  // `recompute_forces()` and `run()` loops branch on `gpu_backend_`.
+  bool gpu_backend_ = false;
+  std::unique_ptr<runtime::GpuContext> gpu_context_;
+  std::unique_ptr<potentials::EamAlloyGpuAdapter> gpu_potential_;
+  std::unique_ptr<GpuVelocityVerletIntegrator> gpu_integrator_;
 
   State state_ = State::Constructed;
 

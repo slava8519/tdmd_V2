@@ -377,6 +377,29 @@ CommBlock parse_comm_block(const YAML::Node& node) {
   return out;
 }
 
+// T6.7 — opt-in GPU backend selection. Default `cpu` preserves M1..M5 legacy
+// path byte-exact. `gpu` flips SimulationEngine onto EamAlloyGpuAdapter +
+// GpuVelocityVerletIntegrator; the binary must have been built with
+// TDMD_BUILD_CUDA=ON and a compatible device available (preflight checks).
+RuntimeBlock parse_runtime_block(const YAML::Node& node) {
+  constexpr std::string_view path = "runtime";
+  reject_unknown_keys(node, path, {"backend"});
+  RuntimeBlock out{};
+  if (const auto b = node["backend"]; b) {
+    const auto value = as_scalar<std::string>(b, "runtime.backend");
+    if (value == "cpu") {
+      out.backend = RuntimeBackendKind::Cpu;
+    } else if (value == "gpu") {
+      out.backend = RuntimeBackendKind::Gpu;
+    } else {
+      throw YamlParseError(line_of(b),
+                           "runtime.backend",
+                           "runtime.backend must be one of {cpu, gpu}; got '" + value + "'");
+    }
+  }
+  return out;
+}
+
 // T5.9 — opt-in zoning scheme override. When absent the M3 auto-select
 // decision tree runs unchanged (Hilbert for cubic/near-cubic, Decomp2D /
 // Linear1D for long aspect ratios). `linear_1d` is what the anchor test
@@ -424,7 +447,8 @@ YamlConfig parse_root(const YAML::Node& root) {
                        "thermo",
                        "scheduler",
                        "comm",
-                       "zoning"});
+                       "zoning",
+                       "runtime"});
 
   YamlConfig cfg{};
   cfg.simulation = parse_simulation_block(require_child(root, "", "simulation"));
@@ -446,6 +470,9 @@ YamlConfig parse_root(const YAML::Node& root) {
   }
   if (const auto z = root["zoning"]; z) {
     cfg.zoning = parse_zoning_block(z);
+  }
+  if (const auto r = root["runtime"]; r) {
+    cfg.runtime = parse_runtime_block(r);
   }
   return cfg;
 }

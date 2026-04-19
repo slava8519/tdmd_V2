@@ -3,7 +3,7 @@
 **Module:** `runtime/`
 **Status:** master module spec
 **Parent:** `TDMD Engineering Spec v2.1` §6.6, §7, §8.1, §12.8
-**Last updated:** 2026-04-16
+**Last updated:** 2026-04-19 (T6.7 §2.3 GPU backend wiring)
 
 ---
 
@@ -136,6 +136,35 @@ private:
     std::chrono::steady_clock::time_point start_time_;
 };
 ```
+
+---
+
+### 2.3. GPU backend wiring (M6, T6.7)
+
+`runtime.backend` — единственный YAML knob, переключающий engine между CPU и GPU путями:
+
+```yaml
+runtime:
+  backend: cpu | gpu        # default cpu — M1..M5 legacy path сохраняется bit-exact
+```
+
+Контракт (D-M6-3, D-M6-7):
+
+- **`backend: cpu`** (default): `SimulationEngine` использует CPU `PotentialModel` + CPU `Integrator`; никаких CUDA зависимостей в runtime path. M1..M5 smokes работают без изменений.
+- **`backend: gpu`**: `SimulationEngine::init()` создаёт RAII `runtime::GpuContext` (DevicePool + одна compute stream, D-M6-12), `potentials::EamAlloyGpuAdapter` поверх parsed `EamAlloyPotential::data()`, и `GpuVelocityVerletIntegrator`. Force recompute + pre/post-force integrator branch на `gpu_backend_` флаг; MPI transport остаётся `MpiHostStagingBackend` (host-staged, D-M6-3 — NCCL / GPUDirect отложены на v1.5 M7+).
+
+**Invariant (D-M6-7 engine-level gate):** `backend: gpu` Reference path ≡ `backend: cpu` Reference path byte-for-byte на thermo stream для EAM/alloy (T6.7 1-rank gate, 864-atom Ni-Al, 100 шагов). Multi-rank определённость (D-M5-12) расширяется на GPU эру: GPU K=1 P=1 ≡ GPU K=1 P=2 через тот же Kahan-ring в `comm/` (T6.7 2-rank gate, Ni-Al 10 шагов).
+
+**Guards (preflight + runtime):**
+- `io/preflight` отвергает `backend: gpu` + не-EAM potential (M6 scope);
+- `GpuContext` ctor бросает `std::runtime_error`, если CUDA device не виден (CPU-only build или отсутствие sm_XX hardware) — engine transparently failfast'ит с чистым сообщением "rebuild с `-DTDMD_BUILD_CUDA=ON` или set `runtime.backend=cpu`".
+
+**Ownership:** `GpuContext` — RAII unique owner пула + stream на engine уровне. Все GPU сущности (`gpu_potential_`, `gpu_integrator_`) получают `DevicePool&` / `DeviceStream&` по ссылке и НЕ владеют ими — lifetime tied к `SimulationEngine`.
+
+Scope для v1.0 (M6):
+- Single compute stream (D-M6-13 двух-stream overlap — T6.9);
+- Pattern 1/3 только (Pattern 2 GPU planning — M7);
+- `BuildFlavor = Fp64ReferenceBuild` гарантирует byte-exact gate; `MixedFast*` flavors активируются в T6.8 с differential поверх того же harness.
 
 ---
 
@@ -694,7 +723,7 @@ NVTX ranges:
 | M2 | Policy resolution for Reference profile; reproducibility bundle; checkpoint |
 | M4 | TD scheduler integration; full iteration function |
 | M5 | Restart/resume tests passing |
-| M6 | GPU initialization path |
+| M6 | GPU initialization path — `runtime.backend: gpu` wires `GpuContext` + `EamAlloyGpuAdapter` + `GpuVelocityVerletIntegrator`; T6.7 1-rank + 2-rank byte-exact gates |
 | **M7** | **Pattern 2 detection + outer coordinator wiring** |
 | M8 | Auto-tune policies from perfmodel |
 | v2+ | Dynamic pattern switching (pause → reconfigure → resume) |
@@ -711,4 +740,4 @@ NVTX ranges:
 
 ---
 
-*Конец runtime/SPEC.md v1.0, дата: 2026-04-16.*
+*Конец runtime/SPEC.md v1.0.1, дата: 2026-04-19 (T6.7 §2.3 GPU backend wiring).*

@@ -1,11 +1,14 @@
 #include "tdmd/runtime/simulation_engine.hpp"
 
 #include "tdmd/comm/comm_backend.hpp"
+#include "tdmd/integrator/gpu_velocity_verlet.hpp"
 #include "tdmd/io/lammps_data_reader.hpp"
 #include "tdmd/io/yaml_config.hpp"
 #include "tdmd/potentials/eam_alloy.hpp"
+#include "tdmd/potentials/eam_alloy_gpu_adapter.hpp"
 #include "tdmd/potentials/eam_file.hpp"
 #include "tdmd/potentials/morse.hpp"
+#include "tdmd/runtime/gpu_context.hpp"
 #include "tdmd/runtime/physical_constants.hpp"
 #include "tdmd/runtime/unit_converter.hpp"
 #include "tdmd/scheduler/causal_wavefront_scheduler.hpp"
@@ -214,6 +217,23 @@ void SimulationEngine::init(const io::YamlConfig& config, const std::string& con
   displacement_tracker_.set_threshold(0.5 * skin_);
   displacement_tracker_.init(atoms_);
 
+  // --- T6.7: GPU backend wiring (opt-in via runtime.backend=gpu). Build
+  // the GpuContext + adapters BEFORE the initial force snapshot so
+  // `recompute_forces()` dispatches through GPU from step 0. Preflight has
+  // already guaranteed potential.style == eam/alloy when gpu is selected.
+  gpu_backend_ = (config.runtime.backend == io::RuntimeBackendKind::Gpu);
+  if (gpu_backend_) {
+    tdmd::gpu::GpuConfig gpu_cfg{};  // defaults: device 0, 256 MiB warm-up
+    gpu_context_ = std::make_unique<runtime::GpuContext>(gpu_cfg);
+    auto* eam_cpu = dynamic_cast<EamAlloyPotential*>(potential_.get());
+    if (eam_cpu == nullptr) {
+      throw std::invalid_argument(
+          "SimulationEngine: runtime.backend=gpu requires EAM/alloy potential (T6.7 scope)");
+    }
+    gpu_potential_ = std::make_unique<potentials::EamAlloyGpuAdapter>(eam_cpu->data());
+    gpu_integrator_ = std::make_unique<GpuVelocityVerletIntegrator>(species_);
+  }
+
   // --- Initial force / energy / virial snapshot.
   recompute_forces();
 
@@ -261,8 +281,16 @@ ThermoRow SimulationEngine::run(std::uint64_t n_steps, std::ostream* thermo_out)
       // force / integrator reduction order is identical (D-M4-9 byte-exact).
       td_step(s, s);
     } else {
-      // Pre-force: half-kick + drift.
-      integrator_->pre_force_step(atoms_, species_, dt_);
+      // Pre-force: half-kick + drift. T6.7: GPU path uses the VV GPU kernel
+      // (byte-equal to CPU VV under Reference flavor, verified at T6.6).
+      if (gpu_backend_) {
+        gpu_integrator_->pre_force_step(atoms_,
+                                        dt_,
+                                        gpu_context_->pool(),
+                                        gpu_context_->compute_stream());
+      } else {
+        integrator_->pre_force_step(atoms_, species_, dt_);
+      }
 
       // Neighbor rebuild check — based on displacements since the last build.
       {
@@ -281,7 +309,14 @@ ThermoRow SimulationEngine::run(std::uint64_t n_steps, std::ostream* thermo_out)
       recompute_forces();
 
       // Post-force: half-kick.
-      integrator_->post_force_step(atoms_, species_, dt_);
+      if (gpu_backend_) {
+        gpu_integrator_->post_force_step(atoms_,
+                                         dt_,
+                                         gpu_context_->pool(),
+                                         gpu_context_->compute_stream());
+      } else {
+        integrator_->post_force_step(atoms_, species_, dt_);
+      }
     }
 
     current_step_ = s;
@@ -398,7 +433,20 @@ void SimulationEngine::rebuild_neighbors() {
 void SimulationEngine::recompute_forces() {
   telemetry::ScopedSection pair(telemetry_, "Pair");
   zero_forces();
-  const auto result = potential_->compute(atoms_, neighbor_list_, box_);
+  ForceResult result{};
+  if (gpu_backend_) {
+    // GPU EAM adapter walks its own per-thread cell stencil — cell_grid_
+    // must be freshly binned (rebuild_neighbors() keeps it so). The CPU
+    // `neighbor_list_` is not consulted, but is kept current so thermo /
+    // skin / restart bookkeeping remains identical to the CPU path.
+    result = gpu_potential_->compute(atoms_,
+                                     box_,
+                                     cell_grid_,
+                                     gpu_context_->pool(),
+                                     gpu_context_->compute_stream());
+  } else {
+    result = potential_->compute(atoms_, neighbor_list_, box_);
+  }
   last_potential_energy_ = result.potential_energy;
   last_virial_ = result.virial;
 }
@@ -537,8 +585,18 @@ void SimulationEngine::td_step(std::uint64_t step, std::uint64_t next_version) {
     td_scheduler_->mark_computing(t);
   }
 
-  // ------------ Physics — byte-for-byte identical to legacy loop.
-  integrator_->pre_force_step(atoms_, species_, dt_);
+  // ------------ Physics — byte-for-byte identical to legacy loop. T6.7:
+  // GPU backend routes integrator halves through `gpu_integrator_` (byte-
+  // equal to CPU VV under Reference) and forces through `gpu_potential_`
+  // (≤1e-12 rel to CPU EAM, verified at T6.5).
+  if (gpu_backend_) {
+    gpu_integrator_->pre_force_step(atoms_,
+                                    dt_,
+                                    gpu_context_->pool(),
+                                    gpu_context_->compute_stream());
+  } else {
+    integrator_->pre_force_step(atoms_, species_, dt_);
+  }
   {
     telemetry::ScopedSection neigh(telemetry_, "Neigh");
     displacement_tracker_.update_displacement(atoms_, box_);
@@ -550,7 +608,14 @@ void SimulationEngine::td_step(std::uint64_t step, std::uint64_t next_version) {
     }
   }
   recompute_forces();
-  integrator_->post_force_step(atoms_, species_, dt_);
+  if (gpu_backend_) {
+    gpu_integrator_->post_force_step(atoms_,
+                                     dt_,
+                                     gpu_context_->pool(),
+                                     gpu_context_->compute_stream());
+  } else {
+    integrator_->post_force_step(atoms_, species_, dt_);
+  }
 
   // ------------ Phase A epilogue: mark_completed.
   for (const auto& t : tasks) {

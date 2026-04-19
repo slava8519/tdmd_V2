@@ -180,6 +180,21 @@ struct ZoningBlock {
   ZoningSchemeKind scheme = ZoningSchemeKind::Auto;
 };
 
+// SPEC: docs/specs/runtime/SPEC.md §2.3 (GPU backend wiring), docs/specs/gpu/
+// SPEC.md §9 (engine wire-up), master spec §14 M6.
+// Exec pack: docs/development/m6_execution_pack.md T6.7.
+// Opt-in GPU compute path. Default `cpu` preserves M1..M5 byte-exact smokes.
+// `gpu` requires the binary to have been built with `TDMD_BUILD_CUDA=ON`; the
+// CLI preflight rejects the combination otherwise with a clear error.
+enum class RuntimeBackendKind : std::uint8_t {
+  Cpu,  // default — M1..M5 legacy path, no GPU dependency
+  Gpu,  // D-M6-3 host-staging GPU; MPI transport stays MpiHostStaging
+};
+
+struct RuntimeBlock {
+  RuntimeBackendKind backend = RuntimeBackendKind::Cpu;
+};
+
 // Aggregate. Parser produces this, preflight inspects it.
 struct YamlConfig {
   SimulationBlock simulation{};
@@ -192,6 +207,7 @@ struct YamlConfig {
   SchedulerBlock scheduler{};
   CommBlock comm{};
   ZoningBlock zoning{};
+  RuntimeBlock runtime{};
 };
 
 // Thrown by `parse_yaml_config` on syntactic / schema violations. `line` is the
