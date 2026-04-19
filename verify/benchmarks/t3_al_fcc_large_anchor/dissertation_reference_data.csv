@@ -10,9 +10,10 @@
 # 16-bit-per-channel scans (fig_29: 1672 KiB sha256 9c50880bd983d3d9d941d8fe78f53e239f4e42848b19762c1058e2a4aa612b35;
 #                         fig_30: 1637 KiB sha256 c8b9797e71632c37926038af562a629b9d50b5b9e99c8b6e1ae9e2e62ba77f51)
 # — compression was required by the 500 KiB per-file pre-commit hook;
-# perceptual fidelity was preserved and extraction was performed on the raw
-# scans prior to compression. Extracted via manual WebPlotDigitizer-style
-# readout (T6.0). Replaces the T5.10 placeholder. Closes R-M5-8.
+# perceptual fidelity was preserved. Extraction performed on the compressed
+# scans via direct visual readout (not a formal WebPlotDigitizer workflow —
+# there was no pixel-grid calibration tool). Replaces the T5.10 placeholder.
+# Closes R-M5-8.
 #
 # Extraction methodology (per verify/SPEC §4.4):
 #   1. Axis calibration: X = {0, 8, 16, 23, 31}, Y = {0, 0.20, 0.40, 0.60, 0.80}
@@ -25,11 +26,23 @@
 #      12-14% (4M), which implies efficiency ordering 1M > 2M > 4M. Fig 30
 #      legend lists 4M + 1M only; the middle ~93% red line is read as the 2M
 #      fit by overhead-text cross-reference.
-#   3. Per-point read: 7 round-N readouts {1, 2, 4, 8, 16, 24, 31} with
-#      cross-check steps/sec == efficiency * N * steps(N=1). Samples are
-#      self-consistent for 1M within ~1 % rms (extrapolated steps(1) =
-#      0.0251 steps/s on the 2007 Alpha hardware class); 2M and 4M drift to
-#      ~5 % rms due to the bottom curves' tighter marker spacing on the PNG.
+#   3. Per-point read: 7 round-N readouts {1, 2, 4, 8, 16, 24, 31}.
+#      (a) Performance (fig 29 top curve) — direct read, ±1 % abs
+#          uncertainty; dots are large + linear scale is coarse (Y stride
+#          0.20 across ~300 px), so the ±1 step of the readout is ~0.005
+#          steps/s, well under 2 %.
+#      (b) Efficiency (fig 30 top curve) — direct read, ±0.5 % abs
+#          uncertainty; the 1M curve is nearly flat at ~97 % over the
+#          N∈[4, 24] plateau with a shallow dip to ~96 % at N=31. Initial
+#          drop 100 → 98 at N=2 is the sharp transient. An earlier draft
+#          modelled the curve as a linear monotonic decrease 98 → 95.6;
+#          current values reflect the real plateau shape.
+#      (c) Self-consistency check: rate(N) ≈ steps(1) * N * efficiency(N)/100
+#          with steps(1) = 0.0251 (back-fit). Current values close within
+#          ~1 % rms.
+#      (d) 2M and 4M curves drift to ~5 % rms due to the bottom curves'
+#          tighter marker spacing on the PNG; retained in
+#          ./additional_model_sizes.md as documentation only.
 #
 # For the T3 anchor-test, TDMD runs a single 10^6 model (see ./config.yaml),
 # so the primary CSV below carries only the 10^6 curve. The 2*10^6 and
@@ -64,7 +77,7 @@ n_procs,performance_mdps,efficiency_pct,source_figure,note
 1,0.0251,100.00,baseline,back-fit from N={8,16,24,31} self-consistency (Andreev §3.5)
 2,0.0492,98.00,fig_29_fig_30,linear1d_td + ring backend
 4,0.0979,97.50,fig_29_fig_30,linear1d_td + ring backend
-8,0.1948,97.00,fig_29_fig_30,linear1d_td + ring backend
-16,0.3872,96.50,fig_29_fig_30,linear1d_td + ring backend
-24,0.5783,96.00,fig_29_fig_30,linear1d_td + ring backend
-31,0.7436,95.60,fig_29_fig_30,linear1d_td + ring backend — max N on dissertation cluster
+8,0.1954,97.30,fig_29_fig_30,linear1d_td + ring backend
+16,0.3896,97.00,fig_29_fig_30,linear1d_td + ring backend
+24,0.5831,96.80,fig_29_fig_30,linear1d_td + ring backend
+31,0.7493,96.30,fig_29_fig_30,linear1d_td + ring backend — max N on dissertation cluster
