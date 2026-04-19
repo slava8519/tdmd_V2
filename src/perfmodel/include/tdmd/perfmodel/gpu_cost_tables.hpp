@@ -23,7 +23,9 @@
 // starter data that calibration replaces.
 
 #include <cstdint>
+#include <optional>
 #include <string>
+#include <vector>
 
 namespace tdmd {
 
@@ -122,5 +124,55 @@ struct GpuCostTables {
 // pair math is FP32, per-atom accumulators stay FP64. ~1.5-2× faster on the
 // force_kernel than the Reference path at N >> 10k.
 [[nodiscard]] GpuCostTables gpu_cost_tables_mixed_fast();
+
+// T7.13 — Calibration fixture loading. A YAML fixture at
+// `verify/measurements/gpu_cost_calibration.yaml` carries measured per-step
+// wall-seconds for specific (hardware × build_flavor) pairs. The ±20% gate
+// in `tests/perfmodel/test_gpu_cost_calibration.cpp` compares committed
+// factory-table predictions against those measurements per D-M6-8 / D-M7-9.
+// Missing fixture → loader returns std::nullopt; gate SKIPs not FAILs
+// (Option A CI policy, D-M6-6).
+//
+// Schema (see `verify/measurements/gpu_cost_calibration.yaml` for the
+// authoritative comment block):
+//   schema_version: 1
+//   rows:
+//     - hardware_id: "..."
+//       cuda_version: "..."
+//       measurement_date: "YYYY-MM-DD"
+//       build_flavor: "fp64_reference" | "mixed_fast"
+//       provenance: "free-form narrative"
+//       measurements:
+//         - n_atoms: <int>
+//           measured_step_sec: <float>   # includes scheduler_overhead_sec
+//
+// Loader is strict on schema: missing top-level keys, malformed types, or
+// unknown `build_flavor` strings throw std::runtime_error with a short
+// explanation. This matches the io::YamlConfig parser style.
+
+struct GpuCalibrationMeasurement {
+  std::uint64_t n_atoms = 0U;
+  double measured_step_sec = 0.0;
+};
+
+struct GpuCalibrationRow {
+  std::string hardware_id;
+  std::string cuda_version;
+  std::string measurement_date;
+  std::string provenance;
+  std::string build_flavor;  // "fp64_reference" or "mixed_fast"
+  std::vector<GpuCalibrationMeasurement> measurements;
+};
+
+struct GpuCalibrationFixture {
+  int schema_version = 0;
+  std::vector<GpuCalibrationRow> rows;
+};
+
+// Load the calibration fixture from `path`. Returns std::nullopt when the
+// file does not exist or cannot be opened — caller's cue to SKIP the gate.
+// Throws std::runtime_error on malformed YAML content or schema violations.
+[[nodiscard]] std::optional<GpuCalibrationFixture> load_gpu_calibration_fixture(
+    const std::string& path);
 
 }  // namespace tdmd

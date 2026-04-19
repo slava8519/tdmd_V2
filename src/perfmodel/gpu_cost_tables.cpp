@@ -19,6 +19,15 @@
 
 #include "tdmd/perfmodel/gpu_cost_tables.hpp"
 
+#include <cstdint>
+#include <filesystem>
+#include <optional>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+#include <yaml-cpp/yaml.h>
+
 namespace tdmd {
 
 namespace {
@@ -147,6 +156,166 @@ GpuCostTables gpu_cost_tables_mixed_fast() {
 
   t.provenance = kMixedFastProvenance;
   return t;
+}
+
+// ---------------------------------------------------------------------------
+// T7.13 — calibration fixture loader.
+//
+// Thin YAML reader that keeps yaml-cpp private to the .cpp TU so the public
+// header stays free of YAML includes (mirrors the io::YamlConfig pattern
+// established in T1.4). Schema errors raise std::runtime_error with a
+// one-line explanation; missing file is not an error and is reported via
+// std::nullopt.
+//
+// NOTE on strictness: we mandate every top-level row key (except
+// `provenance`, which defaults to "" if absent). `schema_version` must
+// equal 1 — bumping the schema requires a new T7.13.x delta. Within a row
+// we accept zero or more `measurements` entries; a row with an empty
+// `measurements` list is a schema violation (the gate has nothing to
+// compare and silent-pass would mask upstream errors).
+// ---------------------------------------------------------------------------
+
+namespace {
+
+[[nodiscard]] std::string require_scalar_string(const YAML::Node& parent,
+                                                const char* key,
+                                                const char* path_ctx) {
+  const auto child = parent[key];
+  if (!child || !child.IsScalar()) {
+    throw std::runtime_error(std::string("gpu_cost_calibration: expected scalar string at '") +
+                             path_ctx + "." + key + "'");
+  }
+  return child.as<std::string>();
+}
+
+[[nodiscard]] double require_scalar_double(const YAML::Node& parent,
+                                           const char* key,
+                                           const char* path_ctx) {
+  const auto child = parent[key];
+  if (!child || !child.IsScalar()) {
+    throw std::runtime_error(std::string("gpu_cost_calibration: expected scalar number at '") +
+                             path_ctx + "." + key + "'");
+  }
+  try {
+    return child.as<double>();
+  } catch (const YAML::Exception&) {
+    throw std::runtime_error(std::string("gpu_cost_calibration: could not parse number at '") +
+                             path_ctx + "." + key + "'");
+  }
+}
+
+[[nodiscard]] std::uint64_t require_scalar_u64(const YAML::Node& parent,
+                                               const char* key,
+                                               const char* path_ctx) {
+  const auto child = parent[key];
+  if (!child || !child.IsScalar()) {
+    throw std::runtime_error(std::string("gpu_cost_calibration: expected scalar integer at '") +
+                             path_ctx + "." + key + "'");
+  }
+  try {
+    return child.as<std::uint64_t>();
+  } catch (const YAML::Exception&) {
+    throw std::runtime_error(std::string("gpu_cost_calibration: could not parse integer at '") +
+                             path_ctx + "." + key + "'");
+  }
+}
+
+[[nodiscard]] std::string optional_scalar_string(const YAML::Node& parent, const char* key) {
+  const auto child = parent[key];
+  if (!child || !child.IsScalar()) {
+    return {};
+  }
+  return child.as<std::string>();
+}
+
+}  // namespace
+
+std::optional<GpuCalibrationFixture> load_gpu_calibration_fixture(const std::string& path) {
+  std::error_code ec;
+  if (!std::filesystem::is_regular_file(path, ec) || ec) {
+    return std::nullopt;
+  }
+
+  YAML::Node root;
+  try {
+    root = YAML::LoadFile(path);
+  } catch (const YAML::BadFile&) {
+    // Treat as missing — race-safe with the filesystem check above.
+    return std::nullopt;
+  } catch (const YAML::ParserException& e) {
+    throw std::runtime_error(std::string("gpu_cost_calibration: YAML parse error: ") + e.what());
+  }
+
+  if (!root || !root.IsMap()) {
+    throw std::runtime_error("gpu_cost_calibration: top-level document must be a mapping");
+  }
+
+  GpuCalibrationFixture fx;
+
+  const auto schema_v = root["schema_version"];
+  if (!schema_v || !schema_v.IsScalar()) {
+    throw std::runtime_error("gpu_cost_calibration: missing top-level 'schema_version'");
+  }
+  fx.schema_version = schema_v.as<int>();
+  if (fx.schema_version != 1) {
+    throw std::runtime_error(std::string("gpu_cost_calibration: unsupported schema_version ") +
+                             std::to_string(fx.schema_version) +
+                             " (this build supports schema_version=1)");
+  }
+
+  const auto rows_node = root["rows"];
+  if (!rows_node || !rows_node.IsSequence()) {
+    throw std::runtime_error("gpu_cost_calibration: missing or non-sequence top-level 'rows'");
+  }
+
+  fx.rows.reserve(rows_node.size());
+  for (std::size_t i = 0; i < rows_node.size(); ++i) {
+    const auto row_node = rows_node[i];
+    const std::string row_ctx = "rows[" + std::to_string(i) + "]";
+    if (!row_node.IsMap()) {
+      throw std::runtime_error("gpu_cost_calibration: " + row_ctx + " must be a mapping");
+    }
+
+    GpuCalibrationRow row;
+    row.hardware_id = require_scalar_string(row_node, "hardware_id", row_ctx.c_str());
+    row.cuda_version = require_scalar_string(row_node, "cuda_version", row_ctx.c_str());
+    row.measurement_date = require_scalar_string(row_node, "measurement_date", row_ctx.c_str());
+    row.build_flavor = require_scalar_string(row_node, "build_flavor", row_ctx.c_str());
+    row.provenance = optional_scalar_string(row_node, "provenance");
+
+    if (row.build_flavor != "fp64_reference" && row.build_flavor != "mixed_fast") {
+      throw std::runtime_error("gpu_cost_calibration: " + row_ctx +
+                               ".build_flavor must be 'fp64_reference' or 'mixed_fast' (got '" +
+                               row.build_flavor + "')");
+    }
+
+    const auto meas_node = row_node["measurements"];
+    if (!meas_node || !meas_node.IsSequence() || meas_node.size() == 0U) {
+      throw std::runtime_error("gpu_cost_calibration: " + row_ctx +
+                               ".measurements must be a non-empty sequence");
+    }
+
+    row.measurements.reserve(meas_node.size());
+    for (std::size_t j = 0; j < meas_node.size(); ++j) {
+      const auto m_node = meas_node[j];
+      const std::string m_ctx = row_ctx + ".measurements[" + std::to_string(j) + "]";
+      if (!m_node.IsMap()) {
+        throw std::runtime_error("gpu_cost_calibration: " + m_ctx + " must be a mapping");
+      }
+      GpuCalibrationMeasurement m;
+      m.n_atoms = require_scalar_u64(m_node, "n_atoms", m_ctx.c_str());
+      m.measured_step_sec = require_scalar_double(m_node, "measured_step_sec", m_ctx.c_str());
+      if (m.n_atoms == 0U || m.measured_step_sec <= 0.0) {
+        throw std::runtime_error("gpu_cost_calibration: " + m_ctx +
+                                 " requires n_atoms > 0 and measured_step_sec > 0");
+      }
+      row.measurements.push_back(m);
+    }
+
+    fx.rows.push_back(std::move(row));
+  }
+
+  return fx;
 }
 
 }  // namespace tdmd

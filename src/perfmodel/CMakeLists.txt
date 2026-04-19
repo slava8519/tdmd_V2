@@ -11,4 +11,8 @@ target_include_directories(
 
 target_compile_features(tdmd_perfmodel PUBLIC cxx_std_20)
 
+# T7.13 — calibration fixture loader uses yaml-cpp for the external YAML file. Kept PRIVATE (same as
+# src/io/) so callers never accidentally link against it.
+target_link_libraries(tdmd_perfmodel PRIVATE yaml-cpp::yaml-cpp)
+
 tdmd_apply_build_flavor(tdmd_perfmodel)
