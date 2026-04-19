@@ -20,27 +20,30 @@ key in `checks.yaml`.
 The CPU T3 fixture (`t3_al_fcc_large_anchor/`) reproduces Andreev §3.5 on
 **Al FCC 10⁶ atoms + Morse** at 8 Å cutoff — physics-equivalent to the
 dissertation LJ at the scaling-profile level. Porting that fixture verbatim
-to GPU is blocked on **two unshipped milestones**:
+to GPU is blocked on the **Morse GPU kernel** (gpu/SPEC.md §1.2 defers all
+non-EAM pair styles to M9+).
 
-1. **Morse GPU kernel** — `gpu/SPEC.md` §1.2 defers all non-EAM pair styles
-   (LJ, Morse, MEAM, SNAP, PACE, MLIAP) to M9+. M6 GPU scope is `{NL, EAM,
-   VV}`, exactly what shipped in T6.4 / T6.5 / T6.6.
-2. **Pattern 2 GPU scheduler dispatch** — multi-rank efficiency curves
-   require the scheduler to drive GPU compute across subdomains. That
-   lands with T6.9b / Pattern 2 GPU in M7 (see `gpu/SPEC.md` §9.5).
+**T6.10a (shipped v1.0.8) → T7.12 (shipped v1.0.14) progression.** T6.10a
+anchored the harness on what M6 actually delivers: single-rank GPU execution
+of the already-landed `{NL, EAM, VV}` stack on a smaller Ni-Al EAM/alloy
+fixture (the same one T4 and T6.7 gate against). T7.12 reopened gate (3)
+as the **EAM-substitute Pattern 2 strong-scaling probe** — the second
+historic blocker (Pattern 2 GPU scheduler dispatch — was T6.9b) closed via
+T7.5 HybridBackend + T7.7 SubdomainBoundaryDependency. The remaining
+Morse-vs-dissertation comparison stays deferred to M9+.
 
-Rather than ship a placeholder fixture that would stay red until M9, T6.10a
-anchors the harness on **what M6 actually delivers**: single-rank GPU
-execution of the already-landed `{NL, EAM, VV}` stack on a smaller Ni-Al
-EAM/alloy fixture (the same one T4 and T6.7 gate against). Gates (1) and
-(2) are reached — those are the mandatory invariants. Gate (3) (efficiency
-curve vs dissertation) is deferred to T6.10b behind the two dependencies
-above.
+| Gate                                  | Status      | Shipped in |
+|---------------------------------------|-------------|------------|
+| (1) CPU ≡ GPU Reference byte-exact    | **active**  | T6.10a     |
+| (2) MixedFast within D-M6-8 thresholds| **active**  | T6.10a     |
+| (3) Pattern 2 EAM-substitute efficiency probe | **active** | T7.12      |
+| (3') Morse-vs-dissertation comparison | deferred    | M9+ (Morse GPU kernel) |
 
-See `acceptance_criteria.md` §"Deferred gates" for the exact deferred scope
-and the dependency graph.
+See `acceptance_criteria.md` §"Gate (3) — efficiency curve (T7.12)" for
+the gate-3 contract and what the M9+ Morse arm would add when its kernel
+lands.
 
-## Experiment (T6.10a scope)
+## Experiment (T6.10a + T7.12 scope)
 
 | Quantity              | Value                                                     |
 |-----------------------|-----------------------------------------------------------|
@@ -54,7 +57,8 @@ and the dependency graph.
 | Timestep              | 0.001 ps (1 fs)                                           |
 | Steps                 | 100 (matches T6.7 gate — amortises JIT + warm-up)         |
 | Thermo output period  | every step (byte-compare the full trace)                  |
-| Ranks probed          | 1 (single-rank; multi-rank gate deferred to T6.10b)       |
+| Ranks probed (gate 1+2)| 1 — CPU ≡ GPU Reference byte-exact thermo gate           |
+| Ranks probed (gate 3) | [1, 2] — Pattern 2 EAM-substitute efficiency probe (T7.12) |
 | Backend               | `runtime.backend: gpu` (Fp64Reference + MixedFast variants) |
 
 `setup.data` is reused from `../t4_nial_alloy/setup.data` — symlinked at
@@ -69,14 +73,15 @@ The Mishin 2004 EAM file lives at `../../third_party/potentials/NiAl_Mishin_2004
 | `README.md`                         | This document                                              |
 | `config.yaml`                       | TDMD config (EAM/alloy Ni-Al + `runtime.backend: gpu`)     |
 | `checks.yaml`                       | Acceptance threshold declarations + backend dispatch key   |
-| `hardware_normalization_gpu.py`     | GPU probe (M6 stub; full CUDA EAM micro-kernel — T6.10b)   |
-| `acceptance_criteria.md`            | Pass/fail rules + deferred gate documentation              |
+| `hardware_normalization_gpu.py`     | GPU probe (stub; replaced when M9+ Morse arm reopens)      |
+| `acceptance_criteria.md`            | Pass/fail rules + gate (3) T7.12 contract                  |
 
-`dissertation_reference_data.csv` is **deliberately absent** in T6.10a. The
-efficiency-curve gate (gate 3) is deferred to T6.10b; without the efficiency
-comparison, no dissertation-reference points are consumed. `acceptance_criteria.md`
-tracks the planned CSV layout (same schema as T3 CPU) for T6.10b's
-reintroduction.
+`dissertation_reference_data.csv` is **deliberately absent**. T7.12 grades
+gate (3) against an absolute `efficiency_floor_pct: 80.0` (D-M7-8 / T7.11
+parity), not against the Andreev Morse curve — see "scope realism" above.
+The CSV would be added back when the M9+ Morse GPU kernel lands and
+unlocks the literal Morse-vs-dissertation arm; layout would mirror the
+CPU T3 schema. `acceptance_criteria.md` documents the M9+ fixture path.
 
 ## Harness invocation
 
@@ -100,6 +105,8 @@ identical handling pattern to the CPU T3's `HARDWARE_MISMATCH`.
 
 ## Scope reminder
 
-T6.10a delivers the infrastructure + gates (1) and (2). T6.10b reintroduces
-the efficiency-curve gate after Morse GPU + Pattern 2 GPU land (M7 + M9).
-The M6 merge gate is two-level, not three.
+T6.10a (v1.0.8) delivered the infrastructure + gates (1) and (2). T7.12
+(v1.0.14) reopened gate (3) as the Pattern 2 EAM-substitute efficiency
+probe. The literal Morse-vs-dissertation comparison stays deferred to
+M9+ (Morse GPU kernel). Effective gate count: **three active** (T7.12
+onward), not two.

@@ -45,7 +45,12 @@ LaunchFn = Callable[["AnchorTestRunner", int, pathlib.Path], dict]
 # thermo_path) and returns parsed telemetry JSON. ``backend`` is "cpu" or
 # "gpu"; ``thermo_path`` is where TDMD's ``--thermo`` flag writes the
 # thermo table so the runner can byte-compare CPU vs GPU streams.
-GpuLaunchFn = Callable[["AnchorTestRunner", int, pathlib.Path, str, pathlib.Path], dict]
+#
+# T7.12 widened to ``Callable[..., dict]`` so the gate-3 efficiency probe
+# can pass the optional ``subdomains_xyz`` kwarg without breaking gates 1/2
+# call sites that still use the strict 5-positional form. Mock launchers
+# in tests accept ``**kwargs`` to absorb unknown args.
+GpuLaunchFn = Callable[..., dict]
 
 
 @dataclasses.dataclass
@@ -146,6 +151,8 @@ def _write_augmented_config(
     source_config_path: pathlib.Path,
     dest_config_path: pathlib.Path,
     backend: str,
+    *,
+    subdomains_xyz: list[int] | None = None,
 ) -> None:
     """Write a copy of ``source_config_path`` into ``dest_config_path`` with
     ``runtime.backend`` set to ``backend``.
@@ -160,6 +167,10 @@ def _write_augmented_config(
     different directory (the runner workdir) so we rewrite relative
     inputs to absolute paths here — otherwise TDMD would look for the
     inputs next to the augmented file.
+
+    When ``subdomains_xyz`` is supplied, ``zoning.subdomains: [Nx, Ny, Nz]``
+    is injected so the harness can probe Pattern 2 strong-scaling without
+    committing N-specific fixtures (T7.12 EAM-substitute efficiency probe).
     """
     with source_config_path.open() as fh:
         data = yaml.safe_load(fh) or {}
@@ -177,6 +188,13 @@ def _write_augmented_config(
         params["file"] = str((source_dir / eam_file).resolve())
 
     data.setdefault("runtime", {})["backend"] = backend
+    if subdomains_xyz is not None:
+        if len(subdomains_xyz) != 3:
+            raise RuntimeError(
+                f"subdomains_xyz must be a 3-element [Nx,Ny,Nz] list; "
+                f"got {subdomains_xyz!r}"
+            )
+        data.setdefault("zoning", {})["subdomains"] = [int(x) for x in subdomains_xyz]
     dest_config_path.parent.mkdir(parents=True, exist_ok=True)
     with dest_config_path.open("w") as fh:
         yaml.safe_dump(data, fh, sort_keys=False)
@@ -188,6 +206,8 @@ def _launch_tdmd_with_backend(
     workdir: pathlib.Path,
     backend: str,
     thermo_path: pathlib.Path,
+    *,
+    subdomains_xyz: list[int] | None = None,
 ) -> dict:
     """GPU anchor launcher. Real MPI path with ``--thermo`` capture.
 
@@ -196,6 +216,11 @@ def _launch_tdmd_with_backend(
     then invokes tdmd via mpirun. Returns parsed telemetry JSON; the
     thermo trace is captured to ``thermo_path`` by TDMD's ``--thermo``
     flag and is byte-compared by the runner separately.
+
+    ``subdomains_xyz`` (T7.12) — when supplied, injects
+    ``zoning.subdomains: [Nx, Ny, Nz]`` into the augmented config so the
+    Pattern 2 GPU efficiency probe can vary subdomain count without
+    committing N-specific fixtures.
     """
     cfg = runner.config
     workdir.mkdir(parents=True, exist_ok=True)
@@ -205,7 +230,9 @@ def _launch_tdmd_with_backend(
     source_config = cfg.benchmark_dir / "config.yaml"
     if not source_config.is_file():
         raise FileNotFoundError(f"missing {source_config}")
-    _write_augmented_config(source_config, augmented_config, backend)
+    _write_augmented_config(
+        source_config, augmented_config, backend, subdomains_xyz=subdomains_xyz
+    )
 
     cmd = [
         str(cfg.mpirun_bin),
@@ -713,13 +740,39 @@ class AnchorTestRunner:
                 )
             )
 
-        # Gate 3 — efficiency curve. Deferred per checks.yaml.
+        # Gate 3 — efficiency curve.
+        #
+        # T6.10a shipped this as `status: deferred` (no GPU Morse + no
+        # Pattern 2 GPU dispatch). T7.12 reopens it as
+        # `status: active_eam_substitute`: Pattern 2 GPU strong-scaling on
+        # the same Ni-Al EAM/alloy fixture used by gates (1)+(2), per
+        # D-M7-16 EAM substitute scope. Morse-vs-dissertation is still
+        # deferred to M9+ (no GPU Morse kernel — gpu/SPEC §1.2).
         gate3_cfg = checks.get("efficiency_curve") or {}
-        if str(gate3_cfg.get("status", "")).lower() == "deferred":
+        gate3_status = str(gate3_cfg.get("status", "")).lower()
+        gate3_dissertation_ref = "n/a (gate 3 deferred — no GPU Morse kernel)"
+        if gate3_status == "deferred":
             self.log(
                 f"gate 3 (efficiency curve) deferred to "
-                f"{gate3_cfg.get('deferred_to', 'T6.10b')}; blockers: "
+                f"{gate3_cfg.get('deferred_to', 'T7.12')}; blockers: "
                 f"{gate3_cfg.get('blockers', [])}"
+            )
+        elif gate3_status == "active_eam_substitute":
+            efficiency_gates = self._run_gpu_efficiency_probe(
+                gate3_cfg, launcher, n_procs_anchor=n_procs
+            )
+            gates.extend(efficiency_gates)
+            for g in efficiency_gates:
+                if not g.passed and overall_failure_mode is None:
+                    overall_failure_mode = "EFFICIENCY_BELOW_FLOOR"
+            gate3_dissertation_ref = (
+                "n/a (T7.12 EAM substitute — Morse-vs-dissertation "
+                "deferred to M9+ per D-M7-16)"
+            )
+        elif gate3_status:
+            self.log(
+                f"gate 3 (efficiency curve) — unknown status "
+                f"{gate3_status!r}; skipping (treat as deferred)"
             )
 
         overall_passed = all(g.passed for g in gates)
@@ -733,11 +786,11 @@ class AnchorTestRunner:
 
         end = datetime.datetime.now(tz=datetime.timezone.utc)
         return AnchorTestReport(
-            points=[],  # no per-rank perf points in T6.10a; gate 3 deferred
+            points=[],  # GPU anchor uses gpu_gates instead of points
             overall_passed=overall_passed,
             overall_status=overall_status,
             any_warning=any_warning,
-            dissertation_reference_commit="n/a (gate 3 deferred to T6.10b)",
+            dissertation_reference_commit=gate3_dissertation_ref,
             tdmd_commit=_git_revision_of(cfg.tdmd_bin),
             benchmark_directory=str(cfg.benchmark_dir),
             checks_yaml_path=str(checks_path),
@@ -749,6 +802,149 @@ class AnchorTestRunner:
             backend="gpu",
             gpu_gates=gates,
         )
+
+    # -----------------------------------------------------------------
+    # T7.12 — Pattern 2 GPU efficiency probe (EAM substitute)
+    # -----------------------------------------------------------------
+
+    def _run_gpu_efficiency_probe(
+        self,
+        gate3_cfg: Mapping[str, object],
+        launcher: GpuLaunchFn,
+        n_procs_anchor: int,
+    ) -> "list[GpuGateResult]":
+        """Run the Pattern 2 GPU strong-scaling probe (T7.12).
+
+        For each ``n`` in ``efficiency_curve.ranks_to_probe`` (must include
+        the anchor — typically 1), launch tdmd with
+        ``zoning.subdomains: [n, 1, 1]`` injected. The first probe point
+        sets the steps/sec baseline; subsequent points report
+        ``efficiency = 100 * sps(n) * anchor_n / (sps_anchor * n)``.
+
+        Each probe emits a ``GpuGateResult``. The anchor point is always
+        green (efficiency ≡ 100% by construction). Subsequent points pass
+        iff ``measured_efficiency_pct >= efficiency_floor_pct``.
+
+        The provenance string in every detail line records the
+        EAM-substitute scope so report consumers cannot mistake this for
+        a literal Morse-vs-dissertation comparison.
+        """
+        cfg = self.config
+        ranks = [int(x) for x in gate3_cfg.get("ranks_to_probe", [1])]
+        if not ranks:
+            raise RuntimeError(
+                "efficiency_curve.ranks_to_probe is empty; cannot probe efficiency"
+            )
+        if 1 not in ranks:
+            raise RuntimeError(
+                f"efficiency_curve.ranks_to_probe must include 1 as the "
+                f"strong-scaling anchor; got {ranks}"
+            )
+        floor_pct = float(gate3_cfg.get("efficiency_floor_pct", 80.0))
+        provenance_tag = (
+            f"EAM substitute per D-M7-16 (Morse fidelity blocker: "
+            f"{gate3_cfg.get('morse_fidelity_blocker', 'M9+ Morse GPU kernel')})"
+        )
+        n_steps = _read_config_n_steps(cfg.benchmark_dir / "config.yaml")
+
+        out: list[GpuGateResult] = []
+        anchor_steps_per_sec: float | None = None
+        anchor_n: int | None = None
+        for n in ranks:
+            workdir = cfg.workdir / f"gpu_eff_N{n:02d}"
+            thermo_path = workdir / "thermo.dat"
+            try:
+                telemetry = launcher(
+                    self,
+                    n,
+                    workdir,
+                    "gpu",
+                    thermo_path,
+                    subdomains_xyz=[n, 1, 1],
+                )
+            except RuntimeError as exc:
+                out.append(
+                    GpuGateResult(
+                        gate_name=f"efficiency_curve_N{n:02d}",
+                        passed=False,
+                        status=STATUS_RED,
+                        detail=(
+                            f"Pattern 2 GPU launch failed for N={n}: {exc}. "
+                            f"{provenance_tag}"
+                        ),
+                        n_procs=n,
+                    )
+                )
+                continue
+
+            total_wall = float(telemetry.get("total_wall_sec", 0.0))
+            steps_per_sec = (n_steps / total_wall) if total_wall > 0 else 0.0
+
+            if anchor_steps_per_sec is None:
+                anchor_steps_per_sec = steps_per_sec
+                anchor_n = n
+                self.log(
+                    f"efficiency probe anchor: N={n} → steps/s={steps_per_sec:.4f}"
+                )
+                # Anchor probe is informational; passes by definition.
+                out.append(
+                    GpuGateResult(
+                        gate_name=f"efficiency_curve_N{n:02d}",
+                        passed=True,
+                        status=STATUS_GREEN,
+                        detail=(
+                            f"anchor: steps/s={steps_per_sec:.3f} "
+                            f"(efficiency ≡ 100% by construction). "
+                            f"{provenance_tag}"
+                        ),
+                        n_procs=n,
+                        measured_steps_per_sec=steps_per_sec,
+                        measured_efficiency_pct=100.0,
+                        floor_pct=floor_pct,
+                    )
+                )
+                continue
+
+            if anchor_steps_per_sec <= 0 or anchor_n is None:
+                # Anchor produced zero throughput — cannot derive efficiency.
+                out.append(
+                    GpuGateResult(
+                        gate_name=f"efficiency_curve_N{n:02d}",
+                        passed=False,
+                        status=STATUS_RED,
+                        detail=(
+                            f"cannot compute efficiency for N={n}: "
+                            f"anchor steps/s={anchor_steps_per_sec}. "
+                            f"{provenance_tag}"
+                        ),
+                        n_procs=n,
+                        measured_steps_per_sec=steps_per_sec,
+                        floor_pct=floor_pct,
+                    )
+                )
+                continue
+
+            efficiency_pct = (
+                100.0 * steps_per_sec * anchor_n / (anchor_steps_per_sec * n)
+            )
+            passed = efficiency_pct >= floor_pct
+            out.append(
+                GpuGateResult(
+                    gate_name=f"efficiency_curve_N{n:02d}",
+                    passed=passed,
+                    status=STATUS_GREEN if passed else STATUS_RED,
+                    detail=(
+                        f"N={n}: steps/s={steps_per_sec:.3f} → "
+                        f"efficiency={efficiency_pct:.2f}% vs anchor N={anchor_n} "
+                        f"(floor={floor_pct:.1f}%). {provenance_tag}"
+                    ),
+                    n_procs=n,
+                    measured_steps_per_sec=steps_per_sec,
+                    measured_efficiency_pct=efficiency_pct,
+                    floor_pct=floor_pct,
+                )
+            )
+        return out
 
     # -----------------------------------------------------------------
     # Helpers

@@ -423,9 +423,15 @@ def make_gpu_mock_launcher(
 
     ``fail_backend='gpu'`` triggers a RuntimeError on the GPU launch so the
     runner can exercise the NO_CUDA_DEVICE fallback path.
+
+    Accepts (and ignores) ``**kwargs`` so the T7.12 efficiency-probe call
+    site that passes ``subdomains_xyz=[N,1,1]`` works against the same
+    mock as the gate (1)/(2) call sites.
     """
 
-    def _fn(runner, n_procs: int, workdir: pathlib.Path, backend: str, thermo_path):
+    def _fn(
+        runner, n_procs: int, workdir: pathlib.Path, backend: str, thermo_path, **_kw
+    ):
         if fail_backend == backend:
             raise RuntimeError(f"mock launcher injected failure for backend={backend}")
         workdir.mkdir(parents=True, exist_ok=True)
@@ -434,6 +440,88 @@ def make_gpu_mock_launcher(
         return {
             "event": "run_end",
             "total_wall_sec": 1.0,
+            "sections": {"Pair": 0.6},
+            "ignored_end_calls": 0,
+        }
+
+    return _fn
+
+
+# T7.12 — efficiency probe mock + helpers
+# ---------------------------------------------------------------------------
+
+
+def _write_gpu_checks_yaml_with_efficiency(
+    path: pathlib.Path,
+    *,
+    eff_status: str = "active_eam_substitute",
+    eff_ranks: list[int] | None = None,
+    floor_pct: float = 80.0,
+):
+    """Variant of ``_write_gpu_checks_yaml`` that activates the gate-3 EAM
+    substitute efficiency probe with configurable ranks/floor.
+    """
+    eff_ranks = eff_ranks if eff_ranks is not None else [1, 2]
+    body = [
+        "benchmark: t3_al_fcc_large_anchor_gpu",
+        "backend: gpu",
+        "ranks_to_probe: [1]",
+        "cpu_gpu_reference_bit_exact: {thermo_byte_equal: true, steps: 100}",
+        "mixed_fast_vs_reference:",
+        "  force_relative_linf_threshold: 1.0e-5",
+        "  energy_relative_threshold: 1.0e-7",
+        "  virial_relative_normalized_threshold: 5.0e-6",
+        "  source: T6.8a achieved",
+        "efficiency_curve:",
+        f"  status: {eff_status}",
+        '  morse_fidelity_blocker: "M9+ Morse GPU kernel"',
+        f"  ranks_to_probe: {eff_ranks}",
+        f"  efficiency_floor_pct: {floor_pct}",
+        "runtime: {wall_clock_budget_minutes: 10}",
+    ]
+    path.write_text("\n".join(body) + "\n")
+
+
+def make_efficiency_probe_launcher(
+    wall_sec_by_n: dict[int, float],
+    same_thermo: bytes = b"thermo\n",
+    captured_subdomains: list | None = None,
+    fail_for_n: int | None = None,
+):
+    """Mock launcher tracking ``subdomains_xyz`` per call so tests can
+    verify Pattern 2 zoning injection.
+
+    ``wall_sec_by_n`` controls steps/sec — runner divides ``run.n_steps``
+    by this to derive ``steps_per_sec`` and then efficiency. To synthesise
+    perfect strong scaling: pass ``{1: 1.0, 2: 0.5, 4: 0.25}``.
+    To synthesise 70% efficiency at N=2: pass ``{1: 1.0, 2: 1.0/(0.7*2)}``
+    so steps_per_sec_2 / (steps_per_sec_1 * 2) = 0.7.
+    """
+
+    def _fn(
+        runner,
+        n_procs: int,
+        workdir: pathlib.Path,
+        backend: str,
+        thermo_path,
+        **kwargs,
+    ):
+        if fail_for_n == n_procs:
+            raise RuntimeError(f"mock launcher injected failure for N={n_procs}")
+        workdir.mkdir(parents=True, exist_ok=True)
+        thermo_path.parent.mkdir(parents=True, exist_ok=True)
+        thermo_path.write_bytes(same_thermo)
+        if captured_subdomains is not None:
+            captured_subdomains.append(
+                {
+                    "n_procs": n_procs,
+                    "backend": backend,
+                    "subdomains_xyz": kwargs.get("subdomains_xyz"),
+                }
+            )
+        return {
+            "event": "run_end",
+            "total_wall_sec": wall_sec_by_n.get(n_procs, 1.0),
             "sections": {"Pair": 0.6},
             "ignored_end_calls": 0,
         }
@@ -603,6 +691,263 @@ class GpuAnchorRunnerMockedTest(unittest.TestCase):
             report = runner.run()
             self.assertEqual(report.backend, "gpu")
             self.assertTrue(report.overall_passed)
+
+
+class GpuEfficiencyProbeTest(unittest.TestCase):
+    """T7.12 — Pattern 2 GPU strong-scaling EAM-substitute probe.
+
+    Validates the gate-3 ``active_eam_substitute`` branch of
+    ``_run_gpu_two_level``: subdomain injection, anchor handling, floor
+    grading, failure-mode classification, and provenance string emission.
+    """
+
+    def _make_runner(
+        self,
+        tmpdir: pathlib.Path,
+        launch_fn,
+        eff_status: str = "active_eam_substitute",
+        eff_ranks: list[int] | None = None,
+        floor_pct: float = 80.0,
+    ) -> AnchorTestRunner:
+        bench = tmpdir / "benchmarks" / "t3_gpu_eff"
+        bench.mkdir(parents=True)
+        _write_gpu_checks_yaml_with_efficiency(
+            bench / "checks.yaml",
+            eff_status=eff_status,
+            eff_ranks=eff_ranks,
+            floor_pct=floor_pct,
+        )
+        _write_gpu_config_yaml(bench / "config.yaml")
+        _write_stub_gpu_probe(bench / "hardware_normalization_gpu.py")
+        cfg = RunnerConfig(
+            benchmark_dir=bench,
+            tdmd_bin=tmpdir / "tdmd",
+            mpirun_bin=pathlib.Path("mpirun"),
+            output_report_path=tmpdir / "report.json",
+            workdir=tmpdir / "workdir",
+            skip_setup_regen=True,
+            gpu_launch_fn=launch_fn,
+        )
+        return AnchorTestRunner(cfg)
+
+    def test_efficiency_probe_perfect_scaling_green(self):
+        """N=1,2 with linear scaling → both probes pass, overall YELLOW (gate2 advisory)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = pathlib.Path(tmp)
+            captured: list = []
+            launcher = make_efficiency_probe_launcher(
+                wall_sec_by_n={1: 1.0, 2: 0.5},  # 100% efficiency at N=2
+                captured_subdomains=captured,
+            )
+            runner = self._make_runner(tmpdir, launcher)
+            report = runner.run()
+            # Two efficiency_curve gates emitted (one per rank).
+            eff_gates = [
+                g
+                for g in (report.gpu_gates or [])
+                if g.gate_name.startswith("efficiency_curve_N")
+            ]
+            self.assertEqual(len(eff_gates), 2)
+            anchor = eff_gates[0]
+            n2 = eff_gates[1]
+            self.assertEqual(anchor.n_procs, 1)
+            self.assertEqual(anchor.measured_efficiency_pct, 100.0)
+            self.assertTrue(anchor.passed)
+            self.assertEqual(n2.n_procs, 2)
+            self.assertAlmostEqual(n2.measured_efficiency_pct, 100.0, places=4)
+            self.assertTrue(n2.passed)
+            self.assertEqual(n2.status, STATUS_GREEN)
+            # Subdomain injection — verify [N,1,1] passed for each efficiency probe.
+            eff_probe_calls = [c for c in captured if c["subdomains_xyz"] is not None]
+            self.assertEqual(len(eff_probe_calls), 2)
+            self.assertEqual(eff_probe_calls[0]["subdomains_xyz"], [1, 1, 1])
+            self.assertEqual(eff_probe_calls[1]["subdomains_xyz"], [2, 1, 1])
+            # Gate 1+2 calls did NOT inject subdomains (kwargs absent).
+            non_eff_calls = [c for c in captured if c["subdomains_xyz"] is None]
+            self.assertGreaterEqual(len(non_eff_calls), 2)  # cpu + gpu for gate1
+            # Overall: gate2 advisory YELLOW dominates → YELLOW overall.
+            self.assertEqual(report.overall_status, STATUS_YELLOW)
+            self.assertTrue(report.overall_passed)
+            self.assertIsNone(report.failure_mode)
+
+    def test_efficiency_probe_below_floor_red(self):
+        """N=2 efficiency 60% < floor 80% → RED + EFFICIENCY_BELOW_FLOOR."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = pathlib.Path(tmp)
+            # wall_sec at N=2 such that steps_per_sec(2)/(steps_per_sec(1)*2) = 0.6
+            # steps_per_sec_1 = n_steps/1.0 = 100
+            # steps_per_sec_2 = 0.6 * 100 * 2 = 120 ⇒ wall_sec_2 = 100/120 ≈ 0.833
+            launcher = make_efficiency_probe_launcher(
+                wall_sec_by_n={1: 1.0, 2: 100.0 / 120.0},
+            )
+            runner = self._make_runner(tmpdir, launcher, floor_pct=80.0)
+            report = runner.run()
+            eff_n2 = next(
+                g
+                for g in (report.gpu_gates or [])
+                if g.gate_name == "efficiency_curve_N02"
+            )
+            self.assertFalse(eff_n2.passed)
+            self.assertEqual(eff_n2.status, STATUS_RED)
+            self.assertAlmostEqual(eff_n2.measured_efficiency_pct, 60.0, places=2)
+            self.assertEqual(eff_n2.floor_pct, 80.0)
+            self.assertEqual(report.overall_status, STATUS_RED)
+            self.assertEqual(report.failure_mode, "EFFICIENCY_BELOW_FLOOR")
+
+    def test_efficiency_probe_provenance_in_detail(self):
+        """Every efficiency_curve_N* detail string carries the EAM-substitute marker."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = pathlib.Path(tmp)
+            launcher = make_efficiency_probe_launcher(
+                wall_sec_by_n={1: 1.0, 2: 0.5},
+            )
+            runner = self._make_runner(tmpdir, launcher)
+            report = runner.run()
+            for g in report.gpu_gates or []:
+                if g.gate_name.startswith("efficiency_curve_N"):
+                    self.assertIn("EAM substitute per D-M7-16", g.detail)
+                    self.assertIn("Morse fidelity blocker", g.detail)
+                    self.assertIn("M9+ Morse GPU kernel", g.detail)
+
+    def test_efficiency_probe_anchor_only(self):
+        """Single rank [1] → only anchor gate, no efficiency comparison."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = pathlib.Path(tmp)
+            launcher = make_efficiency_probe_launcher(wall_sec_by_n={1: 1.0})
+            runner = self._make_runner(tmpdir, launcher, eff_ranks=[1])
+            report = runner.run()
+            eff_gates = [
+                g
+                for g in (report.gpu_gates or [])
+                if g.gate_name.startswith("efficiency_curve_N")
+            ]
+            self.assertEqual(len(eff_gates), 1)
+            self.assertTrue(eff_gates[0].passed)
+            self.assertEqual(eff_gates[0].measured_efficiency_pct, 100.0)
+            self.assertIn("anchor:", eff_gates[0].detail)
+
+    def test_efficiency_probe_ranks_must_include_anchor(self):
+        """ranks_to_probe=[2] (no 1) raises — efficiency anchor invariant."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = pathlib.Path(tmp)
+            launcher = make_efficiency_probe_launcher(wall_sec_by_n={2: 1.0})
+            runner = self._make_runner(tmpdir, launcher, eff_ranks=[2])
+            with self.assertRaises(RuntimeError) as cm:
+                runner.run()
+            self.assertIn("must include 1", str(cm.exception))
+
+    def test_efficiency_probe_launch_failure_red(self):
+        """N=2 launch fails → that gate RED, anchor still passes, overall RED."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = pathlib.Path(tmp)
+            launcher = make_efficiency_probe_launcher(
+                wall_sec_by_n={1: 1.0, 2: 0.5},
+                fail_for_n=2,
+            )
+            runner = self._make_runner(tmpdir, launcher)
+            report = runner.run()
+            anchor = next(
+                g
+                for g in (report.gpu_gates or [])
+                if g.gate_name == "efficiency_curve_N01"
+            )
+            failed = next(
+                g
+                for g in (report.gpu_gates or [])
+                if g.gate_name == "efficiency_curve_N02"
+            )
+            self.assertTrue(anchor.passed)
+            self.assertFalse(failed.passed)
+            self.assertEqual(failed.status, STATUS_RED)
+            self.assertIn("Pattern 2 GPU launch failed", failed.detail)
+            self.assertEqual(report.failure_mode, "EFFICIENCY_BELOW_FLOOR")
+
+    def test_efficiency_probe_deferred_status_no_probe(self):
+        """status: deferred → no efficiency_curve_N* gates emitted (legacy behaviour)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = pathlib.Path(tmp)
+            launcher = make_efficiency_probe_launcher(
+                wall_sec_by_n={1: 1.0, 2: 0.5},
+            )
+            runner = self._make_runner(tmpdir, launcher, eff_status="deferred")
+            report = runner.run()
+            eff_gates = [
+                g
+                for g in (report.gpu_gates or [])
+                if g.gate_name.startswith("efficiency_curve_N")
+            ]
+            self.assertEqual(len(eff_gates), 0)
+
+    def test_efficiency_probe_roundtrip_json_includes_new_fields(self):
+        """JSON serialisation preserves n_procs / measured_efficiency_pct / floor_pct."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = pathlib.Path(tmp)
+            launcher = make_efficiency_probe_launcher(
+                wall_sec_by_n={1: 1.0, 2: 0.5},
+            )
+            runner = self._make_runner(tmpdir, launcher)
+            report = runner.run()
+            out = tmpdir / "rep.json"
+            report.write_json(out)
+            data = json.loads(out.read_text())
+            eff_gates = [
+                g
+                for g in data["gpu_gates"]
+                if g["gate_name"].startswith("efficiency_curve_N")
+            ]
+            self.assertEqual(len(eff_gates), 2)
+            for g in eff_gates:
+                self.assertIn("n_procs", g)
+                self.assertIn("measured_efficiency_pct", g)
+                self.assertIn("floor_pct", g)
+                self.assertIn("measured_steps_per_sec", g)
+
+
+class WriteAugmentedConfigSubdomainsTest(unittest.TestCase):
+    """T7.12 — direct unit tests on `_write_augmented_config(subdomains_xyz=)`."""
+
+    def test_subdomains_injected_into_zoning_block(self):
+        from .runner import _write_augmented_config
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = pathlib.Path(tmp)
+            src = tmpdir / "src" / "config.yaml"
+            src.parent.mkdir()
+            src.write_text("simulation: {units: metal}\nrun: {n_steps: 10}\n")
+            dst = tmpdir / "dst" / "config.yaml"
+            _write_augmented_config(src, dst, "gpu", subdomains_xyz=[2, 1, 1])
+            import yaml as _y
+
+            data = _y.safe_load(dst.read_text())
+            self.assertEqual(data["zoning"]["subdomains"], [2, 1, 1])
+            self.assertEqual(data["runtime"]["backend"], "gpu")
+
+    def test_subdomains_omitted_when_none(self):
+        from .runner import _write_augmented_config
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = pathlib.Path(tmp)
+            src = tmpdir / "config.yaml"
+            src.write_text("simulation: {units: metal}\n")
+            dst = tmpdir / "dst.yaml"
+            _write_augmented_config(src, dst, "gpu")  # subdomains_xyz absent
+            import yaml as _y
+
+            data = _y.safe_load(dst.read_text())
+            self.assertNotIn("zoning", data)
+            self.assertEqual(data["runtime"]["backend"], "gpu")
+
+    def test_subdomains_wrong_length_raises(self):
+        from .runner import _write_augmented_config
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = pathlib.Path(tmp)
+            src = tmpdir / "config.yaml"
+            src.write_text("simulation: {units: metal}\n")
+            dst = tmpdir / "dst.yaml"
+            with self.assertRaises(RuntimeError) as cm:
+                _write_augmented_config(src, dst, "gpu", subdomains_xyz=[2, 1])
+            self.assertIn("3-element", str(cm.exception))
 
 
 class FirstByteDiffTest(unittest.TestCase):

@@ -6,9 +6,11 @@
 # parallel the CPU T3 checks.yaml structure so the runner path stays
 # symmetric.
 #
-# T6.10a scope: gates (1) and (2) only. Gate (3) (efficiency curve vs
-# dissertation) is deferred to T6.10b — see acceptance_criteria.md §"Deferred
-# gates" for the dependency graph.
+# T6.10a scope: gates (1) and (2). T7.12 reopened gate (3) as the EAM
+# substitute Pattern 2 strong-scaling probe (`status: active_eam_substitute`)
+# — Morse-vs-dissertation comparison stays deferred to M9+ per
+# `gpu/SPEC.md` §1.2 (no GPU Morse kernel) and D-M7-16 (EAM substitute
+# scope authorised in the M7 execution pack).
 
 benchmark: t3_al_fcc_large_anchor_gpu
 
@@ -17,10 +19,9 @@ benchmark: t3_al_fcc_large_anchor_gpu
 # Accepted values: cpu (default if absent, matches historical CPU T3) or gpu.
 backend: gpu
 
-# Which N_procs rows the harness should run. T6.10a single-rank only because
-# multi-rank GPU scheduler dispatch waits on T6.9b (M7). When T6.10b reopens
-# the efficiency gate, this list will expand to {1, 2, 4, 8} mirroring the
-# CPU T3 ranks_to_probe.
+# Which N_procs rows the gates (1)+(2) run at. Single-rank by design — the
+# CPU≡GPU bit-exact thermo gate is a per-step determinism check; multi-rank
+# scaling lives in `efficiency_curve.ranks_to_probe` below (gate 3).
 ranks_to_probe: [1]
 
 # Gate (1) — CPU Reference ≡ GPU Reference byte-exact.
@@ -44,35 +45,33 @@ mixed_fast_vs_reference:
   force_relative_linf_threshold: 1.0e-5       # T6.8a achieved ceiling
   energy_relative_threshold: 1.0e-7           # T6.8a achieved ceiling
   virial_relative_normalized_threshold: 5.0e-6
-  # Reference source for these thresholds. D-M6-8 target is 1e-6 force;
-  # T6.8a relaxed to the FP32 inv_r propagation ceiling on a 50-neighbor
-  # EAM stencil. T6.8b (pending) either tightens via FP32-table redesign
-  # or files a SPEC delta accepting these values.
-  source: T6.8a achieved; D-M6-8 target tightening in T6.8b
+  source: T6.8a achieved; D-M6-8 dense canonical (T7.0 SPEC delta)
 
-# Gate (3) — GPU efficiency curve vs dissertation.
+# Gate (3) — Pattern 2 GPU strong-scaling efficiency probe (T7.12).
 #
-# DEFERRED TO T6.10b. Requires:
-#   (a) Morse GPU kernel (gpu/SPEC §1.2 → M9+), and
-#   (b) Pattern 2 GPU scheduler dispatch (T6.9b → M7).
-# Without both the efficiency curve cannot be measured on GPU in M6. The
-# M6 acceptance gate (T6.13) consumes a two-level T3-gpu, not three.
+# Status flipped from `deferred` to `active_eam_substitute` per gpu/SPEC §11.4
+# change log v1.0.14 (T7.12). The Morse-vs-dissertation comparison is **not**
+# performed here — Andreev fig 29/30 used Morse, and the M9+ Morse GPU
+# kernel hasn't landed yet (gpu/SPEC §1.2). Per D-M7-16 (M7 execution pack),
+# we substitute the same Ni-Al EAM/alloy fixture used by gates (1)+(2):
+# this exercises the same Pattern 2 scheduler / comm / zoning code path
+# as Morse would, but with M6-blessed kernels and known thresholds.
+#
+# The probe injects `zoning.subdomains: [N, 1, 1]` per rank-count and
+# launches via mpirun. Efficiency anchors on the smallest rank (must be
+# 1) and grades subsequent ranks against `efficiency_floor_pct`. Each
+# probe point emits a `GpuGateResult` with provenance fields populated;
+# consumers (T6.13/T7.14 smoke harness) introspect uniformly.
 efficiency_curve:
-  status: deferred
-  deferred_to: T6.10b
-  blockers:
-    - T6.9b  # Pattern 2 GPU scheduler dispatch (M7)
-    - M9+ Morse GPU kernel (gpu/SPEC §1.2)
-  # When T6.10b reopens this, the schema below will activate. Kept here so
-  # the path is already defined — T6.10b just flips `status` and fills in
-  # the dissertation_comparison block.
-  planned_dissertation_comparison:
-    efficiency_relative: 0.10
-    absolute_performance_relative: 0.25
-  planned_ranks_to_probe: [1, 2, 4, 8]
+  status: active_eam_substitute
+  morse_fidelity_blocker: "M9+ Morse GPU kernel (gpu/SPEC §1.2); Pattern 2 dispatch landed T7.5"
+  ranks_to_probe: [1, 2]                # 864 atoms — saturate at 2-rank Pattern 2
+  efficiency_floor_pct: 80.0            # D-M7-8 single-node target; T7.11 t7_mixed_scaling parity
+  notes: "EAM substitute per D-M7-16; not literal Morse-vs-dissertation comparison"
 
 # Runtime budget — infrastructure check. Single-rank 864-atom 100-step
 # Ni-Al EAM on a dev-class GPU should complete in well under a minute;
-# anchor budget pads to 10 minutes to absorb cold-start + probe overhead.
+# anchor budget pads to 10 minutes to absorb cold-start + probe overhead
+# (gate 3 probe at N=2 doubles wall time but stays under budget).
 runtime:
   wall_clock_budget_minutes: 10

@@ -45,18 +45,13 @@ class HardwareProbeResult:
 
 @dataclasses.dataclass
 class GpuGateResult:
-    """One gate outcome in the T3-gpu two-level harness (T6.10a).
+    """One gate outcome in the T3-gpu two-level harness.
 
-    The T3-gpu anchor runs two gates per invocation:
-      * ``cpu_gpu_reference_bit_exact`` — CPU and GPU Reference thermo streams
-        must be byte-identical over the full 100-step trajectory.
-      * ``mixed_fast_vs_reference`` — delegated to the T6.8a differential
-        harness (``test_eam_mixed_fast_within_threshold``); the anchor runner
-        records the status but does not re-compute the FP diff.
-
-    Gate (3) — efficiency curve vs dissertation — is deferred to T6.10b
-    (see ``verify/benchmarks/t3_al_fcc_large_anchor_gpu/acceptance_criteria.md``
-    §"Deferred gates"). No ``GpuGateResult`` is emitted for it in T6.10a.
+    Originally T6.10a shipped two gates: ``cpu_gpu_reference_bit_exact`` and
+    ``mixed_fast_vs_reference``. T7.12 added the EAM-substitute Pattern 2
+    efficiency probe — emits one ``GpuGateResult`` per probed rank with
+    ``gate_name = f"efficiency_curve_N{n:02d}"`` and the measurement fields
+    populated. Gates 1/2 leave the measurement fields as ``None``.
     """
 
     gate_name: str  # stable identifier — matches checks.yaml key
@@ -65,6 +60,11 @@ class GpuGateResult:
     detail: str  # human-readable summary ("thermo 4210 bytes ≡ 4210 bytes")
     cpu_thermo_path: str | None = None  # optional — populated for gate 1
     gpu_thermo_path: str | None = None  # optional — populated for gate 1
+    # T7.12 — populated only for efficiency_curve_N* gates.
+    n_procs: int | None = None
+    measured_steps_per_sec: float | None = None
+    measured_efficiency_pct: float | None = None
+    floor_pct: float | None = None
 
     def to_json(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
@@ -145,7 +145,7 @@ class AnchorTestReport:
     # ("REF_DATA_STALE", "HARDWARE_NORMALIZATION_OFF", ..., "HARDWARE_MISMATCH")
     # or one of the GPU identifiers from t3_al_fcc_large_anchor_gpu
     # ("NO_CUDA_DEVICE", "CPU_GPU_REFERENCE_DIVERGE", "MIXED_FAST_OVER_BUDGET",
-    # "RUNTIME_BUDGET_BLOWOUT").
+    # "RUNTIME_BUDGET_BLOWOUT", "EFFICIENCY_BELOW_FLOOR" — added T7.12).
     failure_mode: str | None = None
     # T6.10a — populated only for the T3-gpu two-level anchor path. CPU T3
     # runs leave this as ``None``. ``backend`` records which dispatch branch
