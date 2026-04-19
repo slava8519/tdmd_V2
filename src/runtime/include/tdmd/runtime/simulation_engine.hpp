@@ -43,6 +43,9 @@
 namespace tdmd::scheduler {
 class CausalWavefrontScheduler;
 class CertificateInputSource;
+// T7.9 — Pattern 2 outer-level coordinator (master spec §12.7a). Held as a
+// borrowed-from-base unique_ptr so the concrete subclass stays in the .cpp.
+class OuterSdCoordinator;
 }  // namespace tdmd::scheduler
 
 namespace tdmd::zoning {
@@ -173,6 +176,16 @@ public:
     return td_scheduler_.get();
   }
 
+  // T7.9 test hook: exposes the Pattern 2 outer coordinator (or nullptr when
+  // `zoning.subdomains` product == 1). Used by tests/runtime/
+  // test_pattern2_engine_wire.cpp to assert (a) Pattern 1 regression default
+  // leaves it null, (b) opt-in Pattern 2 constructs a live coordinator. Not
+  // part of the stable API.
+  [[nodiscard]] const scheduler::OuterSdCoordinator* outer_sd_coordinator_for_testing()
+      const noexcept {
+    return outer_coord_.get();
+  }
+
   // Emit a LAMMPS-ish header row (`# step temp pe ke etotal press`) to `out`.
   // Idempotent / free function — also used by tests that reconstruct a row
   // stream without invoking the engine.
@@ -272,6 +285,15 @@ private:
   std::unique_ptr<zoning::ZoningPlan> td_plan_;
   std::unique_ptr<scheduler::CausalWavefrontScheduler> td_scheduler_;
   std::unique_ptr<scheduler::CertificateInputSource> td_cert_source_;
+
+  // T7.9 — Pattern 2 outer coordinator (master spec §12.8). nullptr whenever
+  // `zoning.subdomains` product == 1 (Pattern 1 / 3 default); a live
+  // ConcreteOuterSdCoordinator otherwise. Declared after td_scheduler_ so the
+  // implicit reverse-order destruction tears the coord down before the
+  // scheduler — the scheduler dtor is defaulted and does not dereference its
+  // borrowed coord pointer, so either order would be safe, but this matches
+  // runtime/SPEC §2.2 declaration order.
+  std::unique_ptr<scheduler::OuterSdCoordinator> outer_coord_;
 
   // Internal helpers.
   void zero_forces();

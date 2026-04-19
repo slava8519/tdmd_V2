@@ -33,6 +33,7 @@
 
 #include "tdmd/state/lj_reference.hpp"
 
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <stdexcept>
@@ -151,6 +152,8 @@ struct SchedulerBlock {
 enum class CommBackendKind : std::uint8_t {
   MpiHostStaging,  // default — mesh topology, ANY_SOURCE receives (T5.4)
   Ring,            // ring topology (T5.5), rank r → (r+1) % P
+  Hybrid,          // T7.9 — HybridBackend (comm/SPEC §6.4); Pattern 2 only.
+                   // Inner/outer transport probing + fallback lands in T7.14.
 };
 
 enum class CommTopologyKind : std::uint8_t {
@@ -178,6 +181,14 @@ enum class ZoningSchemeKind : std::uint8_t {
 
 struct ZoningBlock {
   ZoningSchemeKind scheme = ZoningSchemeKind::Auto;
+
+  // T7.9 — Pattern 2 opt-in. `[1, 1, 1]` (default) keeps Pattern 1 byte-exact:
+  // SimulationEngine skips the OuterSdCoordinator branch and existing M1..M6
+  // gates pass unchanged. Any axis > 1 ⇒ product ≥ 2 ⇒ Pattern 2 (runtime/SPEC
+  // §7.1), which constructs a ConcreteOuterSdCoordinator and attaches it to
+  // the inner scheduler. Preflight rejects zeros and requires
+  // `comm.backend=hybrid` consistency (warning when Pattern 2 runs without it).
+  std::array<std::uint32_t, 3> subdomains{1U, 1U, 1U};
 };
 
 // SPEC: docs/specs/runtime/SPEC.md §2.3 (GPU backend wiring), docs/specs/gpu/

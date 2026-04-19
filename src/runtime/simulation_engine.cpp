@@ -13,7 +13,9 @@
 #include "tdmd/runtime/unit_converter.hpp"
 #include "tdmd/scheduler/causal_wavefront_scheduler.hpp"
 #include "tdmd/scheduler/certificate_input_source.hpp"
+#include "tdmd/scheduler/concrete_outer_sd_coordinator.hpp"
 #include "tdmd/scheduler/policy.hpp"
+#include "tdmd/scheduler/subdomain_grid.hpp"
 #include "tdmd/state/lj_reference.hpp"
 #include "tdmd/telemetry/telemetry.hpp"
 #include "tdmd/zoning/default_planner.hpp"
@@ -100,6 +102,41 @@ void convert_state_lj_to_metal(AtomSoA& atoms,
     (void) rebuilt.register_species(info);
   }
   species = std::move(rebuilt);
+}
+
+// T7.9 — Tile the whole simulation box into `n_sub[0]*n_sub[1]*n_sub[2]`
+// equal orthogonal sub-boxes, lexicographic id layout
+// `id = ix + nx*(iy + ny*iz)`. Used only by the Pattern 2 wire; equal-stride
+// tiling is deliberate (no load-balancing heuristic yet — fuzzer-aware grids
+// land in T7.14 / T7.11). `rank_of_subdomain` is set to the subdomain id
+// (D-M7-2 single-process pinning — real multi-rank binding is T7.14).
+scheduler::SubdomainGrid make_equal_tile_subdomain_grid(const Box& box,
+                                                        const std::array<std::uint32_t, 3>& n_sub) {
+  scheduler::SubdomainGrid g{};
+  g.n_subdomains = n_sub;
+  const double dx = (box.xhi - box.xlo) / static_cast<double>(n_sub[0]);
+  const double dy = (box.yhi - box.ylo) / static_cast<double>(n_sub[1]);
+  const double dz = (box.zhi - box.zlo) / static_cast<double>(n_sub[2]);
+  const std::uint32_t total = n_sub[0] * n_sub[1] * n_sub[2];
+  g.subdomain_boxes.reserve(total);
+  g.rank_of_subdomain.reserve(total);
+  for (std::uint32_t iz = 0; iz < n_sub[2]; ++iz) {
+    for (std::uint32_t iy = 0; iy < n_sub[1]; ++iy) {
+      for (std::uint32_t ix = 0; ix < n_sub[0]; ++ix) {
+        Box sb{};
+        sb.xlo = box.xlo + static_cast<double>(ix) * dx;
+        sb.xhi = box.xlo + static_cast<double>(ix + 1U) * dx;
+        sb.ylo = box.ylo + static_cast<double>(iy) * dy;
+        sb.yhi = box.ylo + static_cast<double>(iy + 1U) * dy;
+        sb.zlo = box.zlo + static_cast<double>(iz) * dz;
+        sb.zhi = box.zlo + static_cast<double>(iz + 1U) * dz;
+        g.subdomain_boxes.push_back(sb);
+        const std::uint32_t sd_id = ix + n_sub[0] * (iy + n_sub[1] * iz);
+        g.rank_of_subdomain.push_back(static_cast<int>(sd_id));
+      }
+    }
+  }
+  return g;
 }
 
 // T4.9 — CertificateInputSource stub for K=1 single-rank TD mode.
@@ -255,6 +292,32 @@ void SimulationEngine::init(const io::YamlConfig& config, const std::string& con
   }
   if (td_mode_) {
     td_initialize_scheduler();
+  }
+
+  // T7.9 — Pattern 2 wire. Opt-in via `zoning.subdomains` (product ≥ 2).
+  // Preflight has already rejected any axis == 0; `[1,1,1]` (default)
+  // skips this branch so Pattern 1 byte-exact regression is preserved.
+  //
+  // The coordinator is always constructed (regardless of td_mode_) so
+  // tests can assert engine ownership independent of the TD path; it
+  // only attaches to the inner scheduler when td_mode_ actually produced
+  // one, keeping the legacy-loop path undisturbed.
+  //
+  // CLI-level HybridBackend construction + CUDA-aware-MPI / NCCL probe +
+  // MpiHostStaging fallback chain lives in T7.14 (M7 integration smoke).
+  {
+    const auto& sd = config.zoning.subdomains;
+    const std::uint32_t sd_total = sd[0] * sd[1] * sd[2];
+    if (sd_total >= 2U) {
+      auto grid = make_equal_tile_subdomain_grid(box_, sd);
+      auto coord = std::make_unique<scheduler::ConcreteOuterSdCoordinator>(
+          scheduler::ConcreteOuterSdCoordinator::Mode::kReference);
+      coord->initialize(grid, td_pipeline_depth_cap_);
+      outer_coord_ = std::move(coord);
+      if (td_scheduler_ != nullptr) {
+        td_scheduler_->attach_outer_coordinator(outer_coord_.get());
+      }
+    }
   }
 
   state_ = State::Initialised;

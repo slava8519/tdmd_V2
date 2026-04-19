@@ -3,7 +3,7 @@
 **Module:** `runtime/`
 **Status:** master module spec
 **Parent:** `TDMD Engineering Spec v2.1` §6.6, §7, §8.1, §12.8
-**Last updated:** 2026-04-19 (T6.7 §2.3 GPU backend wiring)
+**Last updated:** 2026-04-19 (T7.9 §2.4 Pattern 2 engine wiring)
 
 ---
 
@@ -165,6 +165,44 @@ Scope для v1.0 (M6):
 - Single compute stream (D-M6-13 двух-stream overlap — T6.9);
 - Pattern 1/3 только (Pattern 2 GPU planning — M7);
 - `BuildFlavor = Fp64ReferenceBuild` гарантирует byte-exact gate; `MixedFast*` flavors активируются в T6.8 с differential поверх того же harness.
+
+---
+
+### 2.4. Pattern 2 engine wiring (M7, T7.9)
+
+`zoning.subdomains` + `comm.backend` — единственные YAML knobs, переключающие engine между Pattern 1 (legacy single-subdomain) и Pattern 2 (TD внутри subdomain × SD между subdomain'ами):
+
+```yaml
+zoning:
+  subdomains: [Nx, Ny, Nz]    # default [1, 1, 1] — Pattern 1, byte-exact M1..M6 path
+comm:
+  backend: mpi_host_staging | hybrid    # hybrid требует Pattern 2 (product >= 2)
+```
+
+Контракт (D-M7-2):
+
+- **`subdomains: [1, 1, 1]`** (default): `outer_coord_ == nullptr`, scheduler работает в legacy single-subdomain режиме. M1..M6 thermo stream остаётся **byte-for-byte identical** — это Pattern 1 регрессионный инвариант, охраняемый T7.9 wire smoke + всеми M5/M6 2-rank goldens.
+- **`subdomains` product ≥ 2**: `SimulationEngine::init()` строит `SubdomainGrid` через равно-тайловую orthogonal-brick декомпозицию (lex id = `ix + Nx*(iy + Ny*iz)`, `rank_of_subdomain[i] = i` — 1:1 биндинг per D-M7-2), создаёт `ConcreteOuterSdCoordinator` (Mode::kReference, std::map for determinism per OC-2) и инициализирует его с `k_max = scheduler.pipeline_depth_cap`. Если `td_mode: true`, coord приклеивается к inner scheduler через `attach_outer_coordinator(coord.get())` (borrowed pointer per master §8.2 — engine остаётся unique owner).
+
+**Always-construct policy:** coord строится при product ≥ 2 независимо от `td_mode`. Это позволяет тестам и introspection-инструментам ассертить ownership и стартовое состояние frontier ([OC-5 ground state: `global_frontier_min == global_frontier_max == 0`](../scheduler/SPEC.md#23-outer-sd-coordinator)) без активации TD pipeline. При `td_mode=false` coord просто не приклеен к scheduler.
+
+**Destruction order:** `outer_coord_` объявлен **после** `td_scheduler_` в class layout — реверсное уничтожение даёт coord first, scheduler second; safe потому что `CausalWavefrontScheduler` dtor defaulted и не разыменовывает borrowed coord pointer.
+
+**Guards (preflight, T7.9):** schema-level Pattern 2 consistency:
+- любая `subdomains[i] == 0` → `Error` с key path `zoning.subdomains` ("axis must be >= 1");
+- `comm.backend=hybrid` + Pattern 1 (product == 1) → `Error` с key path `comm.backend` ("hybrid requires zoning.subdomains product >= 2");
+- Pattern 2 + non-hybrid backend → `Warning` ("consider comm.backend='hybrid' for multi-node — current setting retains inner-only transport"). Сценарист может намеренно зафиксировать `mpi_host_staging` для отладки.
+
+**Out of T7.9 scope** (отложено на T7.14 — full M7 integration smoke):
+- runtime CUDA-aware-MPI probe + NCCL probe + transparent fallback chain;
+- CLI-level `HybridBackend` construction (T7.5 артефакт уже в `comm/`, but engine-side wiring живёт с full 2-rank smoke);
+- cross-subdomain halo traffic verification (текущий wire test упражняет coord construction + attach + 2-step run, но все zone'ы внутренние w.r.t. equal-tile geometry).
+
+Scope для T7.9:
+- YAML schema extension (`zoning.subdomains`, `comm.backend: hybrid`);
+- preflight Pattern 2 consistency checks;
+- engine-internal Pattern 2 wire (coord construct + attach);
+- 1-process unit smoke (`tests/runtime/test_pattern2_engine_wire.cpp`) — Pattern 1 регрессия + Pattern 2 opt-in (td_mode=false / true) + 2 preflight rejection cases.
 
 ---
 
@@ -724,7 +762,7 @@ NVTX ranges:
 | M4 | TD scheduler integration; full iteration function |
 | M5 | Restart/resume tests passing |
 | M6 | GPU initialization path — `runtime.backend: gpu` wires `GpuContext` + `EamAlloyGpuAdapter` + `GpuVelocityVerletIntegrator`; T6.7 1-rank + 2-rank byte-exact gates |
-| **M7** | **Pattern 2 detection + outer coordinator wiring** |
+| **M7** | **Pattern 2 detection + outer coordinator wiring (T7.9 schema + engine wire + preflight; T7.14 transport probe + full 2-rank smoke)** |
 | M8 | Auto-tune policies from perfmodel |
 | v2+ | Dynamic pattern switching (pause → reconfigure → resume) |
 
@@ -740,4 +778,12 @@ NVTX ranges:
 
 ---
 
-*Конец runtime/SPEC.md v1.0.1, дата: 2026-04-19 (T6.7 §2.3 GPU backend wiring).*
+*Конец runtime/SPEC.md v1.0.2, дата: 2026-04-19 (T7.9 §2.4 Pattern 2 engine wiring).*
+
+---
+
+## Change log
+
+- **v1.0.2 — 2026-04-19 (T7.9):** added §2.4 Pattern 2 engine wiring — `zoning.subdomains` + `comm.backend: hybrid` YAML knobs, equal-tile orthogonal-brick decomposition with lex id + 1:1 rank binding (D-M7-2), `outer_coord_` ownership + attach contract, preflight Pattern 2 consistency, Pattern 1 byte-exact regression invariant. Transport probe + full 2-rank smoke deferred to T7.14.
+- **v1.0.1 — 2026-04-19 (T6.7):** added §2.3 GPU backend wiring — `runtime.backend` knob, `GpuContext` RAII ownership, EAM/alloy + VV GPU path, M6 byte-exact gates.
+- **v1.0.0 — initial:** baseline runtime/SPEC.

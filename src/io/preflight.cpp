@@ -206,6 +206,45 @@ void check_runtime(const RuntimeBlock& rt,
   }
 }
 
+// T7.9 — Pattern 2 schema consistency. Purely YAML-level:
+//   - each `zoning.subdomains` axis must be ≥ 1 (zero is meaningless);
+//   - `comm.backend=hybrid` requires Pattern 2 (product ≥ 2) — it's the
+//     wrong transport for single-subdomain runs;
+//   - Pattern 2 without `comm.backend=hybrid` emits a warning — a scientist
+//     may intentionally pin `mpi_host_staging` for debugging, but it's
+//     suboptimal for multi-node halo traffic.
+// The runtime-level CUDA-aware-MPI / NCCL probe + fallback chain lives in
+// T7.14 (M7 integration smoke) where the actual transport is constructed.
+void check_zoning_pattern2(const ZoningBlock& z,
+                           const CommBlock& c,
+                           std::vector<PreflightError>& out) {
+  for (std::size_t i = 0; i < 3; ++i) {
+    if (z.subdomains[i] == 0U) {
+      const char* axis = (i == 0 ? "Nx" : (i == 1 ? "Ny" : "Nz"));
+      push(out,
+           PreflightSeverity::Error,
+           "zoning.subdomains",
+           std::string("zoning.subdomains ") + axis + " must be >= 1 (got 0)");
+    }
+  }
+  const std::uint32_t total = z.subdomains[0] * z.subdomains[1] * z.subdomains[2];
+  const bool pattern2 = total >= 2U;
+  const bool hybrid_requested = (c.backend == CommBackendKind::Hybrid);
+  if (hybrid_requested && !pattern2) {
+    push(out,
+         PreflightSeverity::Error,
+         "comm.backend",
+         "comm.backend='hybrid' requires zoning.subdomains product >= 2 (Pattern 2)");
+  }
+  if (pattern2 && !hybrid_requested) {
+    push(out,
+         PreflightSeverity::Warning,
+         "comm.backend",
+         "zoning.subdomains product >= 2 implies Pattern 2; consider "
+         "comm.backend='hybrid' for multi-node (current setting retains inner-only transport)");
+  }
+}
+
 }  // namespace
 
 std::vector<PreflightError> preflight(const YamlConfig& config) {
@@ -221,6 +260,7 @@ std::vector<PreflightError> preflight(const YamlConfig& config) {
   check_neighbor(config.neighbor, out);
   check_run(config.run, out);
   check_runtime(config.runtime, config.potential, out);
+  check_zoning_pattern2(config.zoning, config.comm, out);
   return out;
 }
 

@@ -355,11 +355,16 @@ CommBlock parse_comm_block(const YAML::Node& node) {
       out.backend = CommBackendKind::MpiHostStaging;
     } else if (value == "ring") {
       out.backend = CommBackendKind::Ring;
+    } else if (value == "hybrid") {
+      // T7.9 — parse-only. The engine-internal Pattern 2 wire lands in T7.9;
+      // the CLI-level HybridBackend construction + CUDA-aware-MPI / NCCL
+      // probe chain + MpiHostStaging fallback is T7.14 (M7 integration smoke).
+      out.backend = CommBackendKind::Hybrid;
     } else {
       throw YamlParseError(
           line_of(b),
           "comm.backend",
-          "comm.backend must be one of {mpi_host_staging, ring}; got '" + value + "'");
+          "comm.backend must be one of {mpi_host_staging, ring, hybrid}; got '" + value + "'");
     }
   }
   if (const auto t = node["topology"]; t) {
@@ -406,7 +411,7 @@ RuntimeBlock parse_runtime_block(const YAML::Node& node) {
 // sets to reproduce Andreev §2.2.
 ZoningBlock parse_zoning_block(const YAML::Node& node) {
   constexpr std::string_view path = "zoning";
-  reject_unknown_keys(node, path, {"scheme"});
+  reject_unknown_keys(node, path, {"scheme", "subdomains"});
   ZoningBlock out{};
   if (const auto s = node["scheme"]; s) {
     const auto value = as_scalar<std::string>(s, "zoning.scheme");
@@ -421,6 +426,20 @@ ZoningBlock parse_zoning_block(const YAML::Node& node) {
           line_of(s),
           "zoning.scheme",
           "zoning.scheme must be one of {auto, hilbert, linear_1d}; got '" + value + "'");
+    }
+  }
+  // T7.9 — Pattern 2 opt-in. Accept either a 3-element YAML sequence
+  // `[Nx, Ny, Nz]` or omission (default [1,1,1] = Pattern 1). Value-range
+  // validation (each axis ≥ 1) lives in preflight so the schema layer stays
+  // pure-format; parse just coerces the scalars.
+  if (const auto sd = node["subdomains"]; sd) {
+    if (!sd.IsSequence() || sd.size() != 3) {
+      throw_parse_error(sd,
+                        "zoning.subdomains",
+                        "zoning.subdomains must be a 3-element sequence [Nx, Ny, Nz]");
+    }
+    for (std::size_t i = 0; i < 3; ++i) {
+      out.subdomains[i] = as_scalar<std::uint32_t>(sd[i], "zoning.subdomains");
     }
   }
   return out;

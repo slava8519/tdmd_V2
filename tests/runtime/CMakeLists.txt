@@ -6,9 +6,12 @@ add_executable(
   test_td_mode_smoke.cpp
   test_k1_regression_smoke.cpp
   test_gpu_context.cpp
-  test_gpu_backend_smoke.cpp)
+  test_gpu_backend_smoke.cpp
+  # T7.9: Pattern 2 engine wire smoke + preflight rejection paths.
+  test_pattern2_engine_wire.cpp)
 
-target_link_libraries(test_runtime PRIVATE tdmd::runtime tdmd::io tdmd::gpu Catch2::Catch2WithMain)
+target_link_libraries(test_runtime PRIVATE tdmd::runtime tdmd::io tdmd::gpu tdmd::scheduler
+                                           Catch2::Catch2WithMain)
 
 # test_simulation_engine.cpp reuses the T1.3/T1.4 io fixtures (32-atom Al FCC .data + valid
 # tdmd.yaml) instead of shipping a runtime-specific copy. T6.7 smokes reach into
