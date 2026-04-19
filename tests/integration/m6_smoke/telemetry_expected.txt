@@ -1,0 +1,22 @@
+# Expected telemetry counters for the M6 2-rank GPU smoke (10 steps, K=1, TD).
+#
+# Same philosophy as M5's: these are invariants, not point values. The
+# smoke harness extracts the named JSON fields from `--telemetry-jsonl`
+# and checks each against its expected property.
+#
+# Format: <dotted_key>  <op>  <value>
+#   op ∈ { == , >= , <= , > , < }
+#
+# Reference: m6_execution_pack.md §T6.13 "Mandatory invariants".
+
+# Every run must finish its end-of-run JSONL emit (run_end event).
+event                        ==  run_end
+
+# Wall-time sanity — the 2-rank 10-step GPU run should finish under
+# 60s (M6 local gate, §T6.13). Reference builds pay a small FP64
+# premium vs CPU; MixedFast variant is faster but uses the same budget.
+total_wall_sec               <=  60.0
+
+# CommBackend / Telemetry lifecycle must be clean — any mismatched
+# ScopedSection scope indicates a RAII bug or exception escape.
+ignored_end_calls            ==  0

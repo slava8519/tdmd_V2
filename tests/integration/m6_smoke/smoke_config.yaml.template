@@ -1,0 +1,61 @@
+# M6 integration-smoke TDMD config — Ni-Al EAM/alloy NVE, 10 steps, TD mode,
+# 2-rank MPI with MpiHostStaging backend, GPU runtime.
+#
+# Exec pack: docs/development/m6_execution_pack.md §T6.13.
+# SPEC: docs/specs/runtime/SPEC.md §2.3 (GPU backend wiring); docs/specs/gpu/
+#       SPEC.md (whole module); docs/specs/comm/SPEC.md §3 (MpiHostStaging);
+#       master spec §14 M6 (acceptance gate).
+#
+# This config is byte-for-byte the M5 smoke config with a single addition:
+# `runtime.backend: gpu`. The D-M6-7 chain extends D-M5-12: GPU K=1 P=2
+# Reference thermo MUST equal GPU K=1 P=1 Reference (engine-level gate),
+# which MUST equal CPU K=1 P=2 Reference = M5 golden = M4 golden = M3 golden.
+# Proof obligation is a reduction-order invariant (D-M5-9 Kahan-ring + D-M6-7
+# reduction-order canonicalisation), not a tolerance window.
+#
+# The harness substitutes {{ATOMS_PATH}} and {{EAM_PATH}} at smoke-run time.
+
+simulation:
+  units: metal
+  seed: 12345
+
+atoms:
+  source: lammps_data
+  path: "{{ATOMS_PATH}}"   # verify/benchmarks/t4_nial_alloy/setup.data (LFS)
+
+potential:
+  style: eam/alloy
+  params:
+    file: "{{EAM_PATH}}"   # verify/third_party/potentials/NiAl_Mishin_2004.eam.alloy
+
+integrator:
+  style: velocity_verlet
+  dt: 0.001                # ps — identical to M2 / M3 / M4 / M5 smokes
+
+neighbor:
+  skin: 0.05               # Å — forces mid-run rebuild, same as M3 / M4 / M5
+
+thermo:
+  every: 1                 # full-trace thermo for golden match
+
+run:
+  n_steps: 10
+
+# M4 layer: opt-in deterministic TD scheduler (D-M4-11). K=1 ⇒ scheduler
+# observes legacy physics sequence.
+scheduler:
+  td_mode: true
+  pipeline_depth_cap: 1
+
+# M5 layer: MPI host-staging comm backend (D-M5-9 Kahan-ring guarantees
+# reduction-order determinism).
+comm:
+  backend: mpi_host_staging
+  topology: mesh
+
+# M6 layer: GPU force path + GPU integrator via runtime::GpuContext. On
+# Fp64ReferenceBuild this path MUST reproduce the CPU Reference thermo
+# stream bit-for-bit (D-M6-7). On MixedFastBuild it falls inside
+# D-M6-8 thresholds (covered by a separate smoke invocation).
+runtime:
+  backend: gpu

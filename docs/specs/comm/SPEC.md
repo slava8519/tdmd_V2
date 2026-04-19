@@ -683,6 +683,21 @@ Comm backend diagnostics:
   - GPU-aware MPI backend deferred to M6; Pattern 2 / `HybridBackend`
     deferred to M7.
 
+- **2026-04-19** — **M6 closure (T6.13) — no SPEC-surface changes;
+  `MpiHostStagingBackend` confirmed as the M6 transport.** Per D-M6-3
+  the GPU path stages force-pair halos through pinned host buffers from
+  `DevicePool` and reuses the existing M5 backend unchanged (no
+  CUDA-aware `MPI_Send(devptr,…)` in v1). The M6 integration smoke
+  (`tests/integration/m6_smoke/`, 2-rank K=1 `runtime.backend: gpu`)
+  validates end-to-end: GPU forces → D2H into pinned → `MpiHostStaging`
+  Kahan-ring reduction → deterministic thermo = M5 golden byte-for-byte.
+  This closes D-M5-12 through the GPU era and confirms §3 (interface),
+  §5.1 (TemporalPacket), §5.2 (MpiHostStaging state machine), and the
+  `deterministic_sum_double` contract hold identical on GPU-era traffic
+  patterns. Pattern 2 / `HybridBackend` / GPU-aware MPI (`cudaMemcpy`
+  elision via `MPI_Send` on a device pointer) remain deferred to M7+ per
+  master spec §14.
+
 ---
 
 *Конец comm/SPEC.md v1.0, дата: 2026-04-16.*

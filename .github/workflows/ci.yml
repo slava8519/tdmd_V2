@@ -136,6 +136,16 @@ jobs:
         # thermo golden.
         run: tests/integration/m5_smoke/run_m5_smoke.sh --tdmd build_cpu/src/cli/tdmd
 
+      - name: M6 smoke (GPU 2-rank, byte-exact to M5 — SKIP on public CI)
+        # D-M6-6 policy: no self-hosted GPU runner on this public repo. The
+        # harness self-skips (exit 0) when `nvidia-smi` reports no CUDA
+        # device, which is always the case on `ubuntu-latest`. The step is
+        # still wired end-to-end so infrastructure rot (template typo, LFS
+        # asset drift, golden-file divergence from M5) fails loudly in CI.
+        # D-M6-7 regression chain: M3 ≡ M4 ≡ M5 ≡ M6 thermo golden, enforced
+        # in step 1/6 of the harness before it needs a GPU at all.
+        run: tests/integration/m6_smoke/run_m6_smoke.sh --tdmd build_cpu/src/cli/tdmd
+
       - name: Upload compile_commands.json
         if: matrix.compiler == 'clang-17'
         uses: actions/upload-artifact@v4
