@@ -62,6 +62,15 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         help="LAMMPS binary for setup.data regen (if missing)",
     )
     parser.add_argument("--per-run-timeout-seconds", type=float, default=1800.0)
+    parser.add_argument(
+        "--backend",
+        choices=["cpu", "gpu"],
+        default=None,
+        help=(
+            "override checks.yaml::backend. Without this flag the runner "
+            "reads the fixture's declared backend (CPU T3 → cpu, T3-gpu → gpu)."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -88,6 +97,7 @@ def main(argv: list[str] | None = None) -> int:
             force_probe=args.force_probe,
             per_run_timeout_seconds=args.per_run_timeout_seconds,
             lammps_bin=args.lammps_bin.resolve() if args.lammps_bin else None,
+            backend_override=args.backend,
         )
         runner = AnchorTestRunner(config)
         report = runner.run()

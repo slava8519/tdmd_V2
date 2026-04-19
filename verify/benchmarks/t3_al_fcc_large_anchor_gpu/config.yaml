@@ -1,0 +1,48 @@
+# T3-gpu anchor-test — TDMD config (M6 GPU path on Ni-Al EAM/alloy 864 atoms).
+#
+# T6.10a scope: single-rank GPU execution of the M6-landed {NL, EAM, VV} stack.
+# The fixture is a direct borrow of T4 (Ni-Al B2 864 atoms, Mishin 2004 EAM) so
+# the anchor harness reuses existing committed setup.data and potential files
+# without its own regeneration script.
+#
+# See ./README.md §"Scope realism" for why this is not a 10⁶ Morse fixture.
+#
+# `runtime.backend` is intentionally NOT set here — the harness injects it
+# before launch per checks.yaml::backend. This keeps the fixture config
+# backend-agnostic; the harness controls dispatch.
+
+simulation:
+  units: metal
+  seed: 12345
+
+atoms:
+  source: lammps_data
+  path: ../t4_nial_alloy/setup.data
+
+potential:
+  style: eam/alloy
+  params:
+    file: ../../third_party/potentials/NiAl_Mishin_2004.eam.alloy
+
+integrator:
+  style: velocity_verlet
+  dt: 0.001                # ps (1 fs) — matches T4 + T6.7 golden
+
+neighbor:
+  skin: 0.3                # Å — matches T6.7 `test_gpu_backend_smoke.cpp`
+
+thermo:
+  every: 1                 # full trace for byte-compare (mirrors T6.7 gate)
+
+run:
+  n_steps: 100             # same as T6.7 — amortises JIT + warm-up
+
+# Single-rank only in T6.10a. Multi-rank GPU efficiency gate waits on
+# T6.9b (Pattern 2 GPU dispatch) + Morse GPU kernel (M9+).
+comm:
+  backend: mpi_host_staging
+  topology: mesh
+
+scheduler:
+  td_mode: true
+  pipeline_depth_cap: 1

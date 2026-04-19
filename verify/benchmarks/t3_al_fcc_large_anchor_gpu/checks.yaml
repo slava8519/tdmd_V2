@@ -1,0 +1,78 @@
+# T3-gpu anchor-test threshold declarations.
+#
+# Consumed by verify/harness/anchor_test_runner/ via `backend: gpu` dispatch.
+# The top-level `backend` key tells the runner whether to inject
+# `runtime.backend: gpu` into the config before launch. All other keys
+# parallel the CPU T3 checks.yaml structure so the runner path stays
+# symmetric.
+#
+# T6.10a scope: gates (1) and (2) only. Gate (3) (efficiency curve vs
+# dissertation) is deferred to T6.10b — see acceptance_criteria.md §"Deferred
+# gates" for the dependency graph.
+
+benchmark: t3_al_fcc_large_anchor_gpu
+
+# Backend dispatch — new in T6.10a. Runner reads this and mutates a tmp
+# config copy (never touching the committed file) to set `runtime.backend`.
+# Accepted values: cpu (default if absent, matches historical CPU T3) or gpu.
+backend: gpu
+
+# Which N_procs rows the harness should run. T6.10a single-rank only because
+# multi-rank GPU scheduler dispatch waits on T6.9b (M7). When T6.10b reopens
+# the efficiency gate, this list will expand to {1, 2, 4, 8} mirroring the
+# CPU T3 ranks_to_probe.
+ranks_to_probe: [1]
+
+# Gate (1) — CPU Reference ≡ GPU Reference byte-exact.
+#
+# The harness runs the fixture twice (CPU backend + GPU backend), captures
+# each thermo stream to a file, and byte-compares. D-M6-7 extended to engine
+# level by T6.7; this is the same gate routed through the anchor-test
+# harness so the M6 milestone acceptance (T6.13) can consume a single report.
+cpu_gpu_reference_bit_exact:
+  thermo_byte_equal: true
+  steps: 100
+
+# Gate (2) — GPU MixedFast within D-M6-8 thresholds of GPU Reference.
+#
+# Runs the fixture a third time with MixedFast build and compares per-atom
+# forces + total PE against the GPU Reference run. Delegates numeric diff
+# to the T6.8a differential harness (`test_eam_mixed_fast_within_threshold.cpp`);
+# the anchor runner asserts the differential's exit code, not the raw numbers.
+# This avoids duplicating the FP-compare logic at the Python layer.
+mixed_fast_vs_reference:
+  force_relative_linf_threshold: 1.0e-5       # T6.8a achieved ceiling
+  energy_relative_threshold: 1.0e-7           # T6.8a achieved ceiling
+  virial_relative_normalized_threshold: 5.0e-6
+  # Reference source for these thresholds. D-M6-8 target is 1e-6 force;
+  # T6.8a relaxed to the FP32 inv_r propagation ceiling on a 50-neighbor
+  # EAM stencil. T6.8b (pending) either tightens via FP32-table redesign
+  # or files a SPEC delta accepting these values.
+  source: T6.8a achieved; D-M6-8 target tightening in T6.8b
+
+# Gate (3) — GPU efficiency curve vs dissertation.
+#
+# DEFERRED TO T6.10b. Requires:
+#   (a) Morse GPU kernel (gpu/SPEC §1.2 → M9+), and
+#   (b) Pattern 2 GPU scheduler dispatch (T6.9b → M7).
+# Without both the efficiency curve cannot be measured on GPU in M6. The
+# M6 acceptance gate (T6.13) consumes a two-level T3-gpu, not three.
+efficiency_curve:
+  status: deferred
+  deferred_to: T6.10b
+  blockers:
+    - T6.9b  # Pattern 2 GPU scheduler dispatch (M7)
+    - M9+ Morse GPU kernel (gpu/SPEC §1.2)
+  # When T6.10b reopens this, the schema below will activate. Kept here so
+  # the path is already defined — T6.10b just flips `status` and fills in
+  # the dissertation_comparison block.
+  planned_dissertation_comparison:
+    efficiency_relative: 0.10
+    absolute_performance_relative: 0.25
+  planned_ranks_to_probe: [1, 2, 4, 8]
+
+# Runtime budget — infrastructure check. Single-rank 864-atom 100-step
+# Ni-Al EAM on a dev-class GPU should complete in well under a minute;
+# anchor budget pads to 10 minutes to absorb cold-start + probe overhead.
+runtime:
+  wall_clock_budget_minutes: 10

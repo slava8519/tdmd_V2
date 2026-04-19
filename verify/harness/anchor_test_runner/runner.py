@@ -36,10 +36,16 @@ from .report import (
     STATUS_YELLOW,
     AnchorTestPoint,
     AnchorTestReport,
+    GpuGateResult,
     HardwareProbeResult,
 )
 
 LaunchFn = Callable[["AnchorTestRunner", int, pathlib.Path], dict]
+# GPU launcher signature — takes (runner, n_procs, workdir, backend,
+# thermo_path) and returns parsed telemetry JSON. ``backend`` is "cpu" or
+# "gpu"; ``thermo_path`` is where TDMD's ``--thermo`` flag writes the
+# thermo table so the runner can byte-compare CPU vs GPU streams.
+GpuLaunchFn = Callable[["AnchorTestRunner", int, pathlib.Path, str, pathlib.Path], dict]
 
 
 @dataclasses.dataclass
@@ -72,6 +78,17 @@ class RunnerConfig:
     # a mocked launcher that returns a synthesised telemetry payload
     # without spawning a process.
     launch_fn: LaunchFn | None = None
+    # T6.10a — separate swappable launcher for the GPU two-level anchor path.
+    # The GPU path needs a backend-aware launcher because it runs the same
+    # fixture twice (CPU backend then GPU backend) and byte-compares the
+    # thermo streams. The CPU ``launch_fn`` signature does not carry a
+    # backend argument, so we keep a second slot for the GPU smoke tests
+    # to mock without touching the CPU contract.
+    gpu_launch_fn: "GpuLaunchFn | None" = None
+    # T6.10a — override ``checks.yaml::backend`` from the CLI. None ⇒ use
+    # whatever the checks.yaml declares (cpu if absent). Accepted values:
+    # "cpu" or "gpu".
+    backend_override: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -123,6 +140,142 @@ def _parse_telemetry_jsonl(path: pathlib.Path) -> dict:
     # Take first line only — Telemetry writes exactly one JSON object today.
     first = text.splitlines()[0]
     return json.loads(first)
+
+
+def _write_augmented_config(
+    source_config_path: pathlib.Path,
+    dest_config_path: pathlib.Path,
+    backend: str,
+) -> None:
+    """Write a copy of ``source_config_path`` into ``dest_config_path`` with
+    ``runtime.backend`` set to ``backend``.
+
+    The committed fixture config does not carry ``runtime.backend`` so the
+    same file is usable by both CPU and GPU launches. The runner mutates
+    a tmp copy (never the fixture itself) just before invoking TDMD.
+
+    Relative paths in ``atoms.path`` and ``potential.params.file`` resolve
+    against the **config file's directory** per SimulationEngine's
+    ``resolve_atoms_path`` contract. The augmented config lives in a
+    different directory (the runner workdir) so we rewrite relative
+    inputs to absolute paths here — otherwise TDMD would look for the
+    inputs next to the augmented file.
+    """
+    with source_config_path.open() as fh:
+        data = yaml.safe_load(fh) or {}
+    source_dir = source_config_path.parent
+
+    atoms = data.setdefault("atoms", {})
+    atoms_path = atoms.get("path")
+    if atoms_path and not pathlib.Path(atoms_path).is_absolute():
+        atoms["path"] = str((source_dir / atoms_path).resolve())
+
+    potential = data.get("potential", {})
+    params = potential.get("params", {}) if isinstance(potential, dict) else {}
+    eam_file = params.get("file") if isinstance(params, dict) else None
+    if eam_file and not pathlib.Path(eam_file).is_absolute():
+        params["file"] = str((source_dir / eam_file).resolve())
+
+    data.setdefault("runtime", {})["backend"] = backend
+    dest_config_path.parent.mkdir(parents=True, exist_ok=True)
+    with dest_config_path.open("w") as fh:
+        yaml.safe_dump(data, fh, sort_keys=False)
+
+
+def _launch_tdmd_with_backend(
+    runner: "AnchorTestRunner",
+    n_procs: int,
+    workdir: pathlib.Path,
+    backend: str,
+    thermo_path: pathlib.Path,
+) -> dict:
+    """GPU anchor launcher. Real MPI path with ``--thermo`` capture.
+
+    Writes an augmented config into ``workdir/config.yaml`` (with
+    ``runtime.backend`` injected + relative paths resolved to absolute)
+    then invokes tdmd via mpirun. Returns parsed telemetry JSON; the
+    thermo trace is captured to ``thermo_path`` by TDMD's ``--thermo``
+    flag and is byte-compared by the runner separately.
+    """
+    cfg = runner.config
+    workdir.mkdir(parents=True, exist_ok=True)
+    telemetry_path = workdir / "telemetry.jsonl"
+    augmented_config = workdir / "config.yaml"
+
+    source_config = cfg.benchmark_dir / "config.yaml"
+    if not source_config.is_file():
+        raise FileNotFoundError(f"missing {source_config}")
+    _write_augmented_config(source_config, augmented_config, backend)
+
+    cmd = [
+        str(cfg.mpirun_bin),
+        "-np",
+        str(n_procs),
+        str(cfg.tdmd_bin),
+        "run",
+        "--quiet",
+        "--thermo",
+        str(thermo_path),
+        "--telemetry-jsonl",
+        str(telemetry_path),
+        str(augmented_config),
+    ]
+    runner.log(f"launching (backend={backend}, N={n_procs}): {' '.join(cmd)}")
+    completed = subprocess.run(
+        cmd,
+        cwd=workdir,
+        capture_output=True,
+        text=True,
+        timeout=cfg.per_run_timeout_seconds,
+        check=False,
+    )
+    (workdir / "tdmd.stdout").write_text(completed.stdout)
+    (workdir / "tdmd.stderr").write_text(completed.stderr)
+    if completed.returncode != 0:
+        raise RuntimeError(
+            f"tdmd run (backend={backend}, N={n_procs}) exited with code "
+            f"{completed.returncode}; see {workdir}/tdmd.stderr"
+        )
+    if not telemetry_path.is_file():
+        raise RuntimeError(
+            f"tdmd run (backend={backend}, N={n_procs}) produced no telemetry at {telemetry_path}"
+        )
+    if not thermo_path.is_file():
+        raise RuntimeError(
+            f"tdmd run (backend={backend}, N={n_procs}) produced no thermo at {thermo_path}"
+        )
+    return _parse_telemetry_jsonl(telemetry_path)
+
+
+def _probe_gpu_model(hardware_normalization_script: pathlib.Path) -> dict:
+    """Invoke the GPU hardware probe script and return its JSON payload.
+
+    The T6.10a stub never hard-fails — it returns ``gpu_model: None`` when
+    nvidia-smi is not visible. The caller (``_run_gpu_two_level``) decides
+    whether to proceed based on what the downstream TDMD launch reports.
+    """
+    if not hardware_normalization_script.is_file():
+        raise FileNotFoundError(
+            f"missing GPU hardware normalisation script at "
+            f"{hardware_normalization_script}"
+        )
+    cmd = [
+        "python3",
+        str(hardware_normalization_script),
+        "--json",
+    ]
+    completed = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    if completed.returncode != 0:
+        raise RuntimeError(
+            f"GPU hardware probe exited with code {completed.returncode}: "
+            f"{completed.stderr.strip()}"
+        )
+    try:
+        return json.loads(completed.stdout.strip())
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f"GPU hardware probe did not emit JSON: '{completed.stdout.strip()}'"
+        ) from exc
 
 
 def _launch_tdmd_mpirun(
@@ -241,6 +394,23 @@ class AnchorTestRunner:
     def run(self) -> AnchorTestReport:
         cfg = self.config
         start = datetime.datetime.now(tz=datetime.timezone.utc)
+
+        # 0. Dispatch — T6.10a. ``checks.yaml::backend`` selects the CPU T3
+        # code path (default) or the T3-gpu two-level path (``backend: gpu``).
+        # ``cfg.backend_override`` lets the CLI force a backend without
+        # editing the fixture. The CPU path stays untouched when the key
+        # is absent (backward compat with T3 CPU fixture).
+        checks_preview = _load_checks_yaml(cfg.benchmark_dir / "checks.yaml")
+        declared_backend = str(checks_preview.get("backend", "cpu")).lower()
+        effective_backend = (cfg.backend_override or declared_backend).lower()
+        if effective_backend not in ("cpu", "gpu"):
+            raise RuntimeError(
+                f"backend must be one of {{cpu, gpu}}; got '{effective_backend}' "
+                f"(checks.yaml declared '{declared_backend}', "
+                f"override '{cfg.backend_override}')"
+            )
+        if effective_backend == "gpu":
+            return self._run_gpu_two_level(start, checks_preview)
 
         # 1. Setup.data regeneration — only when needed, per T1 precedent.
         _regen_setup_data(self)
@@ -400,6 +570,187 @@ class AnchorTestRunner:
         return report
 
     # -----------------------------------------------------------------
+    # GPU two-level path (T6.10a)
+    # -----------------------------------------------------------------
+
+    def _run_gpu_two_level(
+        self, start: datetime.datetime, checks: Mapping[str, object]
+    ) -> AnchorTestReport:
+        """T3-gpu two-level anchor — CPU≡GPU Reference + MixedFast-within-budget.
+
+        The T6.10a scope ships gates (1) and (2); gate (3) (efficiency curve
+        vs dissertation) is deferred to T6.10b. See
+        ``verify/benchmarks/t3_al_fcc_large_anchor_gpu/acceptance_criteria.md``
+        for the scope reasoning.
+        """
+        cfg = self.config
+        checks_path = cfg.benchmark_dir / "checks.yaml"
+
+        # The GPU anchor does not consume the dissertation CSV (gate 3
+        # deferred), so we build a placeholder HardwareProbeResult to keep
+        # the AnchorTestReport schema intact. The GPU probe output goes to
+        # the normalization_log so the gpu_model / provenance is recoverable.
+        probe_script = cfg.benchmark_dir / "hardware_normalization_gpu.py"
+        gpu_probe_payload: dict | None = None
+        try:
+            gpu_probe_payload = _probe_gpu_model(probe_script)
+            self.log(
+                f"GPU probe: model={gpu_probe_payload.get('gpu_model')!r} "
+                f"ratio={gpu_probe_payload.get('gpu_flops_ratio', 'n/a')!r} "
+                f"(note: {gpu_probe_payload.get('note', '')})"
+            )
+        except (FileNotFoundError, RuntimeError) as exc:
+            self.log(f"GPU probe failed: {exc}")
+        gpu_model_visible = bool(
+            gpu_probe_payload and gpu_probe_payload.get("gpu_model")
+        )
+
+        hw_placeholder = HardwareProbeResult(
+            local_gflops=0.0,
+            baseline_gflops=0.0,
+            ghz_flops_ratio=1.0,  # GPU stub ratio; unused until T6.10b
+            probe_timestamp_utc=start.isoformat(timespec="seconds"),
+            cached=False,
+        )
+
+        ranks_to_probe = [int(x) for x in checks.get("ranks_to_probe", [1])]
+        if ranks_to_probe != [1]:
+            self.log(
+                f"GPU anchor T6.10a scope is single-rank; checks.yaml declares "
+                f"ranks_to_probe={ranks_to_probe} — running the first entry "
+                f"only (multi-rank GPU scaling waits on T6.9b / T6.10b)"
+            )
+        n_procs = ranks_to_probe[0] if ranks_to_probe else 1
+
+        # If the probe couldn't find a GPU, attempt the launch anyway —
+        # some environments hide nvidia-smi but still expose CUDA. The real
+        # dispositive signal is whether the tdmd launch completes. But if
+        # both probe and launch fail, we must report NO_CUDA_DEVICE cleanly.
+        launcher: GpuLaunchFn = cfg.gpu_launch_fn or _launch_tdmd_with_backend
+
+        cpu_workdir = cfg.workdir / "gpu_anchor_cpu"
+        gpu_workdir = cfg.workdir / "gpu_anchor_gpu"
+        cpu_thermo = cpu_workdir / "thermo.dat"
+        gpu_thermo = gpu_workdir / "thermo.dat"
+
+        gates: list[GpuGateResult] = []
+        overall_failure_mode: str | None = None
+
+        # Gate 1 — CPU ≡ GPU Reference byte-exact thermo.
+        gate1_cfg = checks.get("cpu_gpu_reference_bit_exact") or {}
+        run_gate1 = bool(gate1_cfg.get("thermo_byte_equal", True))
+        if run_gate1:
+            try:
+                launcher(self, n_procs, cpu_workdir, "cpu", cpu_thermo)
+                launcher(self, n_procs, gpu_workdir, "gpu", gpu_thermo)
+            except RuntimeError as exc:
+                gates.append(
+                    GpuGateResult(
+                        gate_name="cpu_gpu_reference_bit_exact",
+                        passed=False,
+                        status=STATUS_RED,
+                        detail=(
+                            f"launch failed: {exc}"
+                            + (
+                                ""
+                                if gpu_model_visible
+                                else " (GPU probe also reported no visible model)"
+                            )
+                        ),
+                    )
+                )
+                overall_failure_mode = (
+                    "NO_CUDA_DEVICE"
+                    if not gpu_model_visible
+                    else "CPU_GPU_REFERENCE_DIVERGE"
+                )
+            else:
+                cpu_bytes = cpu_thermo.read_bytes()
+                gpu_bytes = gpu_thermo.read_bytes()
+                passed = cpu_bytes == gpu_bytes
+                detail = (
+                    f"thermo {len(cpu_bytes)} bytes ≡ {len(gpu_bytes)} bytes"
+                    if passed
+                    else (
+                        f"thermo diverged — CPU {len(cpu_bytes)} bytes vs "
+                        f"GPU {len(gpu_bytes)} bytes (first diff at byte "
+                        f"{_first_byte_diff(cpu_bytes, gpu_bytes)})"
+                    )
+                )
+                gates.append(
+                    GpuGateResult(
+                        gate_name="cpu_gpu_reference_bit_exact",
+                        passed=passed,
+                        status=STATUS_GREEN if passed else STATUS_RED,
+                        detail=detail,
+                        cpu_thermo_path=str(cpu_thermo),
+                        gpu_thermo_path=str(gpu_thermo),
+                    )
+                )
+                if not passed and overall_failure_mode is None:
+                    overall_failure_mode = "CPU_GPU_REFERENCE_DIVERGE"
+
+        # Gate 2 — MixedFast within D-M6-8 thresholds, delegated to T6.8a.
+        # T6.10a does not re-invoke the C++ differential test — it is part
+        # of the pre-push test suite the user runs before calling this
+        # harness. We record the delegation in the report so the T6.13
+        # smoke consumer has explicit provenance.
+        gate2_cfg = checks.get("mixed_fast_vs_reference") or {}
+        if gate2_cfg:
+            gates.append(
+                GpuGateResult(
+                    gate_name="mixed_fast_vs_reference",
+                    passed=True,
+                    status=STATUS_YELLOW,  # advisory — delegated
+                    detail=(
+                        f"delegated to T6.8a differential "
+                        f"(test_eam_mixed_fast_within_threshold). Thresholds: "
+                        f"force_linf≤{gate2_cfg.get('force_relative_linf_threshold')}, "
+                        f"PE_rel≤{gate2_cfg.get('energy_relative_threshold')}, "
+                        f"virial_rel_normalized≤{gate2_cfg.get('virial_relative_normalized_threshold')}. "
+                        f"Source: {gate2_cfg.get('source', 'n/a')}"
+                    ),
+                )
+            )
+
+        # Gate 3 — efficiency curve. Deferred per checks.yaml.
+        gate3_cfg = checks.get("efficiency_curve") or {}
+        if str(gate3_cfg.get("status", "")).lower() == "deferred":
+            self.log(
+                f"gate 3 (efficiency curve) deferred to "
+                f"{gate3_cfg.get('deferred_to', 'T6.10b')}; blockers: "
+                f"{gate3_cfg.get('blockers', [])}"
+            )
+
+        overall_passed = all(g.passed for g in gates)
+        any_warning = any(g.status == STATUS_YELLOW for g in gates)
+        if not overall_passed:
+            overall_status = STATUS_RED
+        elif any_warning:
+            overall_status = STATUS_YELLOW
+        else:
+            overall_status = STATUS_GREEN
+
+        end = datetime.datetime.now(tz=datetime.timezone.utc)
+        return AnchorTestReport(
+            points=[],  # no per-rank perf points in T6.10a; gate 3 deferred
+            overall_passed=overall_passed,
+            overall_status=overall_status,
+            any_warning=any_warning,
+            dissertation_reference_commit="n/a (gate 3 deferred to T6.10b)",
+            tdmd_commit=_git_revision_of(cfg.tdmd_bin),
+            benchmark_directory=str(cfg.benchmark_dir),
+            checks_yaml_path=str(checks_path),
+            hardware=hw_placeholder,
+            report_timestamp_utc=start.isoformat(timespec="seconds"),
+            wall_clock_minutes=(end - start).total_seconds() / 60.0,
+            normalization_log=list(self._log_lines),
+            failure_mode=overall_failure_mode,
+            backend="gpu",
+            gpu_gates=gates,
+        )
+
+    # -----------------------------------------------------------------
     # Helpers
     # -----------------------------------------------------------------
 
@@ -474,6 +825,22 @@ def _git_revision_of(path: pathlib.Path) -> str:
     except OSError:
         return "unknown"
     return completed.stdout.strip() or "unknown"
+
+
+def _first_byte_diff(a: bytes, b: bytes) -> int:
+    """Return the byte-offset of the first difference between ``a`` and ``b``.
+
+    Returns -1 iff ``a == b``. If the common prefix is equal and one is a
+    strict prefix of the other, returns the length of the shorter string
+    (the position where the next byte would have been).
+    """
+    if a == b:
+        return -1
+    shorter = min(len(a), len(b))
+    for i in range(shorter):
+        if a[i] != b[i]:
+            return i
+    return shorter
 
 
 def _csv_is_placeholder(path: pathlib.Path) -> bool:

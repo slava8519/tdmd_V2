@@ -22,7 +22,7 @@ import unittest
 
 from .hardware_probe import probe
 from .report import STATUS_GREEN, STATUS_RED, STATUS_YELLOW
-from .runner import AnchorTestRunner, RunnerConfig
+from .runner import AnchorTestRunner, RunnerConfig, _first_byte_diff
 
 
 # ---------------------------------------------------------------------------
@@ -332,6 +332,291 @@ class AnchorRunnerMockedTest(unittest.TestCase):
             with self.assertRaises(RuntimeError) as cm:
                 runner.run()
             self.assertIn("n_procs=4", str(cm.exception))
+
+
+# ---------------------------------------------------------------------------
+# T6.10a — T3-gpu two-level anchor mocked tests
+# ---------------------------------------------------------------------------
+
+
+def _write_gpu_checks_yaml(
+    path: pathlib.Path,
+    bit_exact: bool = True,
+    gate2_present: bool = True,
+):
+    body = [
+        "benchmark: t3_al_fcc_large_anchor_gpu",
+        "backend: gpu",
+        "ranks_to_probe: [1]",
+    ]
+    if bit_exact:
+        body.append(
+            "cpu_gpu_reference_bit_exact: {thermo_byte_equal: true, steps: 100}"
+        )
+    if gate2_present:
+        body += [
+            "mixed_fast_vs_reference:",
+            "  force_relative_linf_threshold: 1.0e-5",
+            "  energy_relative_threshold: 1.0e-7",
+            "  virial_relative_normalized_threshold: 5.0e-6",
+            "  source: T6.8a achieved",
+        ]
+    body += [
+        "efficiency_curve:",
+        "  status: deferred",
+        "  deferred_to: T6.10b",
+        "  blockers: [T6.9b, M9 Morse GPU]",
+        "runtime: {wall_clock_budget_minutes: 10}",
+    ]
+    path.write_text("\n".join(body) + "\n")
+
+
+def _write_gpu_config_yaml(path: pathlib.Path):
+    # Minimal config — no runtime.backend (the runner injects it).
+    path.write_text(
+        textwrap.dedent("""
+        simulation: {units: metal, seed: 1}
+        atoms: {source: lammps_data, path: setup.data}
+        potential:
+          style: eam/alloy
+          params: {file: Ni-Al.eam.alloy}
+        integrator: {style: velocity_verlet, dt: 0.001}
+        neighbor: {skin: 0.3}
+        thermo: {every: 1}
+        run: {n_steps: 100}
+        comm: {backend: mpi_host_staging, topology: mesh}
+        """).strip()
+    )
+
+
+def _write_stub_gpu_probe(path: pathlib.Path, gpu_model: str | None = "Stub GPU"):
+    """Write a python3 stub that mimics hardware_normalization_gpu.py."""
+    if gpu_model is None:
+        model_literal = "None"
+    else:
+        model_literal = repr(gpu_model)
+    path.write_text(
+        textwrap.dedent(f"""
+        #!/usr/bin/env python3
+        import json
+        import sys
+        payload = {{
+            "ghz_flops_ratio": 1.0,
+            "gpu_flops_ratio": 1.0,
+            "baseline_gflops": 0.0,
+            "local_gflops": 0.0,
+            "gpu_model": {model_literal},
+            "note": "T6.10a unit-test stub",
+        }}
+        print(json.dumps(payload))
+        sys.exit(0)
+        """).strip()
+    )
+    path.chmod(0o755)
+
+
+def make_gpu_mock_launcher(
+    thermo_bytes_by_backend: dict[str, bytes],
+    fail_backend: str | None = None,
+):
+    """GPU launcher mock — writes pre-canned thermo bytes for each backend.
+
+    ``fail_backend='gpu'`` triggers a RuntimeError on the GPU launch so the
+    runner can exercise the NO_CUDA_DEVICE fallback path.
+    """
+
+    def _fn(runner, n_procs: int, workdir: pathlib.Path, backend: str, thermo_path):
+        if fail_backend == backend:
+            raise RuntimeError(f"mock launcher injected failure for backend={backend}")
+        workdir.mkdir(parents=True, exist_ok=True)
+        thermo_path.parent.mkdir(parents=True, exist_ok=True)
+        thermo_path.write_bytes(thermo_bytes_by_backend[backend])
+        return {
+            "event": "run_end",
+            "total_wall_sec": 1.0,
+            "sections": {"Pair": 0.6},
+            "ignored_end_calls": 0,
+        }
+
+    return _fn
+
+
+class GpuAnchorRunnerMockedTest(unittest.TestCase):
+    """T3-gpu two-level mocked dispatch (T6.10a)."""
+
+    def _make_gpu_runner(
+        self,
+        tmpdir: pathlib.Path,
+        launch_fn,
+        gpu_model: str | None = "Stub GPU",
+        gate2_present: bool = True,
+    ) -> AnchorTestRunner:
+        bench = tmpdir / "benchmarks" / "t3_gpu"
+        bench.mkdir(parents=True)
+        _write_gpu_checks_yaml(bench / "checks.yaml", gate2_present=gate2_present)
+        _write_gpu_config_yaml(bench / "config.yaml")
+        _write_stub_gpu_probe(
+            bench / "hardware_normalization_gpu.py", gpu_model=gpu_model
+        )
+        cfg = RunnerConfig(
+            benchmark_dir=bench,
+            tdmd_bin=tmpdir / "tdmd",
+            mpirun_bin=pathlib.Path("mpirun"),
+            output_report_path=tmpdir / "report.json",
+            workdir=tmpdir / "workdir",
+            skip_setup_regen=True,
+            gpu_launch_fn=launch_fn,
+        )
+        return AnchorTestRunner(cfg)
+
+    def test_gpu_anchor_byte_exact_green(self):
+        """CPU + GPU thermo match → gate1 GREEN; gate2 advisory YELLOW → overall YELLOW."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = pathlib.Path(tmp)
+            same = b"Step KE PE TE\n0 1.0 -2.0 -1.0\n1 1.01 -2.02 -1.01\n"
+            runner = self._make_gpu_runner(
+                tmpdir,
+                make_gpu_mock_launcher({"cpu": same, "gpu": same}),
+            )
+            report = runner.run()
+            self.assertEqual(report.backend, "gpu")
+            self.assertIsNotNone(report.gpu_gates)
+            # Gate 1 passed (byte-equal).
+            g1 = next(
+                g
+                for g in report.gpu_gates
+                if g.gate_name == "cpu_gpu_reference_bit_exact"
+            )
+            self.assertTrue(g1.passed)
+            self.assertEqual(g1.status, STATUS_GREEN)
+            # Gate 2 present → advisory YELLOW.
+            g2 = next(
+                g for g in report.gpu_gates if g.gate_name == "mixed_fast_vs_reference"
+            )
+            self.assertTrue(g2.passed)
+            self.assertEqual(g2.status, STATUS_YELLOW)
+            # Overall YELLOW because delegated gate 2 is advisory.
+            self.assertTrue(report.overall_passed)
+            self.assertEqual(report.overall_status, STATUS_YELLOW)
+            self.assertTrue(report.any_warning)
+            self.assertIsNone(report.failure_mode)
+
+    def test_gpu_anchor_byte_exact_green_no_gate2(self):
+        """Without gate2, a matching gate1 yields GREEN overall."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = pathlib.Path(tmp)
+            same = b"Step KE PE TE\n0 1.0 -2.0 -1.0\n"
+            runner = self._make_gpu_runner(
+                tmpdir,
+                make_gpu_mock_launcher({"cpu": same, "gpu": same}),
+                gate2_present=False,
+            )
+            report = runner.run()
+            self.assertEqual(report.overall_status, STATUS_GREEN)
+            self.assertTrue(report.overall_passed)
+            self.assertFalse(report.any_warning)
+            self.assertEqual(len(report.gpu_gates), 1)
+
+    def test_gpu_anchor_byte_exact_diverge_red(self):
+        """CPU + GPU thermo differ → gate1 RED + CPU_GPU_REFERENCE_DIVERGE."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = pathlib.Path(tmp)
+            cpu = b"Step KE PE TE\n0 1.0 -2.0 -1.0\n"
+            gpu = b"Step KE PE TE\n0 1.0 -2.0 -1.001\n"  # last byte differs
+            runner = self._make_gpu_runner(
+                tmpdir,
+                make_gpu_mock_launcher({"cpu": cpu, "gpu": gpu}),
+            )
+            report = runner.run()
+            self.assertEqual(report.overall_status, STATUS_RED)
+            self.assertFalse(report.overall_passed)
+            self.assertEqual(report.failure_mode, "CPU_GPU_REFERENCE_DIVERGE")
+            g1 = next(
+                g
+                for g in report.gpu_gates
+                if g.gate_name == "cpu_gpu_reference_bit_exact"
+            )
+            self.assertFalse(g1.passed)
+            self.assertIn("diverged", g1.detail)
+
+    def test_gpu_anchor_no_cuda_device_red(self):
+        """GPU probe reports no model + GPU launch fails → NO_CUDA_DEVICE."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = pathlib.Path(tmp)
+            runner = self._make_gpu_runner(
+                tmpdir,
+                make_gpu_mock_launcher(
+                    {"cpu": b"placeholder\n", "gpu": b"placeholder\n"},
+                    fail_backend="gpu",
+                ),
+                gpu_model=None,  # probe returns None → cannot see a GPU
+            )
+            report = runner.run()
+            self.assertEqual(report.overall_status, STATUS_RED)
+            self.assertEqual(report.failure_mode, "NO_CUDA_DEVICE")
+
+    def test_gpu_anchor_reports_roundtrip_json(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = pathlib.Path(tmp)
+            same = b"Step KE PE TE\n0 1.0 -2.0 -1.0\n"
+            runner = self._make_gpu_runner(
+                tmpdir,
+                make_gpu_mock_launcher({"cpu": same, "gpu": same}),
+            )
+            report = runner.run()
+            out = tmpdir / "gpu_rep.json"
+            report.write_json(out)
+            data = json.loads(out.read_text())
+            self.assertEqual(data["backend"], "gpu")
+            self.assertIsNotNone(data["gpu_gates"])
+            self.assertEqual(len(data["gpu_gates"]), 2)
+            # points list empty for GPU anchor (no CPU-style perf points in T6.10a).
+            self.assertEqual(data["points"], [])
+
+    def test_backend_override_forces_gpu_on_cpu_fixture(self):
+        """CLI --backend gpu overrides checks.yaml::backend even when absent."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = pathlib.Path(tmp)
+            bench = tmpdir / "benchmarks" / "t3_cpu_fixture"
+            bench.mkdir(parents=True)
+            # CPU-style fixture (no backend key) — but CLI asks for gpu.
+            (bench / "checks.yaml").write_text(
+                "benchmark: cpu_fixture\n"
+                "ranks_to_probe: [1]\n"
+                "cpu_gpu_reference_bit_exact: {thermo_byte_equal: true}\n"
+                "runtime: {wall_clock_budget_minutes: 10}\n"
+            )
+            _write_gpu_config_yaml(bench / "config.yaml")
+            _write_stub_gpu_probe(bench / "hardware_normalization_gpu.py")
+            same = b"Step\n0 1.0\n"
+            cfg = RunnerConfig(
+                benchmark_dir=bench,
+                tdmd_bin=tmpdir / "tdmd",
+                mpirun_bin=pathlib.Path("mpirun"),
+                output_report_path=tmpdir / "rep.json",
+                workdir=tmpdir / "workdir",
+                skip_setup_regen=True,
+                gpu_launch_fn=make_gpu_mock_launcher({"cpu": same, "gpu": same}),
+                backend_override="gpu",
+            )
+            runner = AnchorTestRunner(cfg)
+            report = runner.run()
+            self.assertEqual(report.backend, "gpu")
+            self.assertTrue(report.overall_passed)
+
+
+class FirstByteDiffTest(unittest.TestCase):
+    def test_equal(self):
+        self.assertEqual(_first_byte_diff(b"abc", b"abc"), -1)
+
+    def test_first_byte_differs(self):
+        self.assertEqual(_first_byte_diff(b"xbc", b"abc"), 0)
+
+    def test_last_byte_differs(self):
+        self.assertEqual(_first_byte_diff(b"abx", b"abc"), 2)
+
+    def test_prefix(self):
+        self.assertEqual(_first_byte_diff(b"ab", b"abc"), 2)
 
 
 if __name__ == "__main__":
