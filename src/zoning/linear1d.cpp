@@ -37,13 +37,13 @@ int Linear1DZoningPlanner::choose_axis(const tdmd::Box& box, double cutoff, doub
   };
   // Pick the axis with the most zones; ties break to lowest axis index
   // (stable, deterministic — part of the canonical-order contract §4.3).
-  int best = 0;
-  for (int ax = 1; ax < 3; ++ax) {
+  std::size_t best = 0;
+  for (std::size_t ax = 1; ax < 3; ++ax) {
     if (n[ax] > n[best]) {
       best = ax;
     }
   }
-  return best;
+  return static_cast<int>(best);
 }
 
 ZoningPlan Linear1DZoningPlanner::plan(const tdmd::Box& box,
