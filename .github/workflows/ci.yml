@@ -236,12 +236,69 @@ jobs:
         run: ctest --test-dir build_cpu --output-on-failure -R test_t4_differential
 
   # ---------------------------------------------------------------------------
-  # NOTE: CUDA / GPU build is intentionally NOT in CI.
-  # Rationale: self-hosted runner on a public repo executes arbitrary PR code on
-  # the dev workstation. See docs/development/m0_execution_pack.md "Option A".
-  # GPU tests are run locally before push:
-  #   cmake --preset default && cmake --build build && ctest --preset default
-  #   tools/build_lammps.sh && tools/lammps_smoke_test.sh
-  # Revisit when M6 (GPU path) lands and an isolated runner (container/VM) is
-  # available.
+  # build-gpu — CUDA compile + link matrix on ubuntu-latest. T6.12 (M6).
+  #
+  # Option A CI policy (memory `project_option_a_ci.md`, D-M6-6): public repo,
+  # no self-hosted runner. GitHub-hosted `ubuntu-latest` has no GPU, so this
+  # job is **compile-only** — the test binaries link against libcudart and
+  # self-skip at runtime via `cudaGetDeviceCount() != cudaSuccess`. That still
+  # catches: (a) CUDA source regressions in `src/gpu/*.cu`; (b) PIMPL firewall
+  # breaks (CUDA headers leaking to public API); (c) NVTX macro regressions
+  # via `test_nvtx_audit` (pure file-walker — runs meaningfully on CI);
+  # (d) CPU-side test_gpu_types + test_gpu_cost_tables compile matrix.
+  #
+  # Matrix: BuildFlavor ∈ {Fp64ReferenceBuild, MixedFastBuild} so the
+  # flavor-dispatched adapter + MixedFast EAM kernel both stay compile-clean.
+  # CUDA archs = 80;86;89;90 (Ampere/Ada/Hopper); sm_100 (Blackwell) + sm_120
+  # (RTX 5080 dev machine) require CUDA 12.8+ which ubuntu apt doesn't ship —
+  # local dev covers those via `--preset default`.
+  #
+  # Full runtime gates (kernel bit-exactness, MixedFast thresholds, T3-gpu
+  # anchor, M6 smoke) run via local pre-push protocol — see tools/ and
+  # docs/development/ci_setup.md "Local GPU gate".
   # ---------------------------------------------------------------------------
+  build-gpu:
+    name: Build GPU compile-only (${{ matrix.flavor }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        flavor: [Fp64ReferenceBuild, MixedFastBuild]
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+          lfs: true
+
+      - name: Install toolchain + CUDA
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc-13 g++-13 cmake ninja-build \
+            nvidia-cuda-toolkit
+
+      - name: Configure (CUDA ${{ matrix.flavor }}, archs 80;86;89;90)
+        env:
+          CC: gcc-13
+          CXX: g++-13
+        run: |
+          cmake -B build_gpu -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DTDMD_BUILD_CUDA=ON \
+            -DTDMD_BUILD_TESTS=ON \
+            -DTDMD_BUILD_FLAVOR=${{ matrix.flavor }} \
+            -DTDMD_CUDA_ARCHS="80;86;89;90" \
+            -DTDMD_WARNINGS_AS_ERRORS=ON
+
+      - name: Build (compile + link)
+        run: cmake --build build_gpu --parallel
+
+      - name: Run GPU-free tests (structural checks; runtime kernels self-skip)
+        # Catches NVTX audit regressions + PerfModel cost-table structural
+        # invariants + pure-C++ gpu_types on every PR. Other GPU tests SKIP
+        # via `cudaGetDeviceCount() != cudaSuccess` — they still run through
+        # their own harness so test-binary link-time issues surface here.
+        run: |
+          ctest --test-dir build_gpu --output-on-failure \
+            -R 'test_gpu_types|test_nvtx_audit|test_gpu_cost_tables|test_perfmodel'

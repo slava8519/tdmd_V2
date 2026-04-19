@@ -1,76 +1,66 @@
 # CI setup
 
-TDMD CI is a GitHub Actions workflow (`.github/workflows/ci.yml`) that runs on every PR and push to `main`. Pipeline A (lint + build) is the only one live at M0; Pipelines B–F (unit, property, differential, performance, reproducibility) activate in M1+ as the corresponding test layers appear.
+TDMD CI is a GitHub Actions workflow (`.github/workflows/ci.yml`) that runs on every PR and push to `main`. Pipeline A (lint + build) was live from M0; Pipelines B–C (unit/property + CPU differential) landed in M1–M2; M6 added compile-only CUDA coverage (T6.12).
 
-## Jobs at M0
+## Jobs
 
 | Job | Runner | Purpose |
 |---|---|---|
 | `lint` | GitHub-hosted `ubuntu-latest` | `pre-commit run --all-files` — every hook from `.pre-commit-config.yaml` |
 | `docs-lint` | GitHub-hosted `ubuntu-latest` | `markdownlint-cli2` on every tracked `.md` |
-| `build-cpu` (matrix: gcc-13, clang-17) | GitHub-hosted `ubuntu-latest` | `cmake --preset cpu-only && cmake --build && ctest` |
-| `build-cuda` | **Self-hosted `gpu-rtx5080`** | `cmake --preset default && cmake --build && ctest` on sm_120 |
-| `cuda-rebuild` (weekly, separate workflow) | Self-hosted `gpu-rtx5080` | From-scratch rebuild, Monday 06:00 UTC |
+| `build-cpu` (matrix: gcc-13, clang-17) | GitHub-hosted `ubuntu-latest` | `cmake --preset cpu-only && cmake --build && ctest` + M1..M5 smokes |
+| `differential-t1` | GitHub-hosted `ubuntu-latest` | LAMMPS diff harness (SKIP on public CI — no LAMMPS submodule) |
+| `differential-t4` | GitHub-hosted `ubuntu-latest` | LAMMPS diff harness (SKIP on public CI — no LAMMPS submodule) |
+| `build-gpu` (matrix: Fp64ReferenceBuild, MixedFastBuild) | GitHub-hosted `ubuntu-latest` | **Compile + link only**; NVTX audit + PerfModel GPU cost-table tests run (pure C++); CUDA runtime tests self-skip |
 
-All four PR jobs must be green to merge into `main` (enforced by branch protection — see [below](#branch-protection)).
+### Option A CI policy (no self-hosted GPU runner)
 
-## Self-hosted runner registration (one-time)
+TDMD is a public repo. Per user decision + memory `project_option_a_ci.md` + D-M6-6 in `m6_execution_pack.md`: **no self-hosted runner**. Rationale: a public-repo self-hosted runner would execute arbitrary PR code on the dev workstation. Trade-off accepted: **CUDA runtime gates (kernel bit-exactness, MixedFast thresholds, T3-gpu anchor, M6 smoke) run locally pre-push** instead of in CI. The `build-gpu` job catches compile/link regressions + NVTX + cost-table wiring; the rest is protected by the local pre-push protocol.
 
-The `build-cuda` job requires a self-hosted runner on the dev machine (RTX 5080 + CUDA 12.8+). GitHub-hosted runners do not have GPUs.
+### Local pre-push GPU gate
 
-### 1. Register the runner
-
-In GitHub: **Settings → Actions → Runners → New self-hosted runner**. Pick Linux x64. GitHub shows commands like:
-
-```bash
-mkdir -p ~/actions-runner && cd ~/actions-runner
-curl -o actions-runner-linux-x64.tar.gz -L https://github.com/actions/runner/releases/download/vX.Y.Z/actions-runner-linux-x64-X.Y.Z.tar.gz
-tar xzf actions-runner-linux-x64.tar.gz
-./config.sh --url https://github.com/slava8519/tdmd_V2 --token <token-from-github>
-```
-
-During `./config.sh` assign labels: `self-hosted,linux,gpu-rtx5080`. The workflows target these labels.
-
-### 2. Install as a systemd service
-
-Single-user interactive mode (`./run.sh`) is fine for testing but dies on logout. For persistence:
+Developer workstation with CUDA 12.8+ + an sm_80/86/89/90/120 GPU must run before `git push` on any GPU-touching commit:
 
 ```bash
-sudo ./svc.sh install
-sudo ./svc.sh start
-sudo ./svc.sh status
+# Reference flavor (bit-exact CPU↔GPU, D-M6-7 invariant)
+cmake --preset default && cmake --build build --parallel
+ctest --test-dir build --output-on-failure
+
+# MixedFast flavor (D-M6-8 thresholds)
+cmake -B build-mixed -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DTDMD_BUILD_CUDA=ON \
+  -DTDMD_BUILD_TESTS=ON \
+  -DTDMD_BUILD_FLAVOR=MixedFastBuild \
+  -DTDMD_CUDA_ARCHS="120"
+cmake --build build-mixed --parallel
+ctest --test-dir build-mixed --output-on-failure
+
+# CPU-only-strict (catches -Werror regressions invisible to non-strict preset)
+cmake -B build-cpu-strict -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DTDMD_BUILD_CUDA=OFF \
+  -DTDMD_ENABLE_MPI=OFF \
+  -DTDMD_BUILD_TESTS=ON \
+  -DTDMD_WARNINGS_AS_ERRORS=ON
+cmake --build build-cpu-strict --parallel
+ctest --test-dir build-cpu-strict --output-on-failure
 ```
 
-### 3. System prerequisites on the runner host
+All three must be green. LAMMPS oracle checks (`tools/build_lammps.sh && tools/lammps_smoke_test.sh`) required for T1/T4 differential diffs when changing `potentials/` or `integrator/`.
 
-```bash
-# Build tooling
-sudo apt install -y cmake ninja-build git git-lfs gcc-13 g++-13
+### `build-gpu` (compile-only) details
 
-# CUDA 12.8+ (exact package name may vary)
-sudo apt install -y cuda-toolkit-12-8
-export CUDACXX=/usr/local/cuda-12.8/bin/nvcc  # or add to /etc/environment
+The GitHub-hosted `ubuntu-latest` runner installs stock `nvidia-cuda-toolkit` via apt (CUDA 12.x). Matrix covers Fp64ReferenceBuild + MixedFastBuild so both the flavor-dispatched adapter in `src/potentials/eam_alloy_gpu_adapter.cpp` and the MixedFast EAM kernel in `src/gpu/eam_alloy_gpu_mixed.cu` stay compile-clean. CUDA archs `80;86;89;90` (Ampere/Ada/Hopper); sm_100 + sm_120 (Blackwell + RTX 5080 dev) require CUDA 12.8+ which apt doesn't ship — local dev covers those via `--preset default`.
 
-# Python (for pre-commit on this runner if reused for lint)
-sudo apt install -y python3 python3-pip
-```
+The job runs a narrow `ctest` filter after build:
 
-Confirm:
+- `test_gpu_types` — pure C++ PIMPL compile-firewall check;
+- `test_nvtx_audit` — grep-based audit over `src/gpu/*.cu` (no GPU needed);
+- `test_gpu_cost_tables` — structural checks on PerfModel linear-model math;
+- `test_perfmodel` — existing CPU PerfModel tests.
 
-```bash
-nvidia-smi                   # shows RTX 5080, compute cap 12.0
-nvcc --version               # shows 12.8 or later
-cmake --version              # ≥ 3.25
-```
-
-### 4. Runner hygiene
-
-The workflow sets `actions/checkout@v4` without `clean: true` on PR jobs. Between jobs it deletes `build*/` directories. If the runner disk fills up:
-
-```bash
-cd ~/actions-runner/_work/tdmd_V2/tdmd_V2
-rm -rf build build_cpu build_debug build_sm89 build_release
-```
+Runtime-CUDA tests (`test_neighbor_list_gpu`, `test_eam_alloy_gpu`, `test_integrator_vv_gpu`, `test_eam_mixed_fast_within_threshold`, `test_device_pool`, `test_gpu_backend_smoke`) self-skip via `cudaGetDeviceCount() != cudaSuccess` — compile + link coverage only.
 
 ## Local pre-commit mirror of CI
 
@@ -90,32 +80,26 @@ Set in GitHub: **Settings → Branches → Branch protection rule** for `main`:
 
 - **Require a pull request before merging** ✓
 - **Require status checks to pass before merging** ✓
-  - Required checks: `Lint (pre-commit)`, `Docs lint (markdownlint-cli2)`, `Build CPU (gcc-13)`, `Build CPU (clang-17)`, `Build CUDA (sm_120, self-hosted RTX 5080)`
+  - Required checks: `Lint (pre-commit)`, `Docs lint (markdownlint-cli2)`, `Build CPU (gcc-13)`, `Build CPU (clang-17)`, `Build GPU compile-only (Fp64ReferenceBuild)`, `Build GPU compile-only (MixedFastBuild)`
 - **Require branches to be up to date before merging** ✓
 - **Include administrators** ✓ (solo-maintainer phase; disable only if forced by emergency)
 - **Restrict deletions** ✓
 - **Require linear history** (optional — forbids merge commits; keep off unless team prefers rebase)
 
-Do not add `Scheduled CUDA rebuild` as a required status — it runs once a week and would block all merges.
-
 ## Caching strategy
 
 - `lint` job: `~/.cache/pre-commit` keyed on `.pre-commit-config.yaml` hash (built-in via `actions/cache`).
 - `build-cpu`: currently uncached. Can add `ccache` in M1+ if rebuilds become slow.
-- `build-cuda`: uncached by design — self-hosted runner already has warm disk; CI time is dominated by Catch2 fetch (~30s) and build (~2 min for M0 skeleton).
-- `cuda-rebuild` (weekly): explicitly uncached — the whole point is to catch cache-hidden regressions.
+- `build-gpu`: uncached (compile-only; small working set). CUDA toolkit apt install dominates (~45s); nvcc compile of 4 `.cu` TUs + link ~3 min.
 
 ## Troubleshooting
 
-### `build-cuda` job stuck in "queued"
+### `build-gpu` nvcc fails with "unsupported GNU version"
 
-The self-hosted runner is not online. Check:
+Ubuntu stock `nvidia-cuda-toolkit` nvcc may not track the very latest GCC. If the matrix job fails at the nvcc compile step with a host-compiler version check, either:
 
-```bash
-sudo systemctl status actions.runner.slava8519-tdmd_V2.*.service
-```
-
-Restart if needed. GitHub **Settings → Actions → Runners** shows runner online/offline status.
+1. Pin `-DCMAKE_CUDA_HOST_COMPILER=/usr/bin/gcc-12` in the workflow step; or
+2. Switch the apt install to NVIDIA's own deb repo for CUDA 12.6+ (deferred; stock ubuntu is usually fine for compile-only).
 
 ### Pre-commit hook fails in CI but passes locally
 
@@ -127,9 +111,9 @@ pre-commit clean
 pre-commit run --all-files
 ```
 
-### "sm_120 requires CUDA 12.8+" in `build-cuda`
+### "sm_120 requires CUDA 12.8+" during local build
 
-The runner's CUDA toolkit is older than expected. Upgrade on the runner host, not in CI.
+Your local toolkit is older than expected. Either install CUDA 12.8+ on your workstation or fall back to `cmake --preset default-sm89` (targets sm_89 Ada — works with CUDA 12.6).
 
 ### `docs-lint` complains on a SPEC file you just edited
 
