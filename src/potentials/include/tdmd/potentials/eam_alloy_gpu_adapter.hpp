@@ -26,6 +26,7 @@
 #include "tdmd/potentials/potential.hpp"
 
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <vector>
 
@@ -81,6 +82,11 @@ public:
   // Monotone counter forwarded from the underlying `EamAlloyGpu`. Tests use
   // this to verify repeat-call behaviour.
   [[nodiscard]] std::uint64_t compute_version() const noexcept;
+
+  // Counter of actual spline H2D uploads (T6.9a caching). Forwarded from the
+  // active GPU backend. Invariant: after N back-to-back compute() calls on
+  // the same adapter instance, this equals 1.
+  [[nodiscard]] std::uint64_t splines_upload_count() const noexcept;
 
 private:
   const EamAlloyData* data_;

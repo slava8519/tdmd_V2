@@ -6,13 +6,18 @@
 // Decisions: D-M6-3 (host-staged MPI), D-M6-12 (single pool), D-M6-13 (2 streams)
 //
 // `GpuContext` — engine-owned RAII container for the CUDA resources a run
-// needs. In T6.7 one `DevicePool` + one `DeviceStream` (the "compute" stream
-// from the D-M6-13 pair); the "mem" stream arrives at T6.9 when compute/MPI
-// overlap is wired.
+// needs. Owns the `DevicePool` + the two non-blocking streams mandated by
+// D-M6-13: `compute_stream_` for kernel launches, `mem_stream_` for H2D/D2H
+// copies that can run alongside compute (T6.9a infrastructure; real
+// compute/MPI overlap orchestration with cudaEvent dependency tracking lands
+// in T6.9b / Pattern 2 / M7 once the scheduler emits peer-dispatch packets
+// on a GPU-resident state).
 //
 // Lifetime matches `SimulationEngine::init()` → `SimulationEngine::finalize()`.
-// Constructor probes + selects a CUDA device and warms the pool (cold-start
-// stall mitigation per D-M6-12). Destructor tears down in reverse order.
+// Constructor probes + selects a CUDA device, warms the pool (cold-start
+// stall mitigation per D-M6-12), and creates both streams as non-blocking
+// so launches on one never implicitly wait on the other. Destructor tears
+// down in reverse order.
 //
 // CPU-only builds: the constructor throws `std::runtime_error` — the engine
 // guards against this by only instantiating `GpuContext` when
@@ -43,12 +48,14 @@ public:
 
   [[nodiscard]] tdmd::gpu::DevicePool& pool() noexcept { return *pool_; }
   [[nodiscard]] tdmd::gpu::DeviceStream& compute_stream() noexcept { return compute_stream_; }
+  [[nodiscard]] tdmd::gpu::DeviceStream& mem_stream() noexcept { return mem_stream_; }
   [[nodiscard]] const tdmd::gpu::DeviceInfo& device_info() const noexcept { return device_info_; }
 
 private:
   tdmd::gpu::DeviceInfo device_info_{};
   std::unique_ptr<tdmd::gpu::DevicePool> pool_;
   tdmd::gpu::DeviceStream compute_stream_{};
+  tdmd::gpu::DeviceStream mem_stream_{};
 };
 
 }  // namespace tdmd::runtime

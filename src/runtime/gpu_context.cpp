@@ -30,6 +30,12 @@ GpuContext::GpuContext(const tdmd::gpu::GpuConfig& cfg) {
   device_info_ = tdmd::gpu::select_device(static_cast<tdmd::gpu::DeviceId>(cfg.device_id));
   pool_ = std::make_unique<tdmd::gpu::DevicePool>(cfg);
   compute_stream_ = tdmd::gpu::make_stream(device_info_.device_id);
+  // D-M6-13: second non-blocking stream for copies that can execute alongside
+  // compute. Real orchestration (cudaEventRecord + cudaStreamWaitEvent) lands
+  // in T6.9b when there is overlap-able work; the stream exists at T6.9a so
+  // that future adapter surfaces can borrow `mem_stream()` without re-opening
+  // the GpuContext contract.
+  mem_stream_ = tdmd::gpu::make_stream(device_info_.device_id);
 }
 
 GpuContext::~GpuContext() = default;

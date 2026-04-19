@@ -384,6 +384,49 @@ TEST_CASE("EamAlloyGpu — compute_version monotone on repeat calls", "[gpu][eam
   REQUIRE(adapter.compute_version() == 2u);
 }
 
+TEST_CASE("EamAlloyGpu — splines cached across compute() calls (T6.9a)", "[gpu][eam][cache]") {
+  if (!cuda_device_available()) {
+    SKIP("no CUDA device available");
+  }
+
+  // Invariant per T6.9a: back-to-back compute() calls with the same adapter
+  // instance (therefore the same flattened spline host pointers) must upload
+  // the F / rho / z2r tables to the device exactly once. Steady-state MD hot
+  // loops rebuild neighbor lists and re-call compute() every step — without
+  // this caching the ~MB-scale spline H2D would dominate MixedFast throughput.
+  const auto data = tp::parse_eam_alloy(
+      (std::filesystem::path(test_fixtures_dir()) / "Al_small.eam.alloy").string());
+  AlFccFixture fx = make_al_fcc(4, 4, 4);
+
+  const double cutoff = data.cutoff;
+  const double skin = 0.2;
+  tdmd::CellGrid grid;
+  grid.build(fx.box, cutoff, skin);
+  grid.bin(fx.atoms);
+
+  tg::GpuConfig cfg;
+  cfg.memory_pool_init_size_mib = 4;
+  tg::DevicePool pool(cfg);
+  tg::DeviceStream stream = tg::make_stream(cfg.device_id);
+  tp::EamAlloyGpuAdapter adapter(data);
+
+  REQUIRE(adapter.splines_upload_count() == 0u);
+
+  tdmd::AtomSoA atoms = fx.atoms;
+  for (int call = 0; call < 3; ++call) {
+    for (std::size_t i = 0; i < atoms.size(); ++i) {
+      atoms.fx[i] = atoms.fy[i] = atoms.fz[i] = 0.0;
+    }
+    (void) adapter.compute(atoms, fx.box, grid, pool, stream);
+  }
+
+  // Exactly one upload for the three calls — the adapter's flattened
+  // coefficient buffers are immutable for its lifetime, so host-pointer
+  // identity matches after the first call.
+  REQUIRE(adapter.splines_upload_count() == 1u);
+  REQUIRE(adapter.compute_version() == 3u);
+}
+
 TEST_CASE("EamAlloyGpu — empty atoms yields zero result", "[gpu][eam][edge]") {
   if (!cuda_device_available()) {
     SKIP("no CUDA device available");

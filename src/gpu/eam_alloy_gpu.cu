@@ -450,6 +450,17 @@ struct EamAlloyGpu::Impl {
   DevicePtr<std::byte> d_F_coeffs_bytes;
   DevicePtr<std::byte> d_rho_coeffs_bytes;
   DevicePtr<std::byte> d_z2r_coeffs_bytes;
+
+  // Spline cache identity — splines are immutable for the lifetime of the
+  // owning potential instance. We re-upload only if the caller hands us a
+  // different host table (e.g. a different potential bound to the same
+  // EamAlloyGpu — not supported today but keeps the invariant honest).
+  // Count exposed for T6.9a perf test: after N back-to-back compute() calls
+  // with the same tables this must be 1.
+  const double* splines_F_coeffs_host = nullptr;
+  const double* splines_rho_coeffs_host = nullptr;
+  const double* splines_z2r_coeffs_host = nullptr;
+  std::uint64_t splines_upload_count = 0;
 };
 
 EamAlloyGpu::EamAlloyGpu() : impl_(std::make_unique<Impl>()) {}
@@ -459,6 +470,10 @@ EamAlloyGpu& EamAlloyGpu::operator=(EamAlloyGpu&&) noexcept = default;
 
 std::uint64_t EamAlloyGpu::compute_version() const noexcept {
   return impl_ ? impl_->compute_version : 0;
+}
+
+std::uint64_t EamAlloyGpu::splines_upload_count() const noexcept {
+  return impl_ ? impl_->splines_upload_count : 0;
 }
 
 EamAlloyGpuResult EamAlloyGpu::compute(std::size_t n,
@@ -517,24 +532,38 @@ EamAlloyGpuResult EamAlloyGpu::compute(std::size_t n,
       "memcpy cell_atoms",
       cudaMemcpyAsync(d_cell_atoms, host_cell_atoms, cell_atoms_bytes, cudaMemcpyHostToDevice, s));
 
-  // Tables.
+  // Tables — cached across compute() calls per T6.9a. Splines are immutable
+  // for the lifetime of the owning potential; we re-upload only when the
+  // caller hands us a different host table triple.
   const std::size_t F_bytes = tables.n_species * tables.nrho * 7u * sizeof(double);
   const std::size_t rho_bytes_tab = tables.n_species * tables.nr * 7u * sizeof(double);
   const std::size_t z2r_bytes = tables.npairs * tables.nr * 7u * sizeof(double);
-  impl_->d_F_coeffs_bytes = pool.allocate_device(F_bytes, stream);
-  impl_->d_rho_coeffs_bytes = pool.allocate_device(rho_bytes_tab, stream);
-  impl_->d_z2r_coeffs_bytes = pool.allocate_device(z2r_bytes, stream);
+  const bool splines_changed = tables.F_coeffs != impl_->splines_F_coeffs_host ||
+                               tables.rho_coeffs != impl_->splines_rho_coeffs_host ||
+                               tables.z2r_coeffs != impl_->splines_z2r_coeffs_host;
+  if (splines_changed) {
+    impl_->d_F_coeffs_bytes = pool.allocate_device(F_bytes, stream);
+    impl_->d_rho_coeffs_bytes = pool.allocate_device(rho_bytes_tab, stream);
+    impl_->d_z2r_coeffs_bytes = pool.allocate_device(z2r_bytes, stream);
+    auto* d_F_upload = reinterpret_cast<double*>(impl_->d_F_coeffs_bytes.get());
+    auto* d_rho_upload = reinterpret_cast<double*>(impl_->d_rho_coeffs_bytes.get());
+    auto* d_z2r_upload = reinterpret_cast<double*>(impl_->d_z2r_coeffs_bytes.get());
+    check_cuda("memcpy F_coeffs",
+               cudaMemcpyAsync(d_F_upload, tables.F_coeffs, F_bytes, cudaMemcpyHostToDevice, s));
+    check_cuda(
+        "memcpy rho_coeffs",
+        cudaMemcpyAsync(d_rho_upload, tables.rho_coeffs, rho_bytes_tab, cudaMemcpyHostToDevice, s));
+    check_cuda(
+        "memcpy z2r_coeffs",
+        cudaMemcpyAsync(d_z2r_upload, tables.z2r_coeffs, z2r_bytes, cudaMemcpyHostToDevice, s));
+    impl_->splines_F_coeffs_host = tables.F_coeffs;
+    impl_->splines_rho_coeffs_host = tables.rho_coeffs;
+    impl_->splines_z2r_coeffs_host = tables.z2r_coeffs;
+    ++impl_->splines_upload_count;
+  }
   auto* d_F_coeffs = reinterpret_cast<double*>(impl_->d_F_coeffs_bytes.get());
   auto* d_rho_coeffs = reinterpret_cast<double*>(impl_->d_rho_coeffs_bytes.get());
   auto* d_z2r_coeffs = reinterpret_cast<double*>(impl_->d_z2r_coeffs_bytes.get());
-  check_cuda("memcpy F_coeffs",
-             cudaMemcpyAsync(d_F_coeffs, tables.F_coeffs, F_bytes, cudaMemcpyHostToDevice, s));
-  check_cuda(
-      "memcpy rho_coeffs",
-      cudaMemcpyAsync(d_rho_coeffs, tables.rho_coeffs, rho_bytes_tab, cudaMemcpyHostToDevice, s));
-  check_cuda(
-      "memcpy z2r_coeffs",
-      cudaMemcpyAsync(d_z2r_coeffs, tables.z2r_coeffs, z2r_bytes, cudaMemcpyHostToDevice, s));
 
   // ---------- 2. Output + scratch buffers ----------
   const std::size_t rho_buf_bytes = n * sizeof(double);
@@ -700,6 +729,10 @@ EamAlloyGpu::EamAlloyGpu(EamAlloyGpu&&) noexcept = default;
 EamAlloyGpu& EamAlloyGpu::operator=(EamAlloyGpu&&) noexcept = default;
 
 std::uint64_t EamAlloyGpu::compute_version() const noexcept {
+  return 0;
+}
+
+std::uint64_t EamAlloyGpu::splines_upload_count() const noexcept {
   return 0;
 }
 

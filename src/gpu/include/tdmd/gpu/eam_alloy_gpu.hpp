@@ -136,6 +136,12 @@ public:
   // to verify repeat-call behaviour without reaching into Impl.
   [[nodiscard]] std::uint64_t compute_version() const noexcept;
 
+  // Counter of actual spline H2D uploads (T6.9a caching). Invariant: after N
+  // back-to-back compute() calls with the same host spline table pointers,
+  // this equals 1 (the first call). Ship target: zero wasteful re-uploads on
+  // steady-state hot loops.
+  [[nodiscard]] std::uint64_t splines_upload_count() const noexcept;
+
 private:
   struct Impl;
   std::unique_ptr<Impl> impl_;

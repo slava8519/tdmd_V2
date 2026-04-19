@@ -104,6 +104,10 @@ std::uint64_t EamAlloyGpuAdapter::compute_version() const noexcept {
   return gpu_ ? gpu_->compute_version() : 0;
 }
 
+std::uint64_t EamAlloyGpuAdapter::splines_upload_count() const noexcept {
+  return gpu_ ? gpu_->splines_upload_count() : 0;
+}
+
 ForceResult EamAlloyGpuAdapter::compute(AtomSoA& atoms,
                                         const Box& box,
                                         const CellGrid& grid,
