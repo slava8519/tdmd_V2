@@ -228,18 +228,19 @@ DeviceInfo select_device(DeviceId id);
 
 ### 5.1. Cached device pool
 
-`DevicePool` (T6.3) — concrete `DeviceAllocator`. Реализация на base `cudaMallocAsync` + pool reuse:
+`DevicePool` (T6.3, landed 2026-04-19) — concrete `DeviceAllocator`. Один класс владеет обоими pools (device + pinned-host) потому что в M6 — один rank на process, pool 1:1 привязан к rank (нет multi-tenant sharing). Реализация на base `cudaMallocAsync` + pool reuse:
 
 - **Stream-ordered semantics** — alloc/free привязаны к stream через handle. Safely reuses буферы between stream consumers без explicit sync, если dependency graph корректный;
-- **Size classes**: {4 KiB, 64 KiB, 1 MiB, 16 MiB, 256 MiB}. Requests округляются вверх до ближайшего класса. Мелкие (<4 KiB) — идут в 4 KiB класс (wastes <100% по определению, но тривиально мало в absolute terms);
-- **LRU eviction** при pool pressure — при `cudaErrorMemoryAllocation` pool освобождает LRU-tail до размера request + headroom 10%;
-- **Warm-up** — `memory_pool_init_size_mib` (default 256, D-M6-12) allocated up front на `initialize()` чтобы первый kernel launch не стал на cold-start allocator.
+- **Size classes**: {4 KiB, 64 KiB, 1 MiB, 16 MiB, 256 MiB}. Requests округляются вверх до ближайшего класса; accounting (`bytes_in_use_device`) — по class bytes (honest re device commitment, не request bytes). Requests >256 MiB идут direct в `cudaMallocAsync` без pooling (oversize-fallback);
+- **Free-list policy v1.0** — простой grow-on-demand per-class free-list. На deleter block возвращается в free-list; на allocate пустой free-list → `cudaMallocAsync` miss. LRU eviction deferred (OQ-M6-1) — добавим когда T6.5 kernel pressure-testing покажет pool bloat как проблема;
+- **Warm-up** — `memory_pool_init_size_mib` MiB (default 256, D-M6-12) выделяется в constructor как блоки класса 2 (1 MiB) и сразу переносится в free-list. Первый kernel launch не стал на cold-start allocator;
+- **Thread-safety** — `DevicePool` **не thread-safe** (в M6 один logical thread на rank, no OpenMP inside kernels). Внешняя синхронизация нужна если concurrent access когда-либо потребуется.
 
 ### 5.2. Pinned host pool
 
-`PinnedHostPool` — allocates page-locked host memory через `cudaMallocHost`. Используется для MPI staging (D-M6-3): GPU forces D2H → pinned host buffer → MPI send → MPI recv → pinned host buffer → H2D. Pinned crucial потому что `cudaMemcpyAsync` требует host side быть pinned для async semantics; pageable memory forces sync copy.
+Pinned host memory allocator — **part of `DevicePool`** (не отдельный класс в v1.0). Использует `cudaMallocHost` для page-locked pages. Потребитель — MPI staging (D-M6-3): GPU forces D2H → pinned host buffer → MPI send → MPI recv → pinned host buffer → H2D. Pinned crucial потому что `cudaMemcpyAsync` требует host side быть pinned для async semantics; pageable memory forces sync copy.
 
-Size classes такие же как у DevicePool (симметричный pipeline). Warm-up отключён (pinned host memory — scarce resource, избегаем pre-allocation).
+Size classes те же что у device pool (симметричный pipeline). Free-list policy та же (grow-on-demand, LRU deferred). Warm-up для pinned отключён (pinned host memory — scarce resource, избегаем pre-allocation).
 
 ### 5.3. DeviceAllocator abstract interface
 
@@ -570,7 +571,7 @@ tdmd run cfg.yaml --gpu-device=1 --gpu-streams=2 --gpu-memory-pool-mib=512 --no-
 
 | ID          | Question                                                                 | Resolution path |
 |-------------|--------------------------------------------------------------------------|-----------------|
-| **OQ-M6-1** | Cached pool LRU eviction policy vs explicit `release_all()` — оптимальная granularity eviction | Resolved в T6.3 после microbenchmark on realistic allocation trace |
+| **OQ-M6-1** | Cached pool LRU eviction policy vs explicit `release_all()` — оптимальная granularity eviction | **T6.3 landed с grow-on-demand free-list (no LRU)**; revisit when T6.5 kernel pressure-testing реально покажет pool bloat на production load |
 | **OQ-M6-2** | Pinned host pool sizing — per rank или shared на node (multi-rank на GPU? нет в M6, но планируется M7+) | Defer to M7 planning; M6 keeps per-rank |
 | **OQ-M6-3** | NVTX overhead measurement — confirmable < 1% на 10⁶-атомном фикстюре?   | Measured в T6.13 smoke; update D-M6-14 if false |
 | **OQ-M6-4** | Kahan overhead на GPU — actual cost в NL/EAM hot path vs expected (+3-5%) | Measured в T6.5 regression; update §6.2 if significantly higher |
@@ -589,10 +590,11 @@ tdmd run cfg.yaml --gpu-device=1 --gpu-streams=2 --gpu-memory-pool-mib=512 --no-
 | Date       | Version | Change                                                                    |
 |------------|---------|---------------------------------------------------------------------------|
 | 2026-04-19 | v1.0    | Initial авторство. Anchors D-M6-1..D-M6-20 from `docs/development/m6_execution_pack.md`. Ships alongside T6.2 skeleton (`src/gpu/` + `tests/gpu/test_gpu_types.cpp`). Change log extension in `TDMD_Engineering_Spec.md` Приложение C. |
+| 2026-04-19 | v1.0.1  | §5.1/§5.2 updated с T6.3 implementation notes: `DevicePool` ships как single class owning both device+pinned pools (1:1 rank binding); grow-on-demand free-list policy; LRU deferred (OQ-M6-1). Adds `factories.hpp` public API (probe_devices / select_device / make_stream / make_event) + `device_pool.hpp`. `cuda_handles.hpp` internal header shares PIMPL Impl defs across gpu/ TUs без leaking CUDA symbols в public API. |
 
 Roadmap extensions (authored by future tasks):
 
-- **T6.3** → §5.1 pool LRU detail, resolve OQ-M6-1;
+- **T6.3** → §5.1 pool LRU detail, resolve OQ-M6-1 (**done — deferred to T6.5**);
 - **T6.4** → §7.1 NL kernel details, SoA layout confirmation (D-M6-16);
 - **T6.5** → §7.2 EAM kernel details, Kahan overhead measurement (OQ-M6-4);
 - **T6.6** → §7.3 VV details + NVE drift measurements;

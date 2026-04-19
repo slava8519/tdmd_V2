@@ -41,24 +41,6 @@ void busy_wait(std::chrono::microseconds duration) {
   }
 }
 
-// Locate `key` in a JSON-ish blob; return the substring that follows it up to
-// the next delimiter. Good enough for test assertions; not a real parser.
-std::string find_json_value(const std::string& s, const std::string& key) {
-  const auto pos = s.find("\"" + key + "\":");
-  if (pos == std::string::npos) {
-    return {};
-  }
-  auto start = pos + key.size() + 3;  // skip "key":
-  while (start < s.size() && (s[start] == ' ' || s[start] == '"')) {
-    ++start;
-  }
-  auto end = start;
-  while (end < s.size() && s[end] != ',' && s[end] != '}' && s[end] != '"' && s[end] != '\n') {
-    ++end;
-  }
-  return s.substr(start, end - start);
-}
-
 }  // namespace
 
 // ---------------------------------------------------------------------------

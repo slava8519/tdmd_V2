@@ -1,11 +1,14 @@
-# tdmd::gpu tests — M6 T6.2.
+# tdmd::gpu tests — M6 T6.2 + T6.3.
 # Exec pack: docs/development/m6_execution_pack.md
 #
 # test_gpu_types: skeleton type + config tests (pure C++, no CUDA needed).
-# T6.3+ will add .cu-based kernel unit tests gated on TDMD_BUILD_CUDA.
+# test_device_pool: runtime allocator tests; each case skips if CUDA is
+#   unavailable so the suite stays green on CPU-only builds + GPU-less CI.
 
 add_executable(test_gpu_types test_gpu_types.cpp)
-
 target_link_libraries(test_gpu_types PRIVATE tdmd::gpu Catch2::Catch2WithMain)
-
 add_test(NAME test_gpu_types COMMAND test_gpu_types)
+
+add_executable(test_device_pool test_device_pool.cpp)
+target_link_libraries(test_device_pool PRIVATE tdmd::gpu Catch2::Catch2WithMain)
+add_test(NAME test_device_pool COMMAND test_device_pool)

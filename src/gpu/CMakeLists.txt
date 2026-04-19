@@ -1,26 +1,31 @@
-# tdmd::gpu — M6 GPU primitive layer (RAII wrappers + allocator contract).
+# tdmd::gpu — M6 GPU primitive layer (RAII wrappers + allocator contract + device pool).
 # SPEC: docs/specs/gpu/SPEC.md (v1.0, 2026-04-19)
 # Exec pack: docs/development/m6_execution_pack.md T6.2–T6.13
 #
-# T6.2 ships a pure-C++ skeleton — PIMPL-hidden CUDA state (D-M6-17) lets
-# this target compile on CPU-only hosts (CI compile-only path per D-M6-6).
-# T6.3 replaces gpu_types.cpp with a .cu translation unit holding the
-# cudaStream_t / cudaEvent_t Impl definitions.
+# T6.2: PIMPL-hidden skeleton (types + allocator interface).
+# T6.3: factories (probe_devices / make_stream / make_event) + DevicePool
+#       (cudaMallocAsync-backed, D-M6-12) + PinnedHostPool (D-M6-3).
+# T6.4+: .cu kernel translation units layered on top.
 
-set(tdmd_gpu_sources gpu_types.cpp device_allocator.cpp)
+set(tdmd_gpu_sources gpu_types.cpp device_allocator.cpp factories.cpp device_pool.cpp)
 
 add_library(tdmd_gpu STATIC ${tdmd_gpu_sources})
 add_library(tdmd::gpu ALIAS tdmd_gpu)
 
 target_include_directories(tdmd_gpu PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
                                            $<INSTALL_INTERFACE:include>)
+# Internal header (cuda_handles.hpp) sits in src/gpu/ alongside the .cpp files — PRIVATE so it
+# doesn't leak into downstream targets (D-M6-17).
+target_include_directories(tdmd_gpu PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 target_compile_features(tdmd_gpu PUBLIC cxx_std_20)
 
-# Surface TDMD_BUILD_CUDA as a compile definition so T6.3+ .cu translation units can guard
-# CUDA-runtime includes. The skeleton itself is CUDA-free.
+# Surface TDMD_BUILD_CUDA as a compile definition so the .cpp files can guard CUDA-runtime includes.
+# Link cudart when CUDA is enabled.
 if(TDMD_BUILD_CUDA)
   target_compile_definitions(tdmd_gpu PUBLIC TDMD_BUILD_CUDA=1)
+  find_package(CUDAToolkit REQUIRED)
+  target_link_libraries(tdmd_gpu PUBLIC CUDA::cudart)
 else()
   target_compile_definitions(tdmd_gpu PUBLIC TDMD_BUILD_CUDA=0)
 endif()
