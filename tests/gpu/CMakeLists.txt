@@ -54,3 +54,14 @@ target_compile_definitions(
   PRIVATE TDMD_TEST_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/potentials/fixtures"
           TDMD_VERIFY_POTENTIALS_DIR="${CMAKE_SOURCE_DIR}/verify/third_party/potentials")
 add_test(NAME test_eam_mixed_fast_within_threshold COMMAND test_eam_mixed_fast_within_threshold)
+
+# T7.0: 100-step NVE drift on Ni-Al EAM/alloy with runtime.backend=gpu + MixedFastBuild. Asserts
+# |E(100) - E(0)| / |E(0)| <= 1e-6 (per-100-step D-M6-8 dense-cutoff budget with 10x margin under
+# the 1000-step 1e-5 cap). Self-skips on no-CUDA, Reference-only, or CPU-only builds (all of those
+# paths are covered by other gates).
+add_executable(test_t4_nve_drift test_t4_nve_drift.cpp)
+target_link_libraries(test_t4_nve_drift PRIVATE tdmd::gpu tdmd::runtime tdmd::io
+                                                Catch2::Catch2WithMain)
+target_compile_definitions(test_t4_nve_drift PRIVATE TDMD_REPO_ROOT="${CMAKE_SOURCE_DIR}")
+add_test(NAME test_t4_nve_drift COMMAND test_t4_nve_drift)
+set_tests_properties(test_t4_nve_drift PROPERTIES SKIP_RETURN_CODE 4)

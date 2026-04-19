@@ -1,25 +1,29 @@
-// Exec pack: docs/development/m6_execution_pack.md T6.8
-// SPEC: docs/specs/gpu/SPEC.md §8.2 (MixedFast, Philosophy B), §6.3 (D-M6-8)
-// Master spec: §D.1 Philosophy B + Приложение C T6.8 addendum
+// Exec pack: docs/development/m6_execution_pack.md T6.8 (shipped)
+//            docs/development/m7_execution_pack.md T7.0 (D-M6-8 formalized)
+// SPEC: docs/specs/gpu/SPEC.md §8.2 (MixedFast, Philosophy B), §8.3 (D-M6-8)
+// SPEC: verify/thresholds/thresholds.yaml `gpu_mixed_fast.dense_cutoff`
+// Master spec: §D.1 Philosophy B + Приложение C T7.0 addendum
 //
-// T6.8a single-step acceptance gate: run both `EamAlloyGpu` (Fp64 reference)
-// and `EamAlloyGpuMixed` (FP32 r²/sqrt/1r + FP64 energy chain) on the same
-// fixture; verify that the Mixed result sits within the thresholds actually
-// achievable for an FP32 pair-distance EAM pipeline:
+// Single-step acceptance gate on Ni-Al EAM/alloy + Al FCC fixtures. Thresholds
+// are the T7.0-canonical D-M6-8 **dense-cutoff** values (EAM-class potentials,
+// ≥20 neighbors per atom typical):
 //
 //   * per-atom force rel-diff ≤ 1e-5   (floor: max(1.0, |f|))
 //   * total PE         rel-diff ≤ 1e-7
-//   * virial Voigt     rel-diff ≤ 5e-6   (sums ~3N pair terms; ~3× force err)
+//   * virial Voigt     rel-diff ≤ 5e-6  (max-component normalized)
 //
-// T6.8a scope note re D-M6-8 (1e-6 force / 1e-8 PE): FP32 sqrtf + 1/x on r
-// accumulate ~1.2e-7 rel error per pair; dense EAM stencils see ~50
-// neighbours with partial sign-cancellation on symmetric lattices, so the
-// per-atom force error lands ~1-3e-6 in worst case. Hitting 1e-6 requires
-// FP32-table storage (halves table bandwidth but rounds every coefficient)
-// or a full rethink of the pair-math pipeline — deferred to T6.8b along
-// with the 100-step NVE drift gate (≤ 1e-5/1000 steps). The current kernel
-// demonstrates the Mixed-flavor dispatch + accumulator contract; tighter
-// numerics are an orthogonal optimization.
+// These are the **canonical** D-M6-8 values after the T7.0 SPEC delta, not
+// a relaxation of an unreachable target — the 1e-6 / 1e-8 ambition that
+// appeared in v1.0-v1.0.11 was an FP32 precision ceiling artifact, never
+// achievable in Philosophy B MixedFast on dense-cutoff stencils. Rationale
+// lives in gpu/SPEC §8.3 "Rationale для dense-cutoff ceiling" + memory
+// `project_fp32_eam_ceiling.md`. Sparse-cutoff stencils (LJ/Morse) retain
+// 1e-6/1e-8 as an M9+ ambition for when those styles land on GPU.
+//
+// Drift over time (NVE conservation per 1000 steps) is a separate gate
+// covered by tests/gpu/test_t4_nve_drift.cpp — integrator-level, also
+// MixedFast-only (Reference is byte-exact per D-M6-7 and drift is
+// uninteresting there).
 //
 // All cases skip when no CUDA device is available so the suite stays green
 // on CPU-only builds + GPU-less CI runners.

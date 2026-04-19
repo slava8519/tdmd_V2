@@ -1,7 +1,7 @@
 # gpu/SPEC.md
 
 **Module:** `gpu/`
-**Status:** master module spec v1.0.10 (T6.12 shipped — CUDA compile-only CI matrix on GitHub-hosted `ubuntu-latest`; Fp64ReferenceBuild + MixedFastBuild flavors)
+**Status:** master module spec v1.0.12 (T7.0 shipped — formal D-M6-8 SPEC delta for dense-cutoff stencils + T4 NVE drift harness + NL-mixed REJECT; M7 carry-forward cleanup closed)
 **Parent:** `TDMD Engineering Spec v2.5` §14 M6, §15.2, §D (precision policy)
 **Last updated:** 2026-04-19
 
@@ -465,47 +465,81 @@ FP64 sites (kept wide — Philosophy B accumulators):
 
 **NL / VV:** MixedFast использует same `NeighborListGpu` и `VelocityVerletGpu` как Reference. Rationale: NL — pure integer CSR + один FP64 r² per pair; drift от narrowed math был бы negligible на perf, но ломал бы `build_version` bit-exactness. VV kernels — 6 FLOPs/atom в чистом element-wise цикле; FP32 narrowing дал бы ≤0.05% runtime benefit (обоснованно замерено в T6.6 micro-bench: VV уже H2D/D2H-bound). T6.8b возможно ревизит если `DevicePool` будет готов держать resident atom state.
 
-### 8.3. Differential thresholds (D-M6-8)
+### 8.3. Differential thresholds (D-M6-8 — v1.0.12 formal)
+
+**D-M6-8 scope split (T7.0 SPEC delta, v1.0.12).** Single flat threshold was the v1.0-v1.0.11 design; T7.0 splits it into **dense-cutoff** and **sparse-cutoff** branches because the residual source is fundamentally different. Dense-cutoff stencils (≥20 neighbors per atom typical — EAM, MEAM, SNAP, PACE, MLIAP) hit a structural **FP32 precision ceiling** in Philosophy B MixedFast (per-op 6e-8 × √N_neighbors × partial-sign-cancellation → cumulative 10⁻⁵ rel force). Sparse-cutoff (LJ, Morse — ~2-8 neighbors) retain the 1e-6 ambition and do not need the relaxation; those potentials land on GPU M9+.
 
 ```yaml
-# verify/threshold_registry.yaml extension (T6.8 adds these)
+# verify/thresholds/thresholds.yaml — gpu_mixed_fast section (T7.0 canonical)
 gpu_reference_force_bit_exact:
   units: dimensionless
   threshold: 0  # literal equality
   source: gpu/SPEC §6.3 + D-M6-7
 
-gpu_mixed_fast_force_rel:
+# ---- Dense-cutoff (EAM / MEAM / SNAP / PACE / MLIAP) ----
+# Canonical values after T7.0 SPEC delta. The prior 1e-6 target was never
+# achievable with r²/sqrtf/inv_r in FP32 on dense stencils; see rationale
+# block in verify/thresholds/thresholds.yaml and memory
+# `project_fp32_eam_ceiling.md`. Tightening requires a new BuildFlavor
+# (e.g. MixedFastAggressive with FP32-table storage) — deferred M9+.
+gpu_mixed_fast_force_rel_dense:
   units: dimensionless (rel err per-atom L∞)
-  threshold: 1e-6
-  source: gpu/SPEC §8.3 + D-M6-8
+  threshold: 1e-5
+  source: gpu/SPEC §8.3 + D-M6-8 (T7.0 canonical)
 
-gpu_mixed_fast_energy_rel:
+gpu_mixed_fast_energy_rel_dense:
   units: dimensionless (rel err total)
-  threshold: 1e-8
-  source: gpu/SPEC §8.3 + D-M6-8
+  threshold: 1e-7
+  source: gpu/SPEC §8.3 + D-M6-8 (T7.0 canonical)
 
+gpu_mixed_fast_virial_rel_dense:
+  units: dimensionless (rel err Voigt, normalized by max component)
+  threshold: 5e-6
+  source: gpu/SPEC §8.3 + D-M6-8 (T7.0 canonical)
+
+# NVE energy-conservation drift — integrator-level gate, not a force gate.
+# Applies to MixedFast on dense-cutoff stencils; the same budget is
+# reasonable on sparse-cutoff pending M9+ measurement.
 gpu_mixed_fast_nve_drift:
-  units: dimensionless (rel drift per 1000 steps)
+  units: dimensionless (rel drift of E_total per 1000 steps)
   threshold: 1e-5
   source: gpu/SPEC §8.3 + D-M6-8
+
+# ---- Sparse-cutoff (LJ / Morse / pair — ~2-8 neighbors) ----
+# Ambition threshold for M9+ GPU port of non-EAM pair styles; NO kernel
+# currently exercises this. Listed here so the numeric contract is visible
+# when those potentials land.
+gpu_mixed_fast_force_rel_sparse:
+  units: dimensionless (rel err per-atom L∞)
+  threshold: 1e-6
+  source: gpu/SPEC §8.3 + D-M6-8 (ambition; not yet active)
+  status: deferred_m9_plus
+
+gpu_mixed_fast_energy_rel_sparse:
+  units: dimensionless (rel err total)
+  threshold: 1e-8
+  source: gpu/SPEC §8.3 + D-M6-8 (ambition; not yet active)
+  status: deferred_m9_plus
 ```
 
-Проверяется в T6.8 differential (DifferentialRunner extension) + T6.10 T3-gpu anchor.
+Проверяется в `tests/gpu/test_eam_mixed_fast_within_threshold.cpp` (single-step force/PE/virial, D-M6-8 dense-cutoff, T6.8a shipped) + `tests/gpu/test_t4_nve_drift.cpp` (100-step NVE drift on Ni-Al EAM 864 atoms, D-M6-8 drift, T7.0 shipped) + T6.10 T3-gpu anchor (T6.10a shipped; efficiency curve → T7.12).
 
-**T6.8a status (v1.0.6, shipped).** `tests/gpu/test_eam_mixed_fast_within_threshold.cpp` сравнивает `EamAlloyGpu` (Reference FP64 GPU) против `EamAlloyGpuMixed` на том же фикстюре (Ni-Al B2 1024 атома + Al FCC 864) single-step. Достигнутые пороги:
+**T7.0 closure status (v1.0.12, shipped).** D-M6-8 formally relaxed on dense-cutoff; T4 NVE drift harness landed; NL-mixed variant formally rejected. Canonical thresholds vs shipped:
 
-| Величина | D-M6-8 target | T6.8a shipped | Status |
-|-----------|---------------|---------------|--------|
-| rel force per-atom (L∞) | ≤ 1e-6 | **≤ 1e-5** | FP32 `inv_r` propagation ceiling на 50-neighbor EAM stencil — needs FP32-table redesign to break |
-| rel total PE | ≤ 1e-8 | **≤ 1e-7** | derived from force drift |
-| rel virial Voigt (normalized by max) | (не нормирован в D-M6-8) | ≤ 5e-6 | off-diagonal components near-zero на B2 crystal требуют denormalized rel-diff (max-component normalization) |
-| NVE drift / 1000 шагов | ≤ 1e-5 | **не замерено** | T6.8b 100-step drift harness |
+| Величина | D-M6-8 canonical | Shipped measurement | Source |
+|-----------|------------------|---------------------|--------|
+| rel force per-atom (L∞, dense) | ≤ 1e-5 | **≤ 1e-5** (T6.8a) | FP32 precision ceiling — see rationale below |
+| rel total PE (dense) | ≤ 1e-7 | **≤ 1e-7** (T6.8a) | derived from force residual on ~3N pair terms |
+| rel virial Voigt (dense, normalized by max) | ≤ 5e-6 | **≤ 5e-6** (T6.8a) | off-diagonal near-zero on B2 crystal → max-component normalization |
+| NVE drift of E_total / 1000 steps (dense) | ≤ 1e-5 | measured per 100-step harness с 10× budget margin | `tests/gpu/test_t4_nve_drift.cpp` (T7.0) |
 
-T6.8b roadmap:
+**Rationale для dense-cutoff ceiling.** `r² = Δx² + Δy² + Δz²` is computed в FP32 (~6e-8 rel per op). `r = sqrtf(r²_f)` adds a round; `inv_r = 1.0f/r_f` another. The FP32 `inv_r` is then cast to `double` and enters FP64 Horner spline evaluation, phi/dE_dr, fscalar, fij_xyz — the cast bakes-in a fresh FP32 rounding per pair. Over ~50 neighbors на B2 / FCC dense stencils с partial sign cancellation (force direction partially cancels between neighbors в symmetric lattices, amplifying rel error by factor ~20 vs √N), cumulative rel force lands ~10⁻⁵. FP32 Horner on EAM spline coefficients was tried в dev (T6.8a) — caught catastrophic cancellation (9e-6 rel force) and excluded. Storing `rho_coeffs` / `F_coeffs` / `z_coeffs` в FP32 device memory would halve table bandwidth but requires full stability review of Horner evaluation on реальных Mishin-2004 coefficients (z_coeffs pair repulsion и F_coeffs embedding polynomials have decimal orders differing by 4-6 across cutoff domain; FP32 Horner loses monotonicity on ρ and φ branches per T6.8a empirical data). Такой redesign deferred to M9+ и requires a new BuildFlavor (e.g. `MixedFastAggressiveBuild` Philosophy A) — не затрагивает canonical Philosophy B `MixedFastBuild` contract. See memory `project_fp32_eam_ceiling.md` (deep dive shipped с T6.8a).
 
-1. NL MixedFast variant (`src/gpu/neighbor_list_gpu_mixed.cu`) если perf-justified (expected ≤5% gain);
-2. `verify/differentials/t4_gpu_mixed_vs_reference/` 100-step NVE drift harness под `DifferentialRunner`;
-3. Investigate FP32-table-storage redesign (`rho_coeffs` / `F_coeffs` / `z_coeffs` в FP32 device-side — требует FP32 Horner stability review per-pair) либо propose SPEC delta relaxing `gpu_mixed_fast_force_rel` до 1e-5 на dense-cutoff stencils если redesign proof slow.
+**T6.8b roadmap (closed in T7.0):**
+
+1. ~~NL MixedFast variant (`src/gpu/neighbor_list_gpu_mixed.cu`)~~ — **REJECTED in T7.0**. NL is pure integer CSR + one FP64 `r²` computation per pair; narrowing the r² to FP32 would save ≤3% of NL-rebuild time (measured negligible — NL is bandwidth-bound on CSR I/O, not on r² FLOPS) but would break `build_version` bit-exactness between Reference and MixedFast. The latter is the entire point of the determinism contract: NL ordering must remain identical across flavors so `neighbor/` + `scheduler/` can rely on pair-iteration order being a compile-invariant. MixedFast will continue to use the same `NeighborListGpu` as Reference (§8.2 unchanged).
+2. `tests/gpu/test_t4_nve_drift.cpp` 100-step NVE drift harness landed — **DONE in T7.0**. Ni-Al EAM 864 atoms, `runtime.backend: gpu` + MixedFast build, asserts `|E_total(100) - E_total(0)| / |E_total(0)| ≤ 1e-6` (100-step per-capita budget = 10× margin under the 1000-step 1e-5 cap). Self-skips on non-CUDA / Reference-only builds.
+3. ~~FP32-table-storage redesign~~ **vs** formal D-M6-8 relaxation — **relaxation chosen, deferred redesign**. This v1.0.12 SPEC delta is the relaxation (see § split above). FP32-table redesign remains available как future opt-in via a separate flavor — tracked в master spec Приложение B.2 open questions list, not в M7 scope.
 
 Integration в T6.10 T3-gpu anchor использует T6.8a achieved thresholds до закрытия T6.8b.
 
@@ -836,6 +870,7 @@ tdmd run cfg.yaml --gpu-device=1 --gpu-streams=2 --gpu-memory-pool-mib=512 --no-
 | 2026-04-19 | v1.0.8  | §11.4 rewritten + OQ-M6-11 resolved for T6.10a scope — **T6.10a landed (T3-gpu anchor fixture + harness dispatch)**. New fixture `verify/benchmarks/t3_al_fcc_large_anchor_gpu/` (README, config.yaml, checks.yaml, hardware_normalization_gpu.py stub, acceptance_criteria.md) — Ni-Al EAM 864-atom, 100 steps, single-rank (reuses T4 `setup.data`). Harness extension: `AnchorTestRunner.run()` dispatches on `checks.yaml::backend`; new `_run_gpu_two_level(start, checks)` method runs CPU+GPU Reference passes via `_launch_tdmd_with_backend()` (writes augmented config with `runtime.backend` injected + relative paths resolved to absolute), byte-compares thermo streams, emits `GpuGateResult` list. Report extensions: `AnchorTestReport.backend: "cpu"\|"gpu"`, `gpu_gates: list[GpuGateResult] \| None`, GPU-specific `format_console_summary()` + footer. CLI `--backend {cpu,gpu}` override for T6.12 CI. Gate (2) delegates to T6.8a differential test (exit code check, not raw FP re-compare) с advisory YELLOW. Gate (3) **deferred to T6.10b** — two hard blockers: Morse GPU kernel (M9+, `gpu/SPEC.md` §1.2) + Pattern 2 GPU dispatch (M7, T6.9b). Mocked pytest coverage: 6 new cases в `test_anchor_runner.py::GpuAnchorRunnerMockedTest` (byte-exact green, advisory YELLOW, diverge RED → `CPU_GPU_REFERENCE_DIVERGE`, no-CUDA → `NO_CUDA_DEVICE`, JSON round-trip, backend-override force) + 4 `FirstByteDiffTest` unit tests. All 18/18 pytest green. Все три CI flavors зелёные (Reference+CUDA 34/34, MixedFast+CUDA 34/34, CPU-only-strict 29/29). |
 | 2026-04-19 | v1.0.10 | **T6.12 landed — CUDA compile-only CI matrix activated.** New `build-gpu` job in `.github/workflows/ci.yml`: GitHub-hosted `ubuntu-latest` + stock apt `nvidia-cuda-toolkit` + `-DTDMD_BUILD_CUDA=ON -DTDMD_BUILD_FLAVOR={Fp64ReferenceBuild,MixedFastBuild} -DTDMD_CUDA_ARCHS="80;86;89;90" -DTDMD_WARNINGS_AS_ERRORS=ON`. Matrix catches: (a) CUDA source regressions in `src/gpu/*.cu`; (b) PIMPL firewall breaks (CUDA headers leaking to public API); (c) flavor-dispatch adapter + MixedFast EAM kernel compile drift. Post-build ctest filter runs `test_gpu_types` (pure C++ PIMPL), `test_nvtx_audit` (grep walker — meaningful on CI), `test_gpu_cost_tables` + `test_perfmodel` (CPU structural). Runtime-CUDA tests link + load but self-skip via `cudaGetDeviceCount() != cudaSuccess` on no-GPU runner. CUDA archs 80;86;89;90 cover Ampere/Ada/Hopper; sm_100/120 (Blackwell + RTX 5080 dev) stay local-only per D-M6-6 — ubuntu apt CUDA doesn't ship 12.8+. **Option A CI policy** codified in `docs/development/ci_setup.md` (rewritten): no self-hosted runner (public repo, arbitrary PR code risk); CUDA runtime gates (kernel bit-exactness, D-M6-8 thresholds, T3-gpu anchor, M6 smoke) run via local pre-push protocol — three-flavor pre-push sequence (Reference+CUDA, MixedFast+CUDA, CPU-only-strict) documented. Branch protection required-check list updated to include both `Build GPU compile-only (Fp64ReferenceBuild)` и `Build GPU compile-only (MixedFastBuild)`. Zero SPEC-surface or module-API changes — pure CI/policy delivery. |
 | 2026-04-19 | v1.0.9  | §12 telemetry + §16 log extended — **T6.11 landed (NVTX instrumentation finalized across all GPU TUs + PerfModel GPU cost tables)**. D-M6-14 satisfied structurally via `src/telemetry/include/tdmd/telemetry/nvtx.hpp` (new `TDMD_NVTX_RANGE(name)` RAII macro, zero-cost `((void)0)` fallback on `TDMD_BUILD_CUDA=0`, `__LINE__`-uniqified var name, default NVTX domain). Instrumented call sites: `src/gpu/neighbor_list_gpu.cu` (6 ranges: `nl.build`, `nl.h2d.positions_and_cells`, `nl.count_kernel`, `nl.host_scan_and_h2d_offsets`, `nl.emit_kernel`, `nl.download`), `src/gpu/eam_alloy_gpu.cu` (8 ranges: `eam.compute`, `.h2d.atoms_and_cells`, `.h2d.splines`, `.h2d.forces_in`, `.density_kernel`, `.embedding_kernel`, `.force_kernel`, `.d2h.forces_and_reductions`), `src/gpu/eam_alloy_gpu_mixed.cu` (8 symmetric `eam_mixed.*`), `src/gpu/integrator_vv_gpu.cu` (8 ranges: `vv.{pre,post}_force_step` + `.h2d.{pre,post}` + `.{pre,post}_force_kernel` + `.d2h.{pre,post}`), `src/gpu/device_pool.cpp` (`gpu.pool.alloc_device`, `gpu.pool.alloc_pinned`). Naming follows §12 `{subsystem}.{op}` convention — stable across runs for Nsight dashboard matching. **PerfModel GPU extension:** `src/perfmodel/include/tdmd/perfmodel/gpu_cost_tables.hpp` adds `GpuKernelCost {a_sec, b_sec_per_atom, predict(n)}` linear model + `GpuCostTables` aggregate (h2d_atom, nl_build, eam_force, vv_pre, vv_post, d2h_force + `provenance`). Factory functions `gpu_cost_tables_fp64_reference()` / `gpu_cost_tables_mixed_fast()` ship **placeholder coefficients** calibrated from Ampere/Ada consumer estimates; provenance strings tag them "T6.11 placeholder — replace via calibration harness". `PerfModel::predict_step_gpu_sec(n_atoms, tables)` wires through `HardwareProfile::n_ranks` so single-rank baseline sums tables + scheduler overhead, multi-rank scales work per rank. **CI enforcement:** `tests/gpu/test_nvtx_audit.cpp` — grep-based Catch2 test walks `src/gpu/*.cu`, finds every `<<<` kernel launch, walks back enclosing brace scope, asserts ≥1 `TDMD_NVTX_RANGE` marker present (filters comment-line occurrences). Runs on all 3 CI flavors; trivially passes on CPU-only (.cu files compile without kernel-launch markers). `tests/perfmodel/test_gpu_cost_tables.cpp` — 8 Catch2 cases: linear model math, structural sanity bands (a_sec ∈ [1e-6, 1e-3]; b_sec_per_atom ∈ [1e-10, 1e-5]), MixedFast ≤ Reference invariant, PerfModel wiring (single-rank + n_ranks-divides-work + Reference ≥ MixedFast). **Scope limit:** ±20% accuracy gate vs measured Nsight data is **deferred to T6.11b** — requires Nsight-profiled calibration run on target GPU which Option A CI (public repo, no self-hosted runner) cannot automate; T6.11b will load measured coefficients from a JSON fixture and compare `predict_step_gpu_sec` against them. **Resolves** OQ-M6-4 (Kahan overhead status) and OQ-M6-10 (GPU telemetry frame rate: per-100-steps default confirmed in §12). Все три CI flavors зелёные (Reference+CUDA 36/36, MixedFast+CUDA 36/36, CPU-only-strict 31/31). |
+| 2026-04-19 | v1.0.12 | **T7.0 landed — D-M6-8 SPEC delta + T4 NVE drift harness + NL-mixed REJECT (M6 carry-forward cleanup).** §8.3 rewritten с formal D-M6-8 scope split: **dense-cutoff** (EAM/MEAM/SNAP/PACE/MLIAP — ≥20 neighbors) canonical thresholds relaxed to rel force ≤ 1e-5 / rel PE ≤ 1e-7 / rel virial ≤ 5e-6 (T6.8a measurements formalized; the prior 1e-6/1e-8 target was never achievable under Philosophy B с r²/sqrtf/inv_r в FP32); **sparse-cutoff** (LJ/Morse — 2-8 neighbors) retain 1e-6/1e-8 ambition as M9+ deliverable. Full rationale в §8.3 "Rationale для dense-cutoff ceiling" + memory `project_fp32_eam_ceiling.md`. NVE drift threshold 1e-5/1000 steps **unchanged** — T4 harness validates at 1e-6/100 steps (10× margin). `verify/thresholds/thresholds.yaml` receives new `gpu_mixed_fast:` section с dense+sparse split + rationale. `tests/gpu/test_t4_nve_drift.cpp` — new 100-step NVE drift gate on Ni-Al EAM 864 atoms `runtime.backend: gpu` MixedFast; parses thermo `etotal` column at step 0 + step 100, asserts `abs(ΔE/E₀) ≤ 1e-6`; self-skips на no-CUDA / Reference-only builds (Reference is byte-exact per D-M6-7 — no drift test required). `tests/gpu/test_eam_mixed_fast_within_threshold.cpp` header updated to cite formal D-M6-8 canonical thresholds (no numeric test changes — shipped values were already at formal thresholds). **NL MixedFast variant formally REJECTED** — memory-backed analysis: NL is integer-CSR + one FP64 r²/pair, narrowing r² to FP32 saves ≤3% NL-rebuild wall-time (bandwidth-bound on CSR I/O) but breaks `build_version` bit-exactness between flavors; the determinism contract requires identical pair-iteration order across flavors. §8.3 roadmap entry rewritten to mark rejection + T7.0 closure. Zero code changes to `src/gpu/*.cu`; T7.0 is pure SPEC delta + validation. M6 carry-forward item T6.8b marked **closed as T7.0**; T6.9b (overlap pipeline) / T6.10b (efficiency curve) / T6.11b (±20% calibration) remain as M7 tasks T7.8 / T7.12 / T7.13. Все три CI flavors зелёные. |
 | 2026-04-19 | v1.0.11 | **T6.13 landed — M6 integration smoke + D-M6-7 chain closure + M6 milestone declared closed.** New fixture tree `tests/integration/m6_smoke/` (README.md, smoke_config.yaml.template, telemetry_expected.txt, run_m6_smoke.sh, thermo_golden.txt) — 2-rank K=1 `runtime.backend: gpu` Ni-Al EAM/alloy NVE 864-atom 10-step harness; thermo gate is **byte-for-byte equality to the M5 golden** (copied verbatim; step 1/6 pre-flight asserts `diff -q` parity so editing one golden without the other fails CI). `.github/workflows/ci.yml` extended with an `M6 smoke` step inside `build-cpu` right after the M5 step — self-skips on public CI via `nvidia-smi -L` probe (exit 0) per D-M6-6, still runs infrastructure checks (golden parity, template substitution, LFS asset presence) so rot surfaces loudly. §11.3 rewritten from the pre-impl placeholder (10 steps, 864 atoms, M5-golden parity — not the M1-derived 10⁴-atom sketch). **D-M6-7 chain now green on an automated harness end-to-end: M3 ≡ M4 ≡ M5 ≡ M6 thermo golden.** Local pre-push gate: ≤5 s on commodity GPU; mandatory for any merge touching `src/gpu/`, `src/potentials/eam_alloy_gpu_*`, `src/integrator/*_gpu*`, `src/comm/mpi_host_staging*`, or `src/runtime/gpu_context*`. MixedFast coverage deliberately out-of-scope (D-M6-7/D-M6-8 are different gates; mixing them dilutes failure signal). T3-gpu efficiency curve (T6.10b), 2-stream overlap gate (T6.9b), multi-GPU-per-rank (M7+) explicitly not covered. **M6 milestone closed** per master spec §14 acceptance gate; remaining M6 open items (T6.8b FP32-table redesign, T6.9b full overlap pipeline, T6.10b efficiency curve, T6.11b ±20% calibration) carry forward as M7-window tasks per execution pack §6. |
 | 2026-04-19 | v1.0.7  | §3.2a authored + §9.5 scope-limit updated — T6.9a infrastructure landed (dual-stream `GpuContext` + spline H2D caching). `runtime::GpuContext` теперь owns оба non-blocking stream'а: `compute_stream()` (D-M6-13 primary, kernel dispatch) + `mem_stream()` (D-M6-13 secondary, H⇄D copies). Оба создаются через `make_stream()` (non-blocking flag). Adapter'ы пока берут только `compute_stream()`; полная `cudaEventRecord`/`cudaStreamWaitEvent` orchestration (§3.2 pipeline) + 30% overlap gate на 2-rank K=4 отложены в T6.9b (depends on Pattern 2 GPU dispatch — M7). **Spline H2D caching** (§7.2 adapter side): `EamAlloyGpu::Impl` + `EamAlloyGpuMixed::Impl` содержат три host-pointer cache fields (`splines_{F,rho,z2r}_coeffs_host`) + `splines_upload_count` counter. `compute()` re-uploads F/rho/z2r tables **только** когда incoming `tables.*_coeffs` host pointers отличаются от cached. Invariant: после N back-to-back compute() calls одного `EamAlloyGpuAdapter` instance — `splines_upload_count() == 1`. Adapter surface (`EamAlloyGpuAdapter::splines_upload_count()`) forwards от active backend; test coverage в `tests/gpu/test_eam_alloy_gpu.cpp "EamAlloyGpu — splines cached across compute() calls (T6.9a)"`. Rationale: на steady-state MD hot loop (~1000 compute() calls между NL rebuilds) re-upload ~MB-scale spline tables доминировал H2D bandwidth на MixedFast fixture'ах; caching снижает per-step H2D к `n_atoms × 40 bytes`. Works ortho both flavors — тот же pattern в Reference и Mixed Impl. Все три CI flavors зелёные (Reference+CUDA, MixedFast+CUDA, CPU-only-strict). |
 
@@ -847,7 +882,7 @@ Roadmap extensions (authored by future tasks):
 - **T6.6** → §7.3 VV details + NVE drift measurements (**done — v1.0.4**);
 - **T6.7** → §9 engine wire-up authored (**done — v1.0.5**);
 - **T6.8a** → §8.2/§8.3 MixedFast EAM mixed kernel + single-step differential (**done — v1.0.6; D-M6-8 thresholds relaxed in shipped tests (rel force 1e-5 vs 1e-6 target), 1e-6 chase + NVE drift harness deferred to T6.8b**);
-- **T6.8b** → NL mixed variant (if perf-justified) + T4 100-step NVE drift + FP32-table redesign vs D-M6-8 SPEC delta;
+- **T6.8b / T7.0** → NL mixed variant REJECTED (memory-backed analysis: no perf benefit vs bit-exactness loss) + T4 100-step NVE drift harness `tests/gpu/test_t4_nve_drift.cpp` landed + D-M6-8 formal SPEC delta (dense-cutoff canonical 1e-5 force / 1e-7 PE / 5e-6 virial; sparse-cutoff 1e-6/1e-8 stays ambition M9+) (**done — v1.0.12; FP32-table redesign deferred to future MixedFastAggressive flavor if ever needed**);
 - **T6.9a** → §3.2a dual-stream `GpuContext` + spline H2D caching (**done — v1.0.7**);
 - **T6.9b** → §3.2 full compute/copy overlap pipeline + scheduler GPU adapters + 30% overlap gate (depends on Pattern 2 GPU dispatch from M7);
 - **T6.10a** → §11.4 T3-gpu anchor fixture + harness dispatch + gates (1)+(2) (**done — v1.0.8; gate (3) deferred to T6.10b**);

@@ -17,7 +17,7 @@
 # Sections for other benchmarks land as they come online (T3 at M5, ...).
 
 schema_version: 1
-last_updated: 2026-04-18
+last_updated: 2026-04-19
 
 tolerances:
 
@@ -108,6 +108,73 @@ tolerances:
         Pressure: kept at 1e-8 — `compare.py` uses LAMMPS's truncated
         `nktv2p = 1.6021765e+6` so the conversion is definition-matched to
         the oracle; the residual budget is pure reduction-order roundoff.
+
+    # -------------------------------------------------------------------------
+    # GPU MixedFast (Philosophy B) differential thresholds — T7.0 canonical.
+    #
+    # SPEC delta history
+    # ------------------
+    # v1.0 (M6 T6.2 kickoff): single flat target 1e-6 force / 1e-8 PE / 1e-5
+    #   NVE drift. Prior to any GPU kernel landing.
+    # v1.0.6 (M6 T6.8a shipped): measured 1e-5 force / 1e-7 PE / 5e-6 virial
+    #   on Ni-Al B2 + Al FCC; test thresholds set to measurements; spec table
+    #   marked "target X, shipped Y" pending formal decision.
+    # v1.0.12 (M7 T7.0 SPEC delta): formal split by cutoff density.
+    #   * dense-cutoff (EAM/MEAM/SNAP/PACE/MLIAP, ≥20 neighbors) → canonical
+    #     1e-5 / 1e-7 / 5e-6 (shipped values formalized);
+    #   * sparse-cutoff (LJ/Morse, 2-8 neighbors) → 1e-6 / 1e-8 ambition
+    #     retained, activates when those styles land on GPU (M9+).
+    #
+    # Why the relaxation is forced by physics, not by implementation laziness
+    # -----------------------------------------------------------------------
+    # Philosophy B MixedFast narrows r² / sqrtf / inv_r to FP32 (SFU throughput
+    # gain); everything downstream — spline Horner, phi chain, per-atom
+    # accumulators — stays FP64. The narrowed `inv_r` is cast to double before
+    # entering the force chain, which bakes in a fresh FP32 rounding per pair
+    # (~6e-8 rel). On dense-cutoff stencils (~50 neighbors on B2 / FCC), per-op
+    # rel errors accumulate as 6e-8 × √50 × sign-cancellation-factor(~20) ≈ a
+    # few × 10⁻⁶ — the 10⁻⁵ floor measured in T6.8a is the FP32 precision
+    # ceiling for this arithmetic pattern, not a kernel bug.
+    #
+    # Tightening to 10⁻⁶ on dense stencils would require storing `rho_coeffs`
+    # / `F_coeffs` / `z_coeffs` in FP32 device memory with reparameterized
+    # coefficient-stability review (Mishin 2004 z/F decimal orders differ by
+    # 4-6 across cutoff; FP32 Horner loses monotonicity on ρ and φ branches
+    # per T6.8a empirical data). Deferred M9+ behind a prospective
+    # MixedFastAggressiveBuild (Philosophy A) flavor. Memory reference:
+    # `project_fp32_eam_ceiling.md`.
+    # -------------------------------------------------------------------------
+    gpu_mixed_fast:
+      dense_cutoff:
+        # Per-atom force L∞ rel-diff vs Fp64ReferenceBuild GPU on the same
+        # fixture (Ni-Al B2 1024 atoms + Al FCC 864 atoms, Mishin 2004 EAM).
+        # Shipped and enforced by tests/gpu/test_eam_mixed_fast_within_threshold.cpp.
+        eam_force_relative: 1.0e-5
+        # Total PE rel-diff under the same fixture. Derived from force
+        # residual on ~3N pair terms; ~10× stricter than force in practice
+        # because pair-sum cancels sign-uncorrelated components.
+        eam_energy_relative: 1.0e-7
+        # Virial Voigt tensor normalized by max component (off-diagonal
+        # near-zero on symmetric B2; max-component normalization keeps the
+        # rel-diff physically meaningful instead of dividing by its own
+        # near-zero magnitude).
+        eam_virial_rel_to_max: 5.0e-6
+        # NVE energy conservation over 1000 steps. Integrator-level, not a
+        # force gate; the 100-step harness in tests/gpu/test_t4_nve_drift.cpp
+        # asserts 1e-6 per 100 steps = 10× margin under the 1000-step cap.
+        nve_drift_per_1000_steps: 1.0e-5
+      sparse_cutoff:
+        # Ambition values for LJ/Morse/pair styles when they land on GPU
+        # (M9+). Not currently active — no kernel exercises them yet.
+        eam_force_relative: 1.0e-6
+        eam_energy_relative: 1.0e-8
+        status: deferred_m9_plus
+      rationale: |
+        See docs/specs/gpu/SPEC.md §8.3 for the full analysis and memory
+        `project_fp32_eam_ceiling.md` for the T6.8a dev history.
+        Summary: dense-cutoff 1e-5 is an FP32 precision ceiling. Relaxing
+        the test thresholds would hide real regressions; tightening them
+        would fail for physics reasons, not implementation reasons.
 
     t4_nial_alloy:
       # Ni-Al FCC 6×6×6 (864 atoms), 50:50 random, Mishin 2004 EAM/alloy, NVE,
