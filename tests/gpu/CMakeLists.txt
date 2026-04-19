@@ -65,3 +65,15 @@ target_link_libraries(test_t4_nve_drift PRIVATE tdmd::gpu tdmd::runtime tdmd::io
 target_compile_definitions(test_t4_nve_drift PRIVATE TDMD_REPO_ROOT="${CMAKE_SOURCE_DIR}")
 add_test(NAME test_t4_nve_drift COMMAND test_t4_nve_drift)
 set_tests_properties(test_t4_nve_drift PROPERTIES SKIP_RETURN_CODE 4)
+
+# T7.8: K-deep 2-stream compute/mem overlap gate. Runs K=4 sync vs pipelined EAM on 10976-atom Al
+# FCC; asserts overlap ratio (t_serial - t_pipelined) / t_pipelined >= 0.30 (exec pack §5 T7.8
+# acceptance). Self-skips on no-CUDA hosts; reference bit-exactness of slot 0 vs serial oracle is
+# checked inline at 1e-12 rel (gpu/SPEC §7.2).
+add_executable(test_overlap_budget test_overlap_budget.cpp)
+target_link_libraries(test_overlap_budget PRIVATE tdmd::gpu tdmd::scheduler tdmd::potentials
+                                                  tdmd::neighbor tdmd::state Catch2::Catch2WithMain)
+target_compile_definitions(
+  test_overlap_budget
+  PRIVATE TDMD_TEST_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/potentials/fixtures")
+add_test(NAME test_overlap_budget COMMAND test_overlap_budget)

@@ -24,6 +24,7 @@
 
 #include "tdmd/gpu/device_pool.hpp"
 #include "tdmd/gpu/eam_alloy_gpu.hpp"
+#include "tdmd/gpu/factories.hpp"  // make_event (T7.8 async path)
 #include "tdmd/gpu/neighbor_list_gpu.hpp"
 #include "tdmd/gpu/types.hpp"
 #include "tdmd/telemetry/nvtx.hpp"
@@ -743,14 +744,421 @@ EamAlloyGpuResult EamAlloyGpu::compute(std::size_t n,
   return result;
 }
 
+// =====================================================================
+// T7.8: async dispatch — compute_async + finalize_async.
+//
+// The async path splits the sync compute() into "enqueue all GPU work" and
+// "wait for D2H + reduce on host". Between enqueue and wait, the caller can
+// launch *more* compute_async calls on independent handles, pipelining
+// H2D/kernels/D2H across iterations per gpu/SPEC §3.2.
+//
+// Per-call buffers live on the returned handle (not in EamAlloyGpu::Impl),
+// so K handles can be in-flight simultaneously. Spline tables stay cached in
+// Impl and are shared across async dispatches — first compute_async after a
+// pointer change uploads on mem_stream; subsequent calls skip the upload.
+// =====================================================================
+
+struct EamAlloyAsyncHandle::Impl {
+  DevicePtr<std::byte> d_types;
+  DevicePtr<std::byte> d_x;
+  DevicePtr<std::byte> d_y;
+  DevicePtr<std::byte> d_z;
+  DevicePtr<std::byte> d_cell_offsets;
+  DevicePtr<std::byte> d_cell_atoms;
+  DevicePtr<std::byte> d_fx;
+  DevicePtr<std::byte> d_fy;
+  DevicePtr<std::byte> d_fz;
+  DevicePtr<std::byte> d_rho;
+  DevicePtr<std::byte> d_dFdrho;
+  DevicePtr<std::byte> d_pe_embed;
+  DevicePtr<std::byte> d_pe_pair;
+  DevicePtr<std::byte> d_virial;
+
+  DeviceEvent h2d_done_event;
+  DeviceEvent kernels_done_event;
+  DeviceEvent d2h_done_event;
+
+  // T7.8 overlap: pinned host scratch for D2H destinations. Pageable host
+  // memory degrades cudaMemcpyAsync to sync (driver uses internal staging),
+  // blocking the host thread and defeating compute/mem overlap.
+  DevicePtr<std::byte> h_pe_embed;
+  DevicePtr<std::byte> h_pe_pair;
+  DevicePtr<std::byte> h_virial;
+
+  double* host_fx_out = nullptr;
+  double* host_fy_out = nullptr;
+  double* host_fz_out = nullptr;
+
+  // Mem-stream pointer stashed by compute_async so finalize_async knows where
+  // to queue D2H. Non-owning; caller guarantees stream liveness through drain.
+  DeviceStream* mem_stream = nullptr;
+
+  std::size_t n_atoms = 0;
+  bool finalized = false;
+};
+
+EamAlloyAsyncHandle::EamAlloyAsyncHandle() noexcept = default;
+EamAlloyAsyncHandle::EamAlloyAsyncHandle(std::unique_ptr<Impl> impl) noexcept
+    : impl_(std::move(impl)) {}
+EamAlloyAsyncHandle::~EamAlloyAsyncHandle() = default;
+EamAlloyAsyncHandle::EamAlloyAsyncHandle(EamAlloyAsyncHandle&&) noexcept = default;
+EamAlloyAsyncHandle& EamAlloyAsyncHandle::operator=(EamAlloyAsyncHandle&&) noexcept = default;
+
+bool EamAlloyAsyncHandle::valid() const noexcept {
+  return static_cast<bool>(impl_);
+}
+
+EamAlloyAsyncHandle EamAlloyGpu::compute_async(std::size_t n,
+                                               const std::uint32_t* host_types,
+                                               const double* host_x,
+                                               const double* host_y,
+                                               const double* host_z,
+                                               std::size_t ncells,
+                                               const std::uint32_t* host_cell_offsets,
+                                               const std::uint32_t* host_cell_atoms,
+                                               const BoxParams& params,
+                                               const EamAlloyTablesHost& tables,
+                                               double* host_fx_out,
+                                               double* host_fy_out,
+                                               double* host_fz_out,
+                                               DevicePool& pool,
+                                               DeviceStream& compute_stream,
+                                               DeviceStream& mem_stream) {
+  TDMD_NVTX_RANGE("eam.compute_async");
+  ++impl_->compute_version;
+
+  auto handle_impl = std::make_unique<EamAlloyAsyncHandle::Impl>();
+  handle_impl->host_fx_out = host_fx_out;
+  handle_impl->host_fy_out = host_fy_out;
+  handle_impl->host_fz_out = host_fz_out;
+  handle_impl->n_atoms = n;
+
+  if (n == 0) {
+    return EamAlloyAsyncHandle(std::move(handle_impl));
+  }
+
+  cudaStream_t s_compute = raw_stream(compute_stream);
+  cudaStream_t s_mem = raw_stream(mem_stream);
+  if (s_compute == nullptr || s_mem == nullptr) {
+    throw std::runtime_error(
+        "EamAlloyGpu::compute_async: compute_stream and mem_stream must both be valid");
+  }
+
+  int device_id = 0;
+  check_cuda("cudaGetDevice", cudaGetDevice(&device_id));
+  handle_impl->h2d_done_event = make_event(static_cast<DeviceId>(device_id));
+  handle_impl->kernels_done_event = make_event(static_cast<DeviceId>(device_id));
+  handle_impl->d2h_done_event = make_event(static_cast<DeviceId>(device_id));
+
+  const std::size_t type_bytes = n * sizeof(std::uint32_t);
+  const std::size_t pos_bytes = n * sizeof(double);
+  const std::size_t cell_offsets_bytes = (ncells + 1) * sizeof(std::uint32_t);
+  const std::size_t cell_atoms_bytes = n * sizeof(std::uint32_t);
+
+  // Per-call input buffers — tied to mem_stream (H2D producer) for stream-
+  // ordered reuse by the pool.
+  handle_impl->d_types = pool.allocate_device(type_bytes, mem_stream);
+  handle_impl->d_x = pool.allocate_device(pos_bytes, mem_stream);
+  handle_impl->d_y = pool.allocate_device(pos_bytes, mem_stream);
+  handle_impl->d_z = pool.allocate_device(pos_bytes, mem_stream);
+  handle_impl->d_cell_offsets = pool.allocate_device(cell_offsets_bytes, mem_stream);
+  handle_impl->d_cell_atoms = pool.allocate_device(cell_atoms_bytes, mem_stream);
+  handle_impl->d_fx = pool.allocate_device(pos_bytes, mem_stream);
+  handle_impl->d_fy = pool.allocate_device(pos_bytes, mem_stream);
+  handle_impl->d_fz = pool.allocate_device(pos_bytes, mem_stream);
+
+  auto* d_types = reinterpret_cast<std::uint32_t*>(handle_impl->d_types.get());
+  auto* d_x = reinterpret_cast<double*>(handle_impl->d_x.get());
+  auto* d_y = reinterpret_cast<double*>(handle_impl->d_y.get());
+  auto* d_z = reinterpret_cast<double*>(handle_impl->d_z.get());
+  auto* d_cell_offsets = reinterpret_cast<std::uint32_t*>(handle_impl->d_cell_offsets.get());
+  auto* d_cell_atoms = reinterpret_cast<std::uint32_t*>(handle_impl->d_cell_atoms.get());
+  auto* d_fx = reinterpret_cast<double*>(handle_impl->d_fx.get());
+  auto* d_fy = reinterpret_cast<double*>(handle_impl->d_fy.get());
+  auto* d_fz = reinterpret_cast<double*>(handle_impl->d_fz.get());
+
+  {
+    TDMD_NVTX_RANGE("eam.async.h2d");
+    check_cuda("memcpy types",
+               cudaMemcpyAsync(d_types, host_types, type_bytes, cudaMemcpyHostToDevice, s_mem));
+    check_cuda("memcpy x", cudaMemcpyAsync(d_x, host_x, pos_bytes, cudaMemcpyHostToDevice, s_mem));
+    check_cuda("memcpy y", cudaMemcpyAsync(d_y, host_y, pos_bytes, cudaMemcpyHostToDevice, s_mem));
+    check_cuda("memcpy z", cudaMemcpyAsync(d_z, host_z, pos_bytes, cudaMemcpyHostToDevice, s_mem));
+    check_cuda("memcpy cell_offsets",
+               cudaMemcpyAsync(d_cell_offsets,
+                               host_cell_offsets,
+                               cell_offsets_bytes,
+                               cudaMemcpyHostToDevice,
+                               s_mem));
+    check_cuda("memcpy cell_atoms",
+               cudaMemcpyAsync(d_cell_atoms,
+                               host_cell_atoms,
+                               cell_atoms_bytes,
+                               cudaMemcpyHostToDevice,
+                               s_mem));
+    check_cuda("memcpy fx in",
+               cudaMemcpyAsync(d_fx, host_fx_out, pos_bytes, cudaMemcpyHostToDevice, s_mem));
+    check_cuda("memcpy fy in",
+               cudaMemcpyAsync(d_fy, host_fy_out, pos_bytes, cudaMemcpyHostToDevice, s_mem));
+    check_cuda("memcpy fz in",
+               cudaMemcpyAsync(d_fz, host_fz_out, pos_bytes, cudaMemcpyHostToDevice, s_mem));
+  }
+
+  // Spline tables: cached in EamAlloyGpu::Impl and shared across handles.
+  // Upload goes on mem_stream too so h2d_done_event covers it.
+  const std::size_t F_bytes = tables.n_species * tables.nrho * 7u * sizeof(double);
+  const std::size_t rho_bytes_tab = tables.n_species * tables.nr * 7u * sizeof(double);
+  const std::size_t z2r_bytes = tables.npairs * tables.nr * 7u * sizeof(double);
+  const bool splines_changed = tables.F_coeffs != impl_->splines_F_coeffs_host ||
+                               tables.rho_coeffs != impl_->splines_rho_coeffs_host ||
+                               tables.z2r_coeffs != impl_->splines_z2r_coeffs_host;
+  if (splines_changed) {
+    TDMD_NVTX_RANGE("eam.async.h2d.splines");
+    impl_->d_F_coeffs_bytes = pool.allocate_device(F_bytes, mem_stream);
+    impl_->d_rho_coeffs_bytes = pool.allocate_device(rho_bytes_tab, mem_stream);
+    impl_->d_z2r_coeffs_bytes = pool.allocate_device(z2r_bytes, mem_stream);
+    auto* d_F_upload = reinterpret_cast<double*>(impl_->d_F_coeffs_bytes.get());
+    auto* d_rho_upload = reinterpret_cast<double*>(impl_->d_rho_coeffs_bytes.get());
+    auto* d_z2r_upload = reinterpret_cast<double*>(impl_->d_z2r_coeffs_bytes.get());
+    check_cuda(
+        "memcpy F_coeffs",
+        cudaMemcpyAsync(d_F_upload, tables.F_coeffs, F_bytes, cudaMemcpyHostToDevice, s_mem));
+    check_cuda("memcpy rho_coeffs",
+               cudaMemcpyAsync(d_rho_upload,
+                               tables.rho_coeffs,
+                               rho_bytes_tab,
+                               cudaMemcpyHostToDevice,
+                               s_mem));
+    check_cuda(
+        "memcpy z2r_coeffs",
+        cudaMemcpyAsync(d_z2r_upload, tables.z2r_coeffs, z2r_bytes, cudaMemcpyHostToDevice, s_mem));
+    impl_->splines_F_coeffs_host = tables.F_coeffs;
+    impl_->splines_rho_coeffs_host = tables.rho_coeffs;
+    impl_->splines_z2r_coeffs_host = tables.z2r_coeffs;
+    ++impl_->splines_upload_count;
+  }
+  auto* d_F_coeffs = reinterpret_cast<double*>(impl_->d_F_coeffs_bytes.get());
+  auto* d_rho_coeffs = reinterpret_cast<double*>(impl_->d_rho_coeffs_bytes.get());
+  auto* d_z2r_coeffs = reinterpret_cast<double*>(impl_->d_z2r_coeffs_bytes.get());
+
+  // Signal H2D complete — compute_stream will wait on this before reading.
+  check_cuda("record h2d_done_event",
+             cudaEventRecord(raw_event(handle_impl->h2d_done_event), s_mem));
+
+  // Scratch/output device buffers — allocated on compute_stream since that is
+  // the next producer.
+  const std::size_t rho_buf_bytes = n * sizeof(double);
+  handle_impl->d_rho = pool.allocate_device(rho_buf_bytes, compute_stream);
+  handle_impl->d_dFdrho = pool.allocate_device(rho_buf_bytes, compute_stream);
+  handle_impl->d_pe_embed = pool.allocate_device(rho_buf_bytes, compute_stream);
+  handle_impl->d_pe_pair = pool.allocate_device(rho_buf_bytes, compute_stream);
+  handle_impl->d_virial = pool.allocate_device(n * 6u * sizeof(double), compute_stream);
+  auto* d_rho = reinterpret_cast<double*>(handle_impl->d_rho.get());
+  auto* d_dFdrho = reinterpret_cast<double*>(handle_impl->d_dFdrho.get());
+  auto* d_pe_embed = reinterpret_cast<double*>(handle_impl->d_pe_embed.get());
+  auto* d_pe_pair = reinterpret_cast<double*>(handle_impl->d_pe_pair.get());
+  auto* d_virial = reinterpret_cast<double*>(handle_impl->d_virial.get());
+
+  // compute_stream waits on mem_stream's H2D event before consuming inputs.
+  check_cuda("wait h2d on compute_stream",
+             cudaStreamWaitEvent(s_compute, raw_event(handle_impl->h2d_done_event), 0));
+
+  DeviceEamParams dp;
+  dp.xlo = params.xlo;
+  dp.ylo = params.ylo;
+  dp.zlo = params.zlo;
+  dp.lx = params.lx;
+  dp.ly = params.ly;
+  dp.lz = params.lz;
+  dp.cell_x = params.cell_x;
+  dp.cell_y = params.cell_y;
+  dp.cell_z = params.cell_z;
+  dp.nx = params.nx;
+  dp.ny = params.ny;
+  dp.nz = params.nz;
+  dp.periodic_x = params.periodic_x ? 1 : 0;
+  dp.periodic_y = params.periodic_y ? 1 : 0;
+  dp.periodic_z = params.periodic_z ? 1 : 0;
+  dp.cutoff_sq = tables.cutoff * tables.cutoff;
+  dp.n_species = static_cast<std::uint32_t>(tables.n_species);
+  dp.nrho = static_cast<std::uint32_t>(tables.nrho);
+  dp.nr = static_cast<std::uint32_t>(tables.nr);
+  dp.F_x0 = tables.F_x0;
+  dp.F_rdx = 1.0 / tables.F_dx;
+  dp.r_x0 = tables.r_x0;
+  dp.r_rdx = 1.0 / tables.r_dx;
+
+  const std::uint32_t n32 = static_cast<std::uint32_t>(n);
+  constexpr int kThreadsPerBlock = 128;
+  const std::uint32_t nblocks = (n32 + kThreadsPerBlock - 1) / kThreadsPerBlock;
+
+  {
+    TDMD_NVTX_RANGE("eam.async.density");
+    density_kernel<<<nblocks, kThreadsPerBlock, 0, s_compute>>>(n32,
+                                                                d_types,
+                                                                d_x,
+                                                                d_y,
+                                                                d_z,
+                                                                d_cell_offsets,
+                                                                d_cell_atoms,
+                                                                d_rho_coeffs,
+                                                                dp,
+                                                                d_rho);
+    check_cuda("launch density_kernel", cudaGetLastError());
+  }
+  {
+    TDMD_NVTX_RANGE("eam.async.embedding");
+    embedding_kernel<<<nblocks, kThreadsPerBlock, 0, s_compute>>>(n32,
+                                                                  d_types,
+                                                                  d_rho,
+                                                                  d_F_coeffs,
+                                                                  dp,
+                                                                  d_dFdrho,
+                                                                  d_pe_embed);
+    check_cuda("launch embedding_kernel", cudaGetLastError());
+  }
+  {
+    TDMD_NVTX_RANGE("eam.async.force");
+    force_kernel<<<nblocks, kThreadsPerBlock, 0, s_compute>>>(n32,
+                                                              d_types,
+                                                              d_x,
+                                                              d_y,
+                                                              d_z,
+                                                              d_cell_offsets,
+                                                              d_cell_atoms,
+                                                              d_dFdrho,
+                                                              d_rho_coeffs,
+                                                              d_z2r_coeffs,
+                                                              dp,
+                                                              d_fx,
+                                                              d_fy,
+                                                              d_fz,
+                                                              d_pe_pair,
+                                                              d_virial);
+    check_cuda("launch force_kernel", cudaGetLastError());
+  }
+
+  // Record kernels-done. D2H deferred to finalize_async so mem_stream isn't
+  // blocked behind cross-stream waits during the enqueue phase — this lets K
+  // back-to-back H2Ds queue ahead of any D2H (T7.8 overlap contract).
+  check_cuda("record kernels_done_event",
+             cudaEventRecord(raw_event(handle_impl->kernels_done_event), s_compute));
+
+  // Allocate pinned host scratch now so finalize_async has destinations;
+  // device buffers (d_fx, d_fy, d_fz, d_pe_*, d_virial) already held by
+  // handle_impl keep their data live until finalize D2Hs it off.
+  handle_impl->h_pe_embed = pool.allocate_pinned_host(n * sizeof(double));
+  handle_impl->h_pe_pair = pool.allocate_pinned_host(n * sizeof(double));
+  handle_impl->h_virial = pool.allocate_pinned_host(n * 6u * sizeof(double));
+
+  // Stash mem_stream for finalize_async to use. The handle doesn't own it;
+  // caller guarantees liveness until the adapter drains the slot.
+  handle_impl->mem_stream = &mem_stream;
+
+  return EamAlloyAsyncHandle(std::move(handle_impl));
+}
+
+EamAlloyGpuResult EamAlloyGpu::finalize_async(EamAlloyAsyncHandle handle) {
+  TDMD_NVTX_RANGE("eam.finalize_async");
+  if (!handle.valid()) {
+    throw std::invalid_argument("EamAlloyGpu::finalize_async: handle is not valid");
+  }
+  auto* hi = handle.impl();
+  if (hi->finalized) {
+    throw std::invalid_argument("EamAlloyGpu::finalize_async: handle already finalized");
+  }
+  hi->finalized = true;
+
+  EamAlloyGpuResult result;
+  if (hi->n_atoms == 0) {
+    return result;
+  }
+
+  const std::size_t n = hi->n_atoms;
+  const std::size_t pos_bytes = n * sizeof(double);
+
+  cudaStream_t s_mem = raw_stream(*hi->mem_stream);
+  auto* d_fx = reinterpret_cast<double*>(hi->d_fx.get());
+  auto* d_fy = reinterpret_cast<double*>(hi->d_fy.get());
+  auto* d_fz = reinterpret_cast<double*>(hi->d_fz.get());
+  auto* d_pe_embed = reinterpret_cast<double*>(hi->d_pe_embed.get());
+  auto* d_pe_pair = reinterpret_cast<double*>(hi->d_pe_pair.get());
+  auto* d_virial = reinterpret_cast<double*>(hi->d_virial.get());
+  auto* h_pe_embed_ptr = reinterpret_cast<double*>(hi->h_pe_embed.get());
+  auto* h_pe_pair_ptr = reinterpret_cast<double*>(hi->h_pe_pair.get());
+  auto* h_virial_ptr = reinterpret_cast<double*>(hi->h_virial.get());
+
+  // mem_stream waits for this slot's kernels to finish (event recorded in
+  // compute_async), then runs D2H. Split-phase lets K enqueued H2Ds pass
+  // through mem_stream back-to-back before any D2H blocks.
+  check_cuda("wait kernels on mem_stream",
+             cudaStreamWaitEvent(s_mem, raw_event(hi->kernels_done_event), 0));
+  {
+    TDMD_NVTX_RANGE("eam.async.d2h");
+    check_cuda("D2H fx",
+               cudaMemcpyAsync(hi->host_fx_out, d_fx, pos_bytes, cudaMemcpyDeviceToHost, s_mem));
+    check_cuda("D2H fy",
+               cudaMemcpyAsync(hi->host_fy_out, d_fy, pos_bytes, cudaMemcpyDeviceToHost, s_mem));
+    check_cuda("D2H fz",
+               cudaMemcpyAsync(hi->host_fz_out, d_fz, pos_bytes, cudaMemcpyDeviceToHost, s_mem));
+    check_cuda(
+        "D2H pe_embed",
+        cudaMemcpyAsync(h_pe_embed_ptr, d_pe_embed, pos_bytes, cudaMemcpyDeviceToHost, s_mem));
+    check_cuda("D2H pe_pair",
+               cudaMemcpyAsync(h_pe_pair_ptr, d_pe_pair, pos_bytes, cudaMemcpyDeviceToHost, s_mem));
+    check_cuda("D2H virial",
+               cudaMemcpyAsync(h_virial_ptr,
+                               d_virial,
+                               n * 6u * sizeof(double),
+                               cudaMemcpyDeviceToHost,
+                               s_mem));
+  }
+  check_cuda("record d2h_done_event", cudaEventRecord(raw_event(hi->d2h_done_event), s_mem));
+  check_cuda("event sync d2h", cudaEventSynchronize(raw_event(hi->d2h_done_event)));
+
+  const auto* pe_embed_ptr = reinterpret_cast<const double*>(hi->h_pe_embed.get());
+  const auto* pe_pair_ptr = reinterpret_cast<const double*>(hi->h_pe_pair.get());
+  const auto* virial_ptr = reinterpret_cast<const double*>(hi->h_virial.get());
+  const double pe_embed_total = kahan_sum_host(pe_embed_ptr, n);
+  const double pe_pair_full = kahan_sum_host(pe_pair_ptr, n);
+  result.potential_energy = pe_embed_total + 0.5 * pe_pair_full;
+
+  double vsum[6] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+  double vcomp[6] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+  for (std::size_t i = 0; i < n; ++i) {
+    const std::size_t base = i * 6u;
+    for (int k = 0; k < 6; ++k) {
+      const double y = virial_ptr[base + static_cast<std::size_t>(k)] - vcomp[k];
+      const double t = vsum[k] + y;
+      vcomp[k] = (t - vsum[k]) - y;
+      vsum[k] = t;
+    }
+  }
+  for (int k = 0; k < 6; ++k) {
+    result.virial[k] = 0.5 * vsum[k];
+  }
+  return result;
+}
+
 #else  // CPU-only build
 
 struct EamAlloyGpu::Impl {};
+struct EamAlloyAsyncHandle::Impl {};
 
 EamAlloyGpu::EamAlloyGpu() : impl_(std::make_unique<Impl>()) {}
 EamAlloyGpu::~EamAlloyGpu() = default;
 EamAlloyGpu::EamAlloyGpu(EamAlloyGpu&&) noexcept = default;
 EamAlloyGpu& EamAlloyGpu::operator=(EamAlloyGpu&&) noexcept = default;
+
+EamAlloyAsyncHandle::EamAlloyAsyncHandle() noexcept = default;
+EamAlloyAsyncHandle::EamAlloyAsyncHandle(std::unique_ptr<Impl> impl) noexcept
+    : impl_(std::move(impl)) {}
+EamAlloyAsyncHandle::~EamAlloyAsyncHandle() = default;
+EamAlloyAsyncHandle::EamAlloyAsyncHandle(EamAlloyAsyncHandle&&) noexcept = default;
+EamAlloyAsyncHandle& EamAlloyAsyncHandle::operator=(EamAlloyAsyncHandle&&) noexcept = default;
+bool EamAlloyAsyncHandle::valid() const noexcept {
+  return static_cast<bool>(impl_);
+}
 
 std::uint64_t EamAlloyGpu::compute_version() const noexcept {
   return 0;
@@ -777,6 +1185,29 @@ EamAlloyGpuResult EamAlloyGpu::compute(std::size_t /*n*/,
                                        DeviceStream& /*stream*/) {
   throw std::runtime_error(
       "gpu::EamAlloyGpu::compute: CPU-only build (TDMD_BUILD_CUDA=0); CUDA not linked");
+}
+
+EamAlloyAsyncHandle EamAlloyGpu::compute_async(std::size_t /*n*/,
+                                               const std::uint32_t* /*host_types*/,
+                                               const double* /*host_x*/,
+                                               const double* /*host_y*/,
+                                               const double* /*host_z*/,
+                                               std::size_t /*ncells*/,
+                                               const std::uint32_t* /*host_cell_offsets*/,
+                                               const std::uint32_t* /*host_cell_atoms*/,
+                                               const BoxParams& /*params*/,
+                                               const EamAlloyTablesHost& /*tables*/,
+                                               double* /*host_fx_out*/,
+                                               double* /*host_fy_out*/,
+                                               double* /*host_fz_out*/,
+                                               DevicePool& /*pool*/,
+                                               DeviceStream& /*compute_stream*/,
+                                               DeviceStream& /*mem_stream*/) {
+  throw std::runtime_error("gpu::EamAlloyGpu::compute_async: CPU-only build (TDMD_BUILD_CUDA=0)");
+}
+
+EamAlloyGpuResult EamAlloyGpu::finalize_async(EamAlloyAsyncHandle /*handle*/) {
+  throw std::runtime_error("gpu::EamAlloyGpu::finalize_async: CPU-only build (TDMD_BUILD_CUDA=0)");
 }
 
 #endif  // TDMD_BUILD_CUDA

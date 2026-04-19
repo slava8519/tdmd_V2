@@ -84,6 +84,45 @@ struct EamAlloyGpuResult {
   double virial[6] = {};
 };
 
+// Async-dispatch handle returned by `compute_async()`. Owns per-call device
+// buffers + events so the caller can have K handles in-flight simultaneously
+// against different streams/slots (Pattern 2 K-deep pipeline, gpu/SPEC §3.2).
+// The PIMPL `Impl` lives in the .cu TU and holds `DevicePtr`/`DeviceEvent`
+// members — public header stays CUDA-free per D-M6-17.
+//
+// Lifetime contract (T7.8):
+//   1. compute_async() enqueues all CUDA work and returns a valid handle;
+//      host output buffers passed in MUST remain valid until finalize_async
+//      returns.
+//   2. finalize_async(std::move(handle)) blocks on the D2H-done event,
+//      performs the host Kahan reductions, returns the EAM result, and
+//      destroys the handle (consumes it).
+//   3. A handle with valid()==false is harmless (default-constructed / moved-
+//      from). finalize_async on an already-finalized or invalid handle throws.
+class EamAlloyAsyncHandle {
+public:
+  struct Impl;
+
+  EamAlloyAsyncHandle() noexcept;
+  explicit EamAlloyAsyncHandle(std::unique_ptr<Impl> impl) noexcept;
+  ~EamAlloyAsyncHandle();
+
+  EamAlloyAsyncHandle(const EamAlloyAsyncHandle&) = delete;
+  EamAlloyAsyncHandle& operator=(const EamAlloyAsyncHandle&) = delete;
+  EamAlloyAsyncHandle(EamAlloyAsyncHandle&&) noexcept;
+  EamAlloyAsyncHandle& operator=(EamAlloyAsyncHandle&&) noexcept;
+
+  [[nodiscard]] bool valid() const noexcept;
+
+  // Accessors for the owning EamAlloyGpu — not part of the public API but
+  // exposed so finalize_async can reach the PIMPL body without friend tricks.
+  Impl* impl() noexcept { return impl_.get(); }
+  const Impl* impl() const noexcept { return impl_.get(); }
+
+private:
+  std::unique_ptr<Impl> impl_;
+};
+
 class EamAlloyGpu {
 public:
   EamAlloyGpu();
@@ -131,6 +170,41 @@ public:
                             double* host_fz_out,
                             DevicePool& pool,
                             DeviceStream& stream);
+
+  // Async variant (T7.8): dispatches H2D on `mem_stream`, kernels on
+  // `compute_stream`, D2H on `mem_stream`, with cudaEvent records that chain
+  // the three phases (gpu/SPEC §3.2). Returns a handle the caller must pass
+  // to `finalize_async` to retrieve the result.
+  //
+  // Host output buffers (`host_fx_out`, `host_fy_out`, `host_fz_out`) MUST
+  // remain valid until `finalize_async` returns — they are the D2H
+  // destination, populated asynchronously. The spline-table cache on the
+  // owning `EamAlloyGpu` instance is shared across async dispatches (splines
+  // uploaded once per distinct host-pointer triple).
+  //
+  // Bit-exactness: async path runs the same three kernels in the same order
+  // with the same operand order as sync `compute()`; D-M6-7 gate unaffected.
+  [[nodiscard]] EamAlloyAsyncHandle compute_async(std::size_t n,
+                                                  const std::uint32_t* host_types,
+                                                  const double* host_x,
+                                                  const double* host_y,
+                                                  const double* host_z,
+                                                  std::size_t ncells,
+                                                  const std::uint32_t* host_cell_offsets,
+                                                  const std::uint32_t* host_cell_atoms,
+                                                  const BoxParams& params,
+                                                  const EamAlloyTablesHost& tables,
+                                                  double* host_fx_out,
+                                                  double* host_fy_out,
+                                                  double* host_fz_out,
+                                                  DevicePool& pool,
+                                                  DeviceStream& compute_stream,
+                                                  DeviceStream& mem_stream);
+
+  // Wait on the async handle's D2H-done event, run host Kahan reductions,
+  // return the EAM result. Consumes the handle (moved from).
+  // Throws std::invalid_argument if handle is not valid().
+  EamAlloyGpuResult finalize_async(EamAlloyAsyncHandle handle);
 
   // Monotone counter incremented on every successful compute(). Used by tests
   // to verify repeat-call behaviour without reaching into Impl.

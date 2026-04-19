@@ -1204,6 +1204,12 @@ T7.14 addendum.
 - M7 smoke PASS locally (≤10 s on commodity GPU).
 - M6 golden ≡ M7 golden byte-for-byte pre-flight green.
 - All CI jobs green (M7 smoke self-skips on public; infra checks pass).
+- **30% compute/mem overlap gate** (inherited from T7.8 — gpu/SPEC §3.2b deferral):
+  measured wall-time overlap ratio `(t_serial - t_pipelined) / t_pipelined ≥ 0.30`
+  on 2-rank K=4 Pattern 2 step с halo D2H/MPI/H2D traffic — single-rank EAM-only
+  proven kernel-bound (~17% physical max), 2-rank halo work raises T_mem/T_k к
+  ~0.55 → 30% achievable. Test extension либо в `tests/integration/m7_smoke/`
+  либо в новом `tests/gpu/test_overlap_budget_2rank.cpp`.
 - **M7 milestone closed** per master spec §14 M7 acceptance criteria:
   - Pattern 2 landed (2-subdomain Pattern 2 thermo == Pattern 1 baseline byte-exact).
   - Pattern 1 fully functional (regression preserved).

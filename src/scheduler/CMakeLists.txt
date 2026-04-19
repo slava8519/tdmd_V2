@@ -14,7 +14,9 @@ add_library(
   diagnostic_dump.cpp
   event_log.cpp
   # T7.6: Pattern 2 outer coordinator + halo snapshot ring buffer.
-  concrete_outer_sd_coordinator.cpp)
+  concrete_outer_sd_coordinator.cpp
+  # T7.8: K-deep GPU dispatch pipeline orchestrator (gpu/SPEC §3.2).
+  gpu_dispatch_adapter.cpp)
 add_library(tdmd::scheduler ALIAS tdmd_scheduler)
 
 target_include_directories(
@@ -34,6 +36,9 @@ target_link_libraries(tdmd_scheduler PUBLIC tdmd::comm)
 # T7.6: SubdomainGrid (in outer_sd_coordinator.hpp) carries tdmd::Box from state/ as a public field
 # per master spec §12.7a. PUBLIC because the type is visible in scheduler's public headers.
 target_link_libraries(tdmd_scheduler PUBLIC tdmd::state)
+
+# T7.8: gpu_dispatch_adapter.cpp consumes tdmd::gpu::EamAlloyGpu APIs.
+target_link_libraries(tdmd_scheduler PUBLIC tdmd::gpu)
 
 target_compile_features(tdmd_scheduler PUBLIC cxx_std_20)
 
