@@ -261,6 +261,14 @@ Same как TemporalPacket, но без `zone_id` (halo — це границы 
 
 Atoms — subset локальных atoms subdomain'а, которые находятся в пределах `r_c + r_skin` от границы, отданной к dest subdomain.
 
+**Ownership boundary (T7.2 clarification, master §8.2):** `HaloPacket` — это **wire format**, owned by `comm/`. Receiver-side unpack `HaloPacket → HaloSnapshot` (in-memory archived record, see scheduler/SPEC §4.6) — **out-of-scope for comm**: scheduler's `OuterSdCoordinator::unpack_halo()` owns the conversion, потому что unpack is subdomain-aware (peer zone id mapping, atom filtering by local boundary radius). `comm/` ровно три обязательства относительно halo:
+
+1. **deliver bytes** — `send_subdomain_halo` / `drain_halo_arrived` ровно как для temporal packets, без знания о content;
+2. **CRC32 integrity** — §4.4 catches network corruption pre-coordinator;
+3. **eager-protocol commit** — §4.5 same pattern as TemporalPacket (no explicit ACK).
+
+Per-payload meaning, archive lifecycle, eviction policy — все в scheduler/SPEC §4.6.
+
 ### 4.3. Protocol versioning
 
 `protocol_version` — monotonic uint16. Incompatible change = bump version + reject packets с `other_version < current_version` с clear error.
@@ -403,6 +411,19 @@ Combines:
 Automatic dispatch: `send_temporal_packet` → NCCL; `send_subdomain_halo` → MPI.
 
 **This is the production default in Pattern 2.**
+
+**Routing rules (T7.2 clarification, T7.5 implementation):**
+
+| Operation | Backend selection | Rationale |
+|---|---|---|
+| `send_temporal_packet` (intra-subdomain TD) | inner backend (`NcclBackend` if node-local; `GpuAwareMpiBackend` else; `MpiHostStagingBackend` last-resort) | TD packets — high-frequency intra-subdomain; NCCL latency on NVLink wins on intra-node ranks |
+| `send_subdomain_halo` (inter-subdomain SD) | outer backend (`GpuAwareMpiBackend` if available; `MpiHostStagingBackend` else) | SD halo — lower-frequency inter-node; MPI is the only universal cross-node transport at v1 (NCCL multi-node — NVSwitch-only, deferred to NvshmemBackend research) |
+| `global_sum_double` (collectives §7) | preferentially inner if all ranks intra-node, else outer | Reference profile uses `deterministic_sum_double` regardless of backend (§7.2) |
+| `progress()` | calls both backends' `progress()` once per iteration | scheduler invariant: one progress call per `select_ready_tasks()` |
+
+Topology resolution — runtime probe at `init()`: per-rank `cudaDeviceGetP2PStatus` against rank-0's GPU, plus `MPI_Comm_split_type(MPI_COMM_TYPE_SHARED)` to identify node-local subset. Per-rank decision cached in `BackendInfo` struct, surfaced to `cli/explain` per cli/SPEC.
+
+**Pattern 2 startup contract (cross-link scheduler/SPEC §2.4):** at `SimulationEngine::init()` after `HybridBackend::init()`, runtime constructs `OuterSdCoordinator(grid, K_max)` (master §12.7a / scheduler/SPEC §2.4) and binds the outer backend's `drain_halo_arrived` poll into the coordinator's input pipeline. Inner-backend send/receive остаётся owned by `InnerTdScheduler` без изменений relative to M5.
 
 ### 6.5. RingBackend (legacy / anchor-test)
 
@@ -664,6 +685,29 @@ Comm backend diagnostics:
 ---
 
 ## 14. Change log
+
+- **2026-04-19** — **T7.2 — Pattern 2 SPEC integration sister edit
+  (M7 entry).** Pure SPEC delta paired with `scheduler/SPEC §2.4 / §2.5
+  / §4.6` (T7.2 main delivery). Two clarifications, no new interface
+  surface (`send_subdomain_halo` / `drain_halo_arrived` / `HaloPacket`
+  uchanged from §2 + §4):
+  - **§4.2 ownership boundary** — `HaloPacket = wire format owned by
+    comm/`; receiver-side unpack into `HaloSnapshot` (scheduler/SPEC §4.6
+    archive record) is owned by `OuterSdCoordinator::unpack_halo()`, not
+    by comm. Comm's three obligations enumerated (deliver bytes, CRC32,
+    eager commit). Per-payload meaning + archive lifecycle + eviction —
+    explicitly defer-pointed to scheduler/SPEC §4.6, preserving master
+    §8.2 ownership boundary.
+  - **§6.4 HybridBackend routing rules + Pattern 2 startup contract** —
+    4-row dispatch matrix (temporal → inner; halo → outer; collectives →
+    inner-preferred; progress → both), topology resolution via
+    `cudaDeviceGetP2PStatus` + `MPI_Comm_split_type(SHARED)` cached in
+    `BackendInfo`. Cross-link to scheduler/SPEC §2.4: `OuterSdCoordinator`
+    constructed at `SimulationEngine::init()` after `HybridBackend::init()`,
+    outer-backend `drain_halo_arrived` poll bound into coordinator input.
+    Inner-backend send/receive unchanged from M5. Concrete implementation
+    of `HybridBackend` itself — T7.5 (depends on T7.3
+    `GpuAwareMpiBackend` and T7.4 `NcclBackend`).
 
 - **2026-04-19** — **M5 landed**. T5.2–T5.12 implemented the full M5
   comm surface: skeleton `CommBackend` abstract interface + types +
