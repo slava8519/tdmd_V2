@@ -363,14 +363,56 @@ Registered в `verify/SPEC.md` threshold registry as `cpu_gpu_reference_force_bi
 - Per-atom forces + total PE + virial Voigt tensor agree **≤ 1e-12 rel** CPU ↔ GPU on Al FCC 864-atom + Ni-Al B2 1024-atom (Mishin 2004).
 - Gate is relative, not byte-equal: absorbs FP64 reduction-order drift between CPU half-list and GPU full-list sums. Math kernels themselves use identical FP sequences, so any divergence above 1e-12 indicates a real bug.
 
-### 7.3. Velocity-Verlet NVE (T6.6)
+### 7.3. Velocity-Verlet NVE (T6.6 — v1.0.4)
 
-**Contract:**
+**Contract (Reference path, FP64):**
 
-- Two half-kicks + drift: v ← v + 0.5·f/m·dt; x ← x + v·dt; f = force(x); v ← v + 0.5·f/m·dt;
-- Per-atom thread; no reductions (energy compute — separate kernel launched once per thermo step);
-- Deterministic — pure element-wise, no atomics, no reductions needed;
-- MixedFast: v/x в FP32, f+accumulator в FP64 preserved via widened temp в kernel. Bit-exact Reference to CPU at step 1 on Ni-Al 10⁴.
+Two kernel entry points mirroring CPU `VelocityVerletIntegrator`:
+
+1. **`pre_force_kernel`** — half-kick velocities using CURRENT forces, then full drift positions:
+
+   ```
+   v[i] ← v[i] + accel[type[i]] · f[i] · (dt/2)
+   x[i] ← x[i] + v[i] · dt
+   ```
+
+2. **`post_force_kernel`** — half-kick velocities using NEW forces (computed after drift):
+
+   ```
+   v[i] ← v[i] + accel[type[i]] · f[i] · (dt/2)
+   ```
+
+где `accel[s] = ftm2v / mass[s]` — per-species scalar precomputed **once** on host (LAMMPS `units metal`
+convention, `ftm2v = 1/1.0364269e-4 ≈ 9648.533`; see M1 SPEC delta note in
+`src/integrator/include/tdmd/integrator/velocity_verlet.hpp`). Passed as a flat `double[n_species]`
+table (species count ~1–10 в M6).
+
+**Determinism + bit-exactness:**
+
+- Per-atom thread; thread `i` writes only its own `x/y/z/vx/vy/vz` slots. No reductions, no atomics.
+- Operand order matches CPU `pre_force_step`/`post_force_step` exactly: `v += f · accel · half_dt`
+  then `x += v · dt`.
+- With `--fmad=false` (Reference flag, `cmake/BuildFlavors.cmake §17`), each FP64 multiply-add is
+  discrete — bit-identical to CPU. **D-M6-7 gate:** literal byte-equality of `x/y/z/vx/vy/vz` after
+  1, 10, and 1000 NVE steps on 1000-atom lattice (`tests/gpu/test_integrator_vv_gpu.cpp`).
+
+**MixedFast (deferred to T6.8):**
+
+- `v/x` в FP32 storage + arithmetic; force read в FP32 but `accel · f · half_dt` widened to FP64 для
+  accumulation, then narrowed back. Drift threshold ≤1e-5 rel per 1000 steps (D-M6-8).
+- Not activated в T6.6 — MixedFast flavor fully stub until T6.8 wires `NumericConfig`.
+
+**Data lifecycle (T6.6 scope):**
+
+- Adapter в `src/integrator/gpu_velocity_verlet.cpp` does H2D(positions+velocities+forces+types+accel)
+  → kernel → D2H(positions+velocities). Per-call upload.
+- Resident-on-GPU pattern (integrator/SPEC §3.5) is T6.7 concern — SimulationEngine keeps atoms
+  device-resident across iterations, syncs only at dumps/checkpoints.
+- Per-call overhead (H2D + D2H + pool allocate) dominates at ≤10⁵ atoms because the kernel itself
+  is ~6 multiply-adds per atom. Expected T6.6 bench результат: sub-1× speedup, GPU slower. **Это
+  не регрессия** — correct T6.6 shape; speedup lives в T6.7 residency.
+
+**NVTX:** deferred to T6.11 (same as §7.1 NL, §7.2 EAM).
 
 ### 7.4. Out of scope в M6
 
@@ -607,13 +649,14 @@ tdmd run cfg.yaml --gpu-device=1 --gpu-streams=2 --gpu-memory-pool-mib=512 --no-
 | 2026-04-19 | v1.0.1  | §5.1/§5.2 updated с T6.3 implementation notes: `DevicePool` ships как single class owning both device+pinned pools (1:1 rank binding); grow-on-demand free-list policy; LRU deferred (OQ-M6-1). Adds `factories.hpp` public API (probe_devices / select_device / make_stream / make_event) + `device_pool.hpp`. `cuda_handles.hpp` internal header shares PIMPL Impl defs across gpu/ TUs без leaking CUDA symbols в public API. |
 | 2026-04-19 | v1.0.2  | §7.1 resolved — T6.4 `NeighborListGpu` landed. Implementation: two-pass (count → host-scan → emit) kernel pair, identical iteration order to CPU (27-cell stencil, dz-outer → dy → dx); D-M6-7 bit-exact gate met on 864-atom Al FCC (33,696 pairs, `std::memcmp` on offsets + ids + r²). Public API takes raw primitives (positions + cell CSR + BoxParams) — keeps gpu/ data-oblivious per §1.1 and breaks would-be `gpu/ → neighbor/` cyclic include. `src/neighbor/gpu_neighbor_builder.cpp` adapter translates domain types. Host-warn gating fix in `cmake/CompilerWarnings.cmake` — host flags (`-Wpedantic`, `-Werror`) now gated to `$<COMPILE_LANGUAGE:CXX>` so nvcc stub files don't trip extension diagnostics. Micro-bench baseline at `verify/benchmarks/neighbor_gpu_vs_cpu/`: 12.9× (10⁴ atoms) / 28.5× (10⁵ atoms) speedup on sm_120 — well above T6.4 ≥5× bar. OQ-M6-7 (CUB vs custom) resolved: custom two-pass + host scan is adequate for M6; on-device scan deferred to T6.11 perf tuning. |
 | 2026-04-19 | v1.0.3  | §7.2 resolved — T6.5 `EamAlloyGpu` landed. Three-kernel path (density → embedding → force), thread-per-atom with **full-list per-atom iteration** (no `j<=i` filter) so every write is thread-local — eliminates the atomics that would otherwise be needed for half-list Newton-3 scatter. Pair PE + virial are counted twice in the full-list sweep and halved on host during Kahan reduction; forces are emitted once per ordered pair (both directions — thread `i` scatters `+Δ`, thread `j` scatters `−Δ`) so no halving applies. Device spline eval mirrors `TabulatedFunction::locate` + Horner bit-exactly; same `minimum_image_axis` formula as CPU. Gate is **≤1e-12 rel**, not byte-equal (spec §7.2) — absorbs the reduction-order drift between CPU half-list and GPU full-list accumulation. Acceptance: Al FCC 864-atom + Ni-Al B2 1024-atom (Mishin 2004) both ≤1e-12 rel on per-atom forces, total PE, and virial Voigt tensor. Public API borrows flattened Hermite-cubic coefficient tables from the `src/potentials/eam_alloy_gpu_adapter.cpp` layer — gpu/ remains data-oblivious. Micro-bench at `verify/benchmarks/eam_gpu_vs_cpu/`: 5.3× (10⁴) / 6.8× (10⁵) on sm_120 vs CPU reference — above T6.5 ≥5× bar. OQ-M6-4 (Kahan overhead on per-atom PE+virial) deferred to T6.11 — current impl does all reductions host-side and is not the bottleneck at these sizes. |
+| 2026-04-19 | v1.0.4  | §7.3 resolved — T6.6 `VelocityVerletGpu` landed. Two kernels mirroring CPU `VelocityVerletIntegrator`: `pre_force_kernel` (half-kick + drift) and `post_force_kernel` (half-kick only). Per-atom thread, pure element-wise — no reductions, no atomics. Operand order matches CPU path exactly (`v += f · accel · half_dt`; `x += v · dt`) and Reference flavor's `--fmad=false` guarantees byte-equal output. Per-species `accel[s] = ftm2v / mass[s]` precomputed on host (LAMMPS metal units, `ftm2v ≈ 9648.533` per M1 SPEC delta). Public API takes raw host primitives (positions, velocities, forces, type ids, accel table); domain adapter lives в `src/integrator/gpu_velocity_verlet.cpp`. **D-M6-7 gate:** bit-exact CPU↔GPU over 1/10/100/1000 NVE steps on Al 1000-atom single-species + Ni-Al 512-atom two-species lattices (all three lengths green locally). MixedFast path deferred to T6.8 flavor activation. Micro-bench at `verify/benchmarks/integrator_gpu_vs_cpu/`: **0.3× (10⁴) / 0.5× (10⁵) on sm_120** — GPU slower due to per-call H2D/D2H dominating ~6 FLOPs/atom kernel. **Это ожидаемое поведение для T6.6 adapter shape;** speedup unlocks in T6.7 (resident-on-GPU, `integrator/SPEC §3.5`). NVTX deferred to T6.11. |
 
 Roadmap extensions (authored by future tasks):
 
 - **T6.3** → §5.1 pool LRU detail, resolve OQ-M6-1 (**done — deferred to T6.5**);
 - **T6.4** → §7.1 NL kernel details, SoA layout confirmation (D-M6-16) (**done — v1.0.2**);
 - **T6.5** → §7.2 EAM kernel details, Kahan overhead measurement (OQ-M6-4) (**done — v1.0.3; OQ-M6-4 deferred to T6.11**);
-- **T6.6** → §7.3 VV details + NVE drift measurements;
+- **T6.6** → §7.3 VV details + NVE drift measurements (**done — v1.0.4**);
 - **T6.7** → §3.2 pipeline pattern extended;
 - **T6.8** → §8.3 threshold registry wired;
 - **T6.9** → §3.5 N-stream / K-way pipelining pre-study;

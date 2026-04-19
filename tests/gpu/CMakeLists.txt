@@ -28,3 +28,9 @@ target_compile_definitions(
   PRIVATE TDMD_TEST_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/potentials/fixtures"
           TDMD_VERIFY_POTENTIALS_DIR="${CMAKE_SOURCE_DIR}/verify/third_party/potentials")
 add_test(NAME test_eam_alloy_gpu COMMAND test_eam_alloy_gpu)
+
+# T6.6: VV NVE integrator GPU kernel — bit-exact vs CPU reference (gpu/SPEC §7.3).
+add_executable(test_integrator_vv_gpu test_integrator_vv_gpu.cpp)
+target_link_libraries(test_integrator_vv_gpu PRIVATE tdmd::gpu tdmd::integrator tdmd::state
+                                                     Catch2::Catch2WithMain)
+add_test(NAME test_integrator_vv_gpu COMMAND test_integrator_vv_gpu)
