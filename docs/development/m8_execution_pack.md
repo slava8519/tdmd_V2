@@ -643,9 +643,11 @@ SnapPotential CPU FP64 vs LAMMPS `pair_style snap` FP64; compares per-atom force
 
 ---
 
-### T8.6 — SnapPotential GPU FP64 implementation (split into T8.6a [landed] + T8.6b [pending])
+### T8.6 — SnapPotential GPU FP64 implementation (split into T8.6a [landed] + T8.6b [landed])
 
-**Status 2026-04-20.** T8.6a landed (scaffolding only — class skeletons + PIMPL firewall + CPU-only build guards + M8-scope flag fence + sentinel-throw `compute()` path + `SimulationEngine` dispatch wiring + `preflight::check_runtime` relaxation + `test_snap_gpu_plumbing`); see master spec Приложение C + `docs/specs/gpu/SPEC.md` v1.0.17 §7.5. T8.6b (full CUDA kernel body port) remains pending — this task box is kept here for T8.6b planning / review.
+**Status 2026-04-20.** T8.6a landed (scaffolding only — class skeletons + PIMPL firewall + CPU-only build guards + M8-scope flag fence + sentinel-throw `compute()` path + `SimulationEngine` dispatch wiring + `preflight::check_runtime` relaxation + `test_snap_gpu_plumbing`); see master spec Приложение C + `docs/specs/gpu/SPEC.md` v1.0.17 §7.5.
+
+**T8.6b landed 2026-04-20.** Full CUDA kernel body — three-kernel architecture (`snap_ui_kernel` Wigner-U accumulation → `snap_yi_kernel` Z→Y→B→PE inline → `snap_deidrj_kernel` per-neighbour dE/dr own-side + peer-side for Newton-3 reassembly), one-block-per-atom launch, single-lane CG contractions; host-side Kahan reductions per D-M6-15 (no atomicAdd(double*)). Index tables flattened on host (`snap_gpu_tables.cu`), uploaded once per `compute()` lifetime. Tested on BCC W 250-atom rattled lattice (fixture `W_2940_2017_2`): GPU vs CPU PE matches (−4457.9), worst-force rel err = 1.32e-14 (already at D-M8-13 1e-12 precision — T8.7 locks formal gate). All three flavors green: `Fp64ReferenceBuild` + CUDA 49/49, `MixedFastBuild` + CUDA 49/49, `Fp64ReferenceBuild` + CPU-only-strict 41/41. Test-lifetime trap resolved: pool→stream→adapter construction order required so destruction runs adapter→stream→pool and DevicePtr deleters reach a still-alive pool. See `docs/specs/gpu/SPEC.md` §7.5 + master spec Приложение C (T8.6b entry).
 
 ```
 # TDMD Task: SnapPotential GPU FP64 — CUDA port (T8.6b kernel body — T8.6a scaffolding already shipped)

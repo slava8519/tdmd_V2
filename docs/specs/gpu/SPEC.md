@@ -1,7 +1,7 @@
 # gpu/SPEC.md
 
 **Module:** `gpu/`
-**Status:** master module spec v1.0.17 (T8.6a shipped — `SnapGpu` + `SnapGpuAdapter` PIMPL scaffolding on canonical `EamAlloyGpu` shape + M8-scope flag fence + sentinel-throw `compute()` path; kernel body deferred to T8.6b, bit-exact gate deferred to T8.7)
+**Status:** master module spec v1.0.18 (T8.6b shipped — SNAP GPU FP64 functional kernel body — three-kernel Ui→Yi→deidrj pipeline + index-table flatten + peer-side Newton-3 reassembly; bit-exact gate deferred to T8.7)
 **Parent:** `TDMD Engineering Spec v2.5` §14 M6 (closed) / §14 M7 (closed) / §14 M8 (in progress), §15.2, §D (precision policy)
 **Last updated:** 2026-04-20
 
@@ -551,13 +551,13 @@ Single TU `src/gpu/snap_gpu.cu` with two branches:
 
 Mirrors `src/gpu/eam_alloy_gpu.cu` precedent. NO separate `snap_gpu_stub.cpp` — single-TU guard keeps CMake wiring simple (same set_source_files_properties LANGUAGE=CXX trick as EAM on CPU-only builds). `compute_version()` stays at 0 on both branches because `compute()` throws before any increment.
 
-**T8.6b — planned kernel architecture (NOT shipped at T8.6a).**
+**T8.6b — shipped 2026-04-20 (v1.0.18).**
 
-Port of LAMMPS `compute_snap_common.cpp` + `sna.cpp` (~1500 lines total). Three-pass algorithm:
+Port of LAMMPS `sna.cpp` compute/force loops (Wigner-U, Z-list, Y-list, B-list, deidrj). **Three-kernel architecture**, one-block-per-atom (<<<n_atoms, 128>>>), FP64 throughout. Index-table flatten + upload lives in `src/gpu/snap_gpu_tables.cu` (~290 LoC host C++, pure integer/factorial recurrences; bit-exact with `SnaEngine::build_indexlist/init_clebsch_gordan/init_rootpqarray` by construction — same arithmetic, no FP subtlety). Device helpers live in `src/gpu/snap_gpu_device.cuh` (`compute_uarray`, switching function, Wigner-U recurrence). Kernels:
 
-1. **`snap_ui_kernel`** — per (atom i, neighbor j) pair: compute bispectrum basis `Ui_{l,m_1,m_2}` via Wigner-U expansion + rotational symmetry reduction. Thread = atom-neighbor pair; shared-memory bispectrum cache ~32 atoms per block.
-2. **`snap_yi_kernel`** — per-atom contraction `Yi_{l,m_1,m_2} = Σ_j β_l · Ui_{l,m_1,m_2}(i,j) · switch(r_{ij})`. Thread = atom; per-atom linear reduction, no atomics.
-3. **`snap_deidrj_kernel`** — per (atom i, neighbor j) pair: force derivative `dE/dr_{ij} = ...` + per-pair Newton-3 force scatter. Thread = atom-neighbor pair; FP64 atomic add on neighbor's force slot (forced по D-M8-13 ≤1e-12 rel gate).
+1. **`snap_ui_kernel`** — per atom: zero `ulisttot_r/i`, add self-term (tid==0, j=0 block), then single-lane loop over neighbours `j` of atom `i` calling `compute_uarray_single_lane` and accumulating weighted Ulist into `ulisttot_r/i`. Thread-parallel zeroing; single-lane CG-recurrence accumulator.
+2. **`snap_yi_kernel`** — per atom: single-lane Z-list contraction (triple loop j1≤j2≤j over CG matrix × ulisttot), Y-list build (Y_{jju} = Σ β · Z), B-list inline (B_{j1,j2,j}), PE accumulation into `pe_per_atom[i]`, per-atom partial virial write.
+3. **`snap_deidrj_kernel`** — per atom `i`: single-lane outer loop over neighbours. For each neighbour `j`, re-derives `du/dr` for the `i ↔ j` pair and computes BOTH (fij_own, which is i's contribution assuming i is the "origin") AND (fij_peer, i's contribution if j were the "origin" — reads `ylist[j]` from global). Full-list peer-side replay replaces the CPU's half-list Newton-3 pair scatter: `F_i = Σ_j (fij_own(i,j) − fij_peer(j,i))` — each bond contributes to both endpoints symmetrically without any `atomicAdd(double*)`.
 
 `__restrict__` на all pointer params per master spec §D.16. NVTX range per kernel launch per gpu/SPEC §9 (T6.11 audit discipline — `test_nvtx_audit` enforces). Index-table flatten (T** → T*) shipped at T8.6b entry — `Impl` allocates `d_idxcg_block`, `d_idxu_block`, `d_idxz_block`, `d_cg_coefficients`, `d_rootpq` as flat contiguous buffers filled once at adapter ctor (analogous to EAM spline coefficient flatten at T6.5). Host marshalling in `src/potentials/snap_gpu_adapter.cpp` (already flattens `radius_elem_flat_`, `weight_elem_flat_`, `beta_flat_` at T8.6a).
 
@@ -577,12 +577,14 @@ Port of LAMMPS `compute_snap_common.cpp` + `sna.cpp` (~1500 lines total). Three-
 
 Self-skips с exit 77 if LAMMPS submodule not initialized (Option A / public CI convention — matches `test_snap_compute`).
 
-**NVTX:** no kernel launches at T8.6a → nothing to wrap. `test_nvtx_audit` walks `src/gpu/*.cu` and trivially passes since the grep walker finds zero `<<<...>>>` sites inside `snap_gpu.cu` at T8.6a. When T8.6b lands its three kernel launches, each will be wrapped in `TDMD_NVTX_RANGE("snap.{ui,yi,deidrj}_kernel")` per the audit rules.
+**NVTX (v1.0.18).** All three T8.6b kernel launches wrapped in `TDMD_NVTX_RANGE("snap.ui_kernel" | "snap.yi_kernel" | "snap.deidrj_kernel")`; H2D/D2H copies wrapped in `"snap.h2d.*"` / `"snap.d2h.*"`; index-table upload wrapped in `"snap.build_index_tables"`; top-level `compute()` wrapped in `"snap.compute"`. `test_nvtx_audit` green on both CUDA + CPU-only builds.
+
+**Lifetime contract (T8.6b footnote).** `SnapGpuAdapter::Impl` holds `DevicePtr<std::byte>` members whose pool-class deleters reference the owning `DevicePool::Impl*` as context. Construction order in any test/driver code **must** be `DevicePool pool → DeviceStream stream → SnapGpuAdapter adapter` so destruction runs `adapter → stream → pool` and the adapter's `DevicePtr` deleters reach a still-alive pool. The reverse order (`adapter → pool → stream` at construction) triggers use-after-free on teardown — pool dtor calls `cudaFreeAsync` on all tracked blocks, then adapter's `~Impl` runs `DevicePtr` destructors that re-dereference the already-destroyed pool Impl. Same contract applies to `EamAlloyGpuAdapter`. Enforced by convention only — no assert at construction time.
 
 **Data lifecycle.**
 
 - T8.6a: adapter compute() marshals AtomSoA/Box/CellGrid → BoxParams + SnapTablesHost → calls `SnapGpu::compute()` which throws the T8.6b sentinel before touching device memory. Flattened host buffers (`radius_elem_flat_`, `weight_elem_flat_`, `beta_flat_`) are allocated once at adapter ctor.
-- T8.6b: adapter stays unchanged; `Impl::compute()` body implements H2D(atoms+cells+tables once cached) → three-kernel launch → D2H(forces+per-atom PE+virial) → host Kahan reduction of PE + virial (D-M6-15). Per-step kernel timing ~100μs per 2000-atom W fixture expected на RTX 5080 (measured в T8.10 / T8.11).
+- T8.6b (shipped): adapter stays unchanged; `Impl::compute()` body implements H2D(atoms+cells+tables once cached) → three-kernel launch → D2H(forces+per-atom PE+virial) → host Kahan reduction of PE + virial (D-M6-15). Per-step kernel timing baseline measured в T8.10 / T8.11.
 - T8.7: bit-exact gate adds a second adapter call via CPU path, compares per-atom force/pe/virial arrays at ≤ 1e-12 rel.
 
 **Adapter registration (T8.6a shipped).**
@@ -607,7 +609,7 @@ Parallel fields (`gpu_potential_`, `gpu_snap_potential_`) rather than abstract `
 
 | Task | Scope | Gate |
 |------|-------|------|
-| T8.6b | Full CUDA kernel port of SnaEngine (~1500 lines); three kernels Ui/Yi/deidrj; __restrict__ + NVTX + Kahan reduction | Functional pass on W 64-atom smoke test; `compute_version()` monotonic |
+| T8.6b | Full CUDA kernel port of SnaEngine; three kernels Ui/Yi/deidrj + index-table flatten + peer-side Newton-3 reassembly; __restrict__ + NVTX + Kahan reduction | **LANDED 2026-04-20**: functional pass on W BCC 250-atom rattled smoke; `compute_version()` monotonic; worst-force rel err already 1.3e-14 vs CPU (T8.7 locks formal 1e-12 gate) |
 | T8.7  | Bit-exact gate CPU FP64 ≡ GPU FP64 ≤ 1e-12 rel on W 2000-atom fixture | D-M8-13 closure |
 | T8.9  | MixedFast SNAP kernel — FP32 math + FP64 accum (Philosophy B) | D-M8-8 ≤ 1e-5 rel force / ≤ 1e-7 rel PE |
 | T8.10 | T6 medium/large variants (1024/8192 atoms) — performance baseline vs LAMMPS CPU SNAP | TDMD GPU > LAMMPS CPU ≥ 2× |

@@ -43,6 +43,19 @@ target_compile_definitions(
 add_test(NAME test_snap_gpu_plumbing COMMAND test_snap_gpu_plumbing)
 set_tests_properties(test_snap_gpu_plumbing PROPERTIES SKIP_RETURN_CODE 77)
 
+# T8.6b: SnapGpu functional correctness — full kernel body exercised on the canonical W_2940
+# fixture. Asserts finite PE/forces/virial + Newton-3 sum + compute_version monotonicity + GPU
+# matches CPU reference within 1e-10 rel (loose tolerance; T8.7 tightens to D-M8-13 1e-12).
+# Self-skips with exit 77 when the LAMMPS submodule isn't initialized.
+add_executable(test_snap_gpu_functional test_snap_gpu_functional.cpp)
+target_link_libraries(test_snap_gpu_functional PRIVATE tdmd::gpu tdmd::potentials tdmd::neighbor
+                                                       tdmd::state Catch2::Catch2WithMain)
+target_compile_definitions(
+  test_snap_gpu_functional
+  PRIVATE TDMD_TEST_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/potentials/fixtures")
+add_test(NAME test_snap_gpu_functional COMMAND test_snap_gpu_functional)
+set_tests_properties(test_snap_gpu_functional PROPERTIES SKIP_RETURN_CODE 77)
+
 # T6.6: VV NVE integrator GPU kernel — bit-exact vs CPU reference (gpu/SPEC §7.3).
 add_executable(test_integrator_vv_gpu test_integrator_vv_gpu.cpp)
 target_link_libraries(test_integrator_vv_gpu PRIVATE tdmd::gpu tdmd::integrator tdmd::state

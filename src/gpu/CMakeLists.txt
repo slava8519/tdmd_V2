@@ -16,17 +16,21 @@ set(tdmd_gpu_sources
     eam_alloy_gpu.cu
     eam_alloy_gpu_mixed.cu
     integrator_vv_gpu.cu
-    snap_gpu.cu)
+    snap_gpu.cu
+    snap_gpu_tables.cu)
 
-# T6.4 / T6.5 / T6.6 / T6.8 / T8.6a: the .cu TUs carry both CUDA kernels (TDMD_BUILD_CUDA=1 branch)
-# and a pure-C++ throwing stub (TDMD_BUILD_CUDA=0 branch). Under CPU-only builds we retag their
-# language so the host compiler picks them up — the files never contain kernel syntax outside the
-# CUDA guard. eam_alloy_gpu_mixed.cu (T6.8) and snap_gpu.cu (T8.6a) are always built so dispatch via
+# T6.4 / T6.5 / T6.6 / T6.8 / T8.6a / T8.6b: the .cu TUs carry both CUDA kernels (TDMD_BUILD_CUDA=1
+# branch) and a pure-C++ throwing stub (TDMD_BUILD_CUDA=0 branch). Under CPU-only builds we retag
+# their language so the host compiler picks them up — the files never contain kernel syntax outside
+# the CUDA guard. snap_gpu_tables.cu (T8.6b) is pure host C++ with no CUDA at all — just kept with a
+# .cu extension for naming symmetry with its .cuh header — so it also needs retagging.
+# eam_alloy_gpu_mixed.cu (T6.8) and snap_gpu.cu (T8.6a/b) are always built so dispatch via
 # `TDMD_FLAVOR_MIXED_FAST` / runtime.backend: gpu resolves at adapter-link time regardless of the
 # selected flavor.
 if(NOT TDMD_BUILD_CUDA)
-  set_source_files_properties(neighbor_list_gpu.cu eam_alloy_gpu.cu eam_alloy_gpu_mixed.cu
-                              integrator_vv_gpu.cu snap_gpu.cu PROPERTIES LANGUAGE CXX)
+  set_source_files_properties(
+    neighbor_list_gpu.cu eam_alloy_gpu.cu eam_alloy_gpu_mixed.cu integrator_vv_gpu.cu snap_gpu.cu
+    snap_gpu_tables.cu PROPERTIES LANGUAGE CXX)
 endif()
 
 add_library(tdmd_gpu STATIC ${tdmd_gpu_sources})

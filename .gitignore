@@ -1,6 +1,7 @@
 # CMake build artifacts
 build/
 build_*/
+build-*/
 Build/
 _build/
 cmake-build-*/
