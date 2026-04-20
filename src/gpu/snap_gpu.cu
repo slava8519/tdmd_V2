@@ -429,6 +429,10 @@ __global__ void snap_yi_kernel(std::uint32_t n,
   double* ylist_i = ylist_r + p.idxu_max;
   double* zlist_r = ylist_i + p.idxu_max;
   double* zlist_i = zlist_r + p.idxz_max;
+  // T8.6c: per-jjz (betaj * ztmp) stash for parallel-produce /
+  // sequential-accumulate handoff into ylist (byte-exact order).
+  double* ybuf_r = zlist_i + p.idxz_max;
+  double* ybuf_i = ybuf_r + p.idxz_max;
 
   // Load ulisttot[i] and zero ylist.
   const std::size_t ubase = static_cast<std::size_t>(i) * static_cast<std::size_t>(p.idxu_max);
@@ -450,92 +454,106 @@ __global__ void snap_yi_kernel(std::uint32_t n,
   // --- Step 1: compute zlist + accumulate β·z → ylist (CPU compute_yi port
   //             with zlist stashed for reuse by compute_bi).
   //
-  // Single-lane over jjz. nelements_=1 so we only have elem1=elem2=elem3=0.
-  if (tid == 0) {
-    for (int jjz = 0; jjz < p.idxz_max; ++jjz) {
-      const int* zrec = idxz_packed + jjz * 10;
-      const int j1 = zrec[0];
-      const int j2 = zrec[1];
-      const int j = zrec[2];
-      const int ma1min = zrec[3];
-      const int ma2max = zrec[4];
-      const int mb1min = zrec[5];
-      const int mb2max = zrec[6];
-      const int na = zrec[7];
-      const int nb = zrec[8];
-      const int jju = zrec[9];
+  // T8.6c split: Phase A (parallel over jjz) computes ztmp and βj independently
+  // per z-triple, writing zlist[jjz] (each jjz is its own slot) and stashing
+  // ybuf[jjz] = βj * ztmp. Phase B (tid==0 sequential) accumulates ybuf into
+  // ylist[jju] in original jjz order — because multiple (j1,j2,j) triples map
+  // to the same jju, the += order matters for FP identity. The product
+  // `βj * ztmp` is computed identically per jjz in both the original and
+  // split forms (pure functions of ulisttot + cglist + idxz_packed), so ybuf
+  // carries the same value that would have flowed into the original `+=`.
+  for (int jjz = tid; jjz < p.idxz_max; jjz += block_threads) {
+    const int* zrec = idxz_packed + jjz * 10;
+    const int j1 = zrec[0];
+    const int j2 = zrec[1];
+    const int j = zrec[2];
+    const int ma1min = zrec[3];
+    const int ma2max = zrec[4];
+    const int mb1min = zrec[5];
+    const int mb2max = zrec[6];
+    const int na = zrec[7];
+    const int nb = zrec[8];
 
-      const double* cgblock = cglist + idxcg_block[jkk_index_dev(j1, j2, j, p.jdim)];
+    const double* cgblock = cglist + idxcg_block[jkk_index_dev(j1, j2, j, p.jdim)];
 
-      double ztmp_r = 0.0;
-      double ztmp_i = 0.0;
+    double ztmp_r = 0.0;
+    double ztmp_i = 0.0;
 
-      int jju1 = idxu_block[j1] + (j1 + 1) * mb1min;
-      int jju2 = idxu_block[j2] + (j2 + 1) * mb2max;
-      int icgb = mb1min * (j2 + 1) + mb2max;
-      for (int ib = 0; ib < nb; ++ib) {
-        double suma1_r = 0.0;
-        double suma1_i = 0.0;
+    int jju1 = idxu_block[j1] + (j1 + 1) * mb1min;
+    int jju2 = idxu_block[j2] + (j2 + 1) * mb2max;
+    int icgb = mb1min * (j2 + 1) + mb2max;
+    for (int ib = 0; ib < nb; ++ib) {
+      double suma1_r = 0.0;
+      double suma1_i = 0.0;
 
-        const double* u1r = ulisttot_r + jju1;
-        const double* u1i = ulisttot_i + jju1;
-        const double* u2r = ulisttot_r + jju2;
-        const double* u2i = ulisttot_i + jju2;
+      const double* u1r = ulisttot_r + jju1;
+      const double* u1i = ulisttot_i + jju1;
+      const double* u2r = ulisttot_r + jju2;
+      const double* u2i = ulisttot_i + jju2;
 
-        int ma1 = ma1min;
-        int ma2 = ma2max;
-        int icga = ma1min * (j2 + 1) + ma2max;
+      int ma1 = ma1min;
+      int ma2 = ma2max;
+      int icga = ma1min * (j2 + 1) + ma2max;
 
-        for (int ia = 0; ia < na; ++ia) {
-          suma1_r += cgblock[icga] * (u1r[ma1] * u2r[ma2] - u1i[ma1] * u2i[ma2]);
-          suma1_i += cgblock[icga] * (u1r[ma1] * u2i[ma2] + u1i[ma1] * u2r[ma2]);
-          ma1++;
-          ma2--;
-          icga += j2;
-        }
-        ztmp_r += cgblock[icgb] * suma1_r;
-        ztmp_i += cgblock[icgb] * suma1_i;
-        jju1 += j1 + 1;
-        jju2 -= j2 + 1;
-        icgb += j2;
+      for (int ia = 0; ia < na; ++ia) {
+        suma1_r += cgblock[icga] * (u1r[ma1] * u2r[ma2] - u1i[ma1] * u2i[ma2]);
+        suma1_i += cgblock[icga] * (u1r[ma1] * u2i[ma2] + u1i[ma1] * u2r[ma2]);
+        ma1++;
+        ma2--;
+        icga += j2;
       }
-      if (p.bnorm_flag) {
-        ztmp_r /= (j + 1);
-        ztmp_i /= (j + 1);
-      }
-      zlist_r[jjz] = ztmp_r;
-      zlist_i[jjz] = ztmp_i;
+      ztmp_r += cgblock[icgb] * suma1_r;
+      ztmp_i += cgblock[icgb] * suma1_i;
+      jju1 += j1 + 1;
+      jju2 -= j2 + 1;
+      icgb += j2;
+    }
+    if (p.bnorm_flag) {
+      ztmp_r /= (j + 1);
+      ztmp_i /= (j + 1);
+    }
+    zlist_r[jjz] = ztmp_r;
+    zlist_i[jjz] = ztmp_i;
 
-      // β selection — CPU compute_yi (nelements_=1 ⇒ elem3=0).
-      double betaj;
-      if (j >= j1) {
-        const int jjb = idxb_block[jkk_index_dev(j1, j2, j, p.jdim)];
-        if (j1 == j) {
-          if (j2 == j) {
-            betaj = 3.0 * beta_k[jjb];
-          } else {
-            betaj = 2.0 * beta_k[jjb];
-          }
-        } else {
-          betaj = beta_k[jjb];
-        }
-      } else if (j >= j2) {
-        const int jjb = idxb_block[jkk_index_dev(j, j2, j1, p.jdim)];
+    // β selection — CPU compute_yi (nelements_=1 ⇒ elem3=0).
+    double betaj;
+    if (j >= j1) {
+      const int jjb = idxb_block[jkk_index_dev(j1, j2, j, p.jdim)];
+      if (j1 == j) {
         if (j2 == j) {
-          betaj = 2.0 * beta_k[jjb];
+          betaj = 3.0 * beta_k[jjb];
         } else {
-          betaj = beta_k[jjb];
+          betaj = 2.0 * beta_k[jjb];
         }
       } else {
-        const int jjb = idxb_block[jkk_index_dev(j2, j, j1, p.jdim)];
         betaj = beta_k[jjb];
       }
-      if (!p.bnorm_flag && j1 > j) {
-        betaj *= static_cast<double>(j1 + 1) / static_cast<double>(j + 1);
+    } else if (j >= j2) {
+      const int jjb = idxb_block[jkk_index_dev(j, j2, j1, p.jdim)];
+      if (j2 == j) {
+        betaj = 2.0 * beta_k[jjb];
+      } else {
+        betaj = beta_k[jjb];
       }
+    } else {
+      const int jjb = idxb_block[jkk_index_dev(j2, j, j1, p.jdim)];
+      betaj = beta_k[jjb];
+    }
+    if (!p.bnorm_flag && j1 > j) {
+      betaj *= static_cast<double>(j1 + 1) / static_cast<double>(j + 1);
+    }
 
-      ylist_r[jju] += betaj * ztmp_r;
-      ylist_i[jju] += betaj * ztmp_i;
+    ybuf_r[jjz] = betaj * ztmp_r;
+    ybuf_i[jjz] = betaj * ztmp_i;
+  }
+  __syncthreads();
+
+  // Phase B: single-lane sequential accumulation in original jjz order.
+  if (tid == 0) {
+    for (int jjz = 0; jjz < p.idxz_max; ++jjz) {
+      const int jju = idxz_packed[jjz * 10 + 9];
+      ylist_r[jju] += ybuf_r[jjz];
+      ylist_i[jju] += ybuf_i[jjz];
     }
   }
   __syncthreads();
@@ -1016,19 +1034,27 @@ SnapGpuResult SnapGpu::compute(std::size_t n,
   const int jdim = ft.jdim;
   const int jdimpq = ft.jdimpq;
 
-  // Shared-memory sanity: enforce twojmax ≤ 8 (keeps yi_kernel shmem < 48 KB).
-  // Beyond twojmax=8 the yi_kernel needs dynamic shmem > 48KB and requires
-  // cudaFuncSetAttribute opt-in — not wired in T8.6b (M8 scope is twojmax≤6).
+  // Shared-memory sizing for yi_kernel.
+  // Layout: ulisttot_{r,i} (2·idxu_max) + ylist_{r,i} (2·idxu_max)
+  //       + zlist_{r,i} (2·idxz_max) + T8.6c ybuf_{r,i} (2·idxz_max).
+  // For twojmax=8 (W fixture) this is ~85 KB — above the 48 KB default
+  // per-block ceiling, so we opt into the large-shmem path via
+  // cudaFuncSetAttribute(MaxDynamicSharedMemorySize) below. On sm_80+
+  // the hardware limit is ≥ 164 KB/block (228 KB on sm_90 / sm_120).
   const std::size_t shm_yi_bytes =
-      (static_cast<std::size_t>(4 * idxu_max) + static_cast<std::size_t>(2 * idxz_max)) *
+      (static_cast<std::size_t>(4 * idxu_max) + static_cast<std::size_t>(4 * idxz_max)) *
       sizeof(double);
-  if (shm_yi_bytes > 48u * 1024u) {
+  if (shm_yi_bytes > 160u * 1024u) {
     std::ostringstream oss;
     oss << "gpu::SnapGpu::compute: twojmax=" << tables.twojmax << " needs " << shm_yi_bytes
-        << " bytes of dynamic shared memory per yi_kernel block, exceeds 48 KB default limit "
-           "(T8.6b M8 scope targets twojmax ≤ 8; raise cudaFuncAttributeMax"
-           "DynamicSharedMemorySize on Ampere+ to lift this)";
+        << " bytes of dynamic shared memory per yi_kernel block, exceeds 160 KB opt-in ceiling";
     throw std::runtime_error(oss.str());
+  }
+  if (shm_yi_bytes > 48u * 1024u) {
+    check_cuda("cudaFuncSetAttribute(snap_yi_kernel, MaxDynamicSharedMemorySize)",
+               cudaFuncSetAttribute(snap_yi_kernel,
+                                    cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                    static_cast<int>(shm_yi_bytes)));
   }
 
   // --- 2. Upload SNAP parameter tables (cache-checked).
