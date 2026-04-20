@@ -270,6 +270,10 @@ __global__ void snap_ui_kernel(std::uint32_t n,
   double* ulisttot_r = ulist_i + p.idxu_max;
   double* ulisttot_i = ulisttot_r + p.idxu_max;
 
+  // Shared scalar so the single-lane compute_uarray + sfacwj producer hands
+  // the factor to the block-parallel add_uarraytot loop below.
+  __shared__ double sfacwj_shared;
+
   // Zero ulisttot (parallel).
   for (int k = tid; k < p.idxu_max; k += block_threads) {
     ulisttot_r[k] = 0.0;
@@ -378,18 +382,19 @@ __global__ void snap_ui_kernel(std::uint32_t n,
                                                ulist_r,
                                                ulist_i);
             const double sfac = snap_detail::compute_sfac_device(r, rcut, p.rmin0, p.switch_flag);
-            const double sfacwj = sfac * wj;
-            // Port of add_uarraytot (sna.cpp 806-830) with jelem=0.
-            for (int jl = 0; jl <= p.twojmax; ++jl) {
-              int jju = idxu_block[jl];
-              for (int mb = 0; mb <= jl; ++mb) {
-                for (int ma = 0; ma <= jl; ++ma) {
-                  ulisttot_r[jju] += sfacwj * ulist_r[jju];
-                  ulisttot_i[jju] += sfacwj * ulist_i[jju];
-                  jju++;
-                }
-              }
-            }
+            sfacwj_shared = sfac * wj;
+          }
+          __syncthreads();
+          // Port of add_uarraytot (sna.cpp 806-830) with jelem=0. The CPU
+          // nested (jl, mb, ma) loop sweeps jju = 0..idxu_max-1 contiguously
+          // via idxu_block[jl] offsets; each position is written exactly once
+          // per neighbor with an independent `+= sfacwj * ulist[jju]`. Order
+          // among positions within one neighbor does not affect the FP sum
+          // (each position is touched once), so a strided block-parallel
+          // sweep is byte-exact relative to the sequential walk.
+          for (int k = tid; k < p.idxu_max; k += block_threads) {
+            ulisttot_r[k] += sfacwj_shared * ulist_r[k];
+            ulisttot_i[k] += sfacwj_shared * ulist_i[k];
           }
           __syncthreads();
         }
