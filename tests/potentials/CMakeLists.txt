@@ -33,3 +33,13 @@ target_link_libraries(test_eam_fs PRIVATE tdmd::potentials tdmd::neighbor tdmd::
                                           Catch2::Catch2WithMain)
 
 add_test(NAME test_eam_fs COMMAND test_eam_fs)
+
+# T8.2: LAMMPS oracle ML-SNAP subset — canonical W_2940_2017_2 fixture path gate. Self-skips with
+# exit 77 when the LAMMPS submodule isn't initialized (public CI per Option A D-M6-6). Pure-C++ path
+# check, no CUDA / no LAMMPS runtime.
+add_executable(test_lammps_oracle_snap_fixture test_lammps_oracle_snap_fixture.cpp)
+target_link_libraries(test_lammps_oracle_snap_fixture PRIVATE Catch2::Catch2WithMain)
+target_compile_definitions(test_lammps_oracle_snap_fixture
+                           PRIVATE TDMD_TEST_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures")
+add_test(NAME test_lammps_oracle_snap_fixture COMMAND test_lammps_oracle_snap_fixture)
+set_tests_properties(test_lammps_oracle_snap_fixture PROPERTIES SKIP_RETURN_CODE 77)

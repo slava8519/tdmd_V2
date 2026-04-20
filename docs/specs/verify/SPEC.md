@@ -357,7 +357,7 @@ Threshold change процедура (из playbook §9.1 adapted):
 | T3 | `al-fcc-large` | Al 10⁶, Morse | **TD anchor-test (Andreev §3.5)** |
 | T4 | `nial-alloy` | Ni/Al EAM | EAM correctness vs LAMMPS |
 | T5 | `meam-angular` | Si MEAM | many-body TD target |
-| T6 | `snap-tungsten` | W SNAP | **ML niche proof-of-value** |
+| T6 | `snap-tungsten` | W SNAP (`W_2940_2017_2.snap`, Wood+Thompson 2017, 128-atom BCC) | **ML niche proof-of-value** — M8 artifact gate |
 | T7 | `mixed-scaling` | T4 + T6 parallel | multi-GPU TD×SD |
 
 ### 4.2. Структура одного benchmark
@@ -694,6 +694,47 @@ unit suite (`verify/harness/scaling_runner/test_scaling_runner.py`) runs
 in every CI flavor — covers efficiency formula, gate dispatch, augmented
 config injection, Pattern 1 byte-exact gate, launch-failure handling, and
 report serialisation. 13 cases, ~25 ms wall.
+
+### 4.7. T6 (`t6_snap_tungsten`) — canonical fixture choice landed M8 T8.2
+
+**Status:** fixture choice and oracle subset gate landed at M8 T8.2 (document
+ships in this PR). Full T6 benchmark body (directory layout, `config.yaml`,
+`checks.yaml`, differential thresholds, scaling probe) lands at M8 T8.10 per
+`docs/development/m8_execution_pack.md`.
+
+**Canonical fixture (D-M8-3):**
+
+- **Coefficient set:** `W_2940_2017_2.snap` — SNAP include file that wires
+  `pair_style hybrid/overlay zbl 4.0 4.8 snap` + loads
+  `W_2940_2017_2.snapcoeff` (30 bispectrum coefficients) +
+  `W_2940_2017_2.snapparam` (twojmax, rcutfac, ...).
+- **Reference:** Wood & Thompson, "Quantum-Accurate Molecular Dynamics Potential
+  for Tungsten" arXiv:1702.07042 (2017). Pure W single-species BCC, 2940 DFT
+  training configurations.
+- **Path:** `verify/third_party/lammps/examples/snap/W_2940_2017_2.snap`
+  (resolved via M1-landed submodule; no binary tracked by tdmd repo).
+- **Driver example:** `in.snap.W.2940` — 128-atom BCC W, 100-step NVE,
+  `dt = 0.0005 ps`, T₀ = 300 K.
+- **Upstream reference log:** `log.15Jun20.snap.W.2940.g++.1` (1-rank) — sanity
+  check that local LAMMPS build is byte-exact с upstream to LAMMPS float
+  precision; NOT the TDMD acceptance gate (TDMD gate is D-M8-7/D-M8-8 per
+  m8 exec pack).
+
+**Why this fixture:** Pure W single-species is simpler для first-pass ML-niche
+proof-of-value than W-Be alloy (`WBe_Wood_PRB2019`, reserved for M9+ SNAP
+alloy gate). 128 atoms fit single-GPU profiling workflow; 8×8×8 BCC (2048-atom)
+and 16×16×16 (16384-atom) variants register at T8.10 for scaling probes.
+
+**Oracle subset verification (landed T8.2):**
+
+`verify/third_party/lammps/install_tdmd/bin/lmp -h | grep ML-SNAP` reports
+non-empty; `in.snap.W.2940` executes cleanly against local build; thermo
+output matches upstream `log.15Jun20.snap.W.2940.g++.1` byte-for-byte at
+5-decimal precision (Step 0: TotEng = −10.98985, Step 100: TotEng = −10.989847).
+Path-existence Catch2 gate:
+`tests/potentials/test_lammps_oracle_snap_fixture` — self-skips (exit 77) if
+submodule not initialized; fails if fixture files go missing from a correctly
+initialized submodule.
 
 ### 4.8. Adding new benchmark
 

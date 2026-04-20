@@ -82,6 +82,37 @@ Run the smoke test:
 tools/lammps_smoke_test.sh
 ```
 
+## SNAP fixture (T6 benchmark — M8)
+
+Canonical T6 tungsten SNAP fixture consumed by TDMD's SNAP differential harness
+(M8 T8.5+):
+
+| Artifact | Path (inside submodule) | Purpose |
+|---|---|---|
+| `W_2940_2017_2.snap` | `verify/third_party/lammps/examples/snap/` | LAMMPS include-style fixture: `pair_style hybrid/overlay zbl ... snap` + `pair_coeff` wiring |
+| `W_2940_2017_2.snapcoeff` | same dir | 30-param bispectrum coefficient file |
+| `W_2940_2017_2.snapparam` | same dir | SNAP hyperparameters (twojmax, rcutfac, ...) |
+| `in.snap.W.2940` | same dir | driver example (100-step NVE, 128-atom BCC W) |
+| `log.15Jun20.snap.W.2940.g++.1` | same dir | upstream reference log — sanity check, not TDMD gate |
+
+Reference: Wood, M. A. & Thompson, A. P. "Quantum-Accurate Molecular Dynamics
+Potential for Tungsten" arXiv:1702.07042. Pure W single-species BCC, 2940 DFT
+training configurations, dated 2017-02-20. Preferred over `WBe_Wood_PRB2019`
+(binary alloy — deferred to M9+ SNAP alloy gate).
+
+**No binary `.snap` tracked by the tdmd repo** per m8 exec pack D-M8-3 —
+submodule owns the file; dev setup cost is one-time `git submodule update --init`.
+
+Sanity run (expected to match upstream `log.15Jun20.snap.W.2940.g++.1` byte-
+exactly to LAMMPS float precision, on any CPU):
+
+```bash
+cd verify/third_party/lammps/examples/snap
+LD_LIBRARY_PATH=../../install_tdmd/lib ../../install_tdmd/bin/lmp -in in.snap.W.2940
+# Step 0:   TotEng = -10.98985    Temp = 300
+# Step 100: TotEng = -10.989847   Press = 11987.181
+```
+
 ## Updating the submodule
 
 Don't. If a bump is genuinely needed:

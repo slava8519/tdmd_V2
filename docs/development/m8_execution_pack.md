@@ -1303,10 +1303,19 @@ log, release notes, git tag `v1.0.0-alpha1` annotated.
 - [x] **T8.0** — T7.8b carry-forward closed: 2-rank overlap gate infrastructure
   shipped 2026-04-20; runtime 30% measurement deferred to T8.11 cloud burst
   (hardware prerequisite: ≥ 2 GPU).
-- [ ] **T8.1** — M8 execution pack authored (this document).
-- [ ] **T8.2** — LAMMPS SNAP subset verified (ML-SNAP builds via `tools/build_lammps.sh`;
-  `in.snap.W.2940` example runs); canonical T6 fixture = `W_2940_2017_2.snap`
-  documented в verify/SPEC §3 + lammps_README; path-resolution Catch2 gate lands.
+- [x] **T8.1** — M8 execution pack authored (this document). Shipped commit
+  5ed72d2 (2026-04-20); D-M8-2/D-M8-3 factual corrections shipped T8.1b
+  commit 0c84b68 (LAMMPS oracle already landed M1 T1.11, pin
+  `stable_22Jul2025_update4`, canonical fixture `W_2940_2017_2.snap`).
+- [x] **T8.2** — LAMMPS SNAP subset verified (ML-SNAP built via
+  `tools/build_lammps.sh`; `lmp -h | grep ML-SNAP` reports present;
+  `in.snap.W.2940` example runs cleanly in 1.2 s matching upstream
+  `log.15Jun20.snap.W.2940.g++.1` byte-exactly to 5-decimal precision).
+  Canonical T6 fixture = `W_2940_2017_2.snap` documented in
+  `verify/third_party/lammps_README.md` (SNAP fixture section) and
+  `docs/specs/verify/SPEC.md` §4.7 (new). Path-resolution Catch2 gate landed:
+  `tests/potentials/test_lammps_oracle_snap_fixture` (two test cases,
+  `SKIP_RETURN_CODE 77` on uninitialized submodule). Shipped 2026-04-20.
 - [ ] **T8.3** — potentials/SPEC §4 SnapPotential body authored; interface
   contract finalized; `§4a MixedFastSnapOnly prep` placeholder landed.
 - [ ] **T8.4** — SnapPotential CPU FP64 ported from LAMMPS USER-SNAP с attribution;
