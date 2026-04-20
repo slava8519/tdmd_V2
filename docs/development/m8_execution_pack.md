@@ -994,11 +994,14 @@ budget. T6 becomes regression target in CI **from this PR forward** (pre-push
 local; compile-only на public CI per Option A).
 
 ## Scope
-- [included] `verify/benchmarks/t6_tungsten_snap/` directory:
+- [included] `verify/benchmarks/t6_snap_tungsten/` directory (scaffold landed
+  T8.10a 2026-04-20 — README + checks.yaml + lammps_script.in + threshold
+  entries; T8.10 proper adds TDMD config.yaml + run_differential extension):
   - `config.yaml.template` — 2048-atom W BCC, W_2940_2017_2 via submodule path
   - `config_16384.yaml.template` — 16×16×16 scaling variant
-  - `checks.yaml` — thresholds (D-M8-8 budget per flavor)
-  - `README.md` — T6 description, how to run, what it validates
+  - `checks.yaml` — thresholds (D-M8-8 budget per flavor) [landed T8.10a]
+  - `README.md` — T6 description, how to run, what it validates [landed T8.10a]
+  - `lammps_script.in` — LAMMPS oracle driver [landed T8.10a]
 - [included] `tests/integration/m8_smoke_t6.cpp` — Catch2 integration smoke:
   runs T6 2048-atom Fp64Reference single-subdomain 10-step NVE; energy
   conservation gate 1e-12 rel; self-skips on fixture absence
@@ -1019,10 +1022,11 @@ local; compile-only на public CI per Option A).
 - M1..M7 + M8 T8.4..T8.9 all green; T6 fixture doesn't break existing gates.
 
 ## Required files
-- `verify/benchmarks/t6_tungsten_snap/config.yaml.template` (new)
-- `verify/benchmarks/t6_tungsten_snap/config_16384.yaml.template` (new)
-- `verify/benchmarks/t6_tungsten_snap/checks.yaml` (new)
-- `verify/benchmarks/t6_tungsten_snap/README.md` (new)
+- `verify/benchmarks/t6_snap_tungsten/config.yaml.template` (new)
+- `verify/benchmarks/t6_snap_tungsten/config_16384.yaml.template` (new)
+- `verify/benchmarks/t6_snap_tungsten/checks.yaml` (new — **landed T8.10a**)
+- `verify/benchmarks/t6_snap_tungsten/README.md` (new — **landed T8.10a**)
+- `verify/benchmarks/t6_snap_tungsten/lammps_script.in` (new — **landed T8.10a**)
 - `tests/integration/m8_smoke_t6.cpp` (new)
 - `tests/integration/CMakeLists.txt` (edit)
 - `verify/threshold_registry.yaml` (edit)
@@ -1393,9 +1397,24 @@ log, release notes, git tag `v1.0.0-alpha1` annotated.
   T8.9 + T8.12, continue using `MixedFastBuild` for production SNAP runs.
 - [ ] **T8.9** — SNAP MixedFast kernel ≤ 1e-5 rel force / ≤ 1e-7 rel PE vs FP64
   GPU oracle на T6 tungsten. EAM MixedFast unchanged under new flavor.
-- [ ] **T8.10** — T6 tungsten SNAP fixture canonical; verify/SPEC T6 section
-  populated; M8 smoke integration test lands (single-subdomain 10-step NVE
-  1e-12 drift).
+- [x] **T8.10a** — `verify/benchmarks/t6_snap_tungsten/` scaffold landed
+  2026-04-20 (commit b1ebfd9): README.md (~115 lines, fixture metadata +
+  D-M8-3 path resolution + three-variant table + acceptance-threshold chain
+  D-M8-7/D-M6-7/D-M8-8 + oracle subset gate recipe + T8.10a/T8.10/T8.11 status
+  checklist); checks.yaml (thermo column map identical to T1/T4 + six checks
+  referencing `benchmarks.t6_snap_tungsten.cpu_fp64_vs_lammps.*`);
+  lammps_script.in (adapted upstream `in.snap.W.2940` with
+  `-var workdir`/`-var nrep`/`-var nsteps`/`-var snap_dir` knobs, %.10e
+  thermo + %.16e id-sorted forces dump); threshold-registry block
+  `benchmarks.t6_snap_tungsten` with `cpu_fp64_vs_lammps` (forces 1e-12,
+  PE/KE/E_total 1e-12, pressure 1e-10, temp 2e-6 k_B floor = D-M8-7 budget),
+  plus `gpu_fp64_vs_cpu_fp64` (forces 1e-12 = D-M6-7 extension). Declarative-
+  only — does NOT depend on SnapPotential force body; measurement landing
+  remains T8.10 proper (blocks on T8.4b).
+- [ ] **T8.10** — T6 tungsten SNAP fixture canonical (TDMD side): config.yaml
+  variants + generate_setup.py + run_differential.py SNAP extension + verify/
+  SPEC T6 section marked "shipped"; M8 smoke integration test lands (single-
+  subdomain 10-step NVE 1e-12 drift). Depends: T8.4b (SnapPotential compute).
 - [ ] **T8.11** — TDMD vs LAMMPS SNAP scaling cloud burst executed; REPORT.md
   checked in с honest artifact gate outcome (A: TDMD beat ≥ 20%, OR B:
   documented why not + M9+ roadmap). T7.8b 30% overlap measured on real ≥ 2 GPU.
