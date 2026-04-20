@@ -54,3 +54,13 @@ target_compile_definitions(test_snap_file
                            PRIVATE TDMD_TEST_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures")
 add_test(NAME test_snap_file COMMAND test_snap_file)
 set_tests_properties(test_snap_file PROPERTIES SKIP_RETURN_CODE 77)
+
+# T8.4b: SnapPotential::compute force body port tests. Auto-skips (exit 77) when the LAMMPS
+# submodule isn't initialized, matching the T8.4a / T8.2 fixture-gated tests.
+add_executable(test_snap_compute test_snap_compute.cpp)
+target_link_libraries(test_snap_compute PRIVATE tdmd::potentials tdmd::state tdmd::neighbor
+                                                Catch2::Catch2WithMain)
+target_compile_definitions(test_snap_compute
+                           PRIVATE TDMD_TEST_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures")
+add_test(NAME test_snap_compute COMMAND test_snap_compute)
+set_tests_properties(test_snap_compute PROPERTIES SKIP_RETURN_CODE 77)

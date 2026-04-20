@@ -11,7 +11,8 @@ add_library(
   eam_fs.cpp
   eam_alloy_gpu_adapter.cpp
   snap_file.cpp
-  snap.cpp)
+  snap.cpp
+  snap/sna_engine.cpp)
 add_library(tdmd::potentials ALIAS tdmd_potentials)
 
 target_include_directories(

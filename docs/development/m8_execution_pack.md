@@ -1342,16 +1342,28 @@ log, release notes, git tag `v1.0.0-alpha1` annotated.
   `std::logic_error` deferring force body port to T8.4b. 13-case / 51-assertion
   Catch2 suite (`test_snap_file`) green, auto-skip 77 on uninitialized
   submodule. Full ctest bank (45/45 passed) clean — no regressions.
-- [ ] **T8.4b** — SnapPotential force body port: three-pass bispectrum → energy
-  → force evaluator (Pass 1 compute_sna_atom с U-matrix + Clebsch-Gordan
-  contraction + bzero subtract; Pass 2 E_i = β_k·B_{k,i} + β·B cache; Pass 3
-  F_ij via −Σ_k β_k·dB_k/dr) ported verbatim от LAMMPS USER-SNAP `sna.cpp`
-  (1597 lines) + `pair_snap.cpp` (808 lines) preserving FP summation ordering
-  (prerequisite для D-M8-7 byte-exact at T8.5 и MixedFastSnapOnly policy swap
-  at T8.8). GPLv2 attribution block in new `src/potentials/snap/` subtree.
-  Unit tests (bispectrum hash match, Newton's 3rd law, 64-atom NVE 1e-12
-  drift). Depends: T8.4a [x]. Carry-forward scope: dedicated Physics
-  Engineer PR, ~1600 lines, sized for 3-5 day focused session.
+- [x] **T8.4b** — SnapPotential force body port landed (2026-04-20):
+  verbatim port of LAMMPS USER-SNAP `sna.cpp` (1597 lines → `snap/sna_engine.cpp`
+  ~1260 lines + `snap/sna_engine.hpp` ~200 lines) + `pair_snap.cpp::compute()`
+  outer loop (→ `snap.cpp` ~260 lines). Three-pass bispectrum → energy → force
+  evaluator (Pass 1 compute_ui + add_uarraytot U-matrix accumulation; Pass 2
+  compute_yi contraction with β; Pass 3 compute_duidrj + compute_deidrj per-
+  neighbour). FP summation ordering preserved verbatim из upstream (load-
+  bearing для D-M8-7 byte-exact at T8.5 и MixedFastSnapOnly policy swap at
+  T8.9). LAMMPS GPLv2 attribution block reproduced in every new file в
+  `src/potentials/snap/`. Half-list → full-list bridge built inside
+  `SnapPotential::compute()`: CSR scatter + per-atom sort makes TDMD's
+  `newton on` NeighborList feed LAMMPS's `REQ_FULL`-style outer loop without
+  touching the neighbor/ module. Virial sign matches EAM convention
+  (`Σ F_i · (r_j − r_i)`) so thermo pressure agrees с LAMMPS через the
+  compensating sign в `runtime/simulation_engine.cpp:574`. Four Catch2
+  structural tests (`test_snap_compute.cpp`): canonical W fixture load,
+  2-atom dimer smoke + N3L + virial symmetry, 250-atom BCC W N3L ≤ 1e-12,
+  central-difference F == −dE/dR consistency ≤ 1e-4 absolute. T8.4a
+  skeleton-throws test retired. Full ctest bank 46/46 green, no regressions.
+  Byte-exact vs LAMMPS (D-M8-7) deferred to T8.5 (run_differential harness
+  и LAMMPS oracle run — TDMD-side force-body port is the blocker; T8.5
+  unblocked). Depends: T8.4a [x].
 - [ ] **T8.5** — CPU SNAP differential vs LAMMPS: per-atom force ≤ 1e-12 rel
   and total PE ≤ 1e-12 rel на T6 tungsten 2048-atom. Locks SNAP CPU FP64 oracle.
 - [ ] **T8.6** — SnapPotential GPU FP64 functional; NVTX-wrapped; functional

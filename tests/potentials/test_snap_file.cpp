@@ -214,20 +214,9 @@ TEST_CASE("SnapPotential: constructor accepts parsed W fixture",
   REQUIRE(pot.effective_skin() == 0.05 * 4.73442);
 }
 
-TEST_CASE("SnapPotential::compute: skeleton throws until T8.4b lands",
-          "[potentials][snap][skeleton][t8.4a]") {
-  const fs::path snap_dir = lammps_snap_examples_dir();
-  skip_if_submodule_uninitialized(snap_dir);
-
-  const auto data = parse_snap_files((snap_dir / "W_2940_2017_2.snapcoeff").string(),
-                                     (snap_dir / "W_2940_2017_2.snapparam").string());
-
-  tdmd::SnapPotential pot(data);
-  tdmd::AtomSoA atoms;
-  tdmd::NeighborList neighbors;
-  tdmd::Box box;
-  REQUIRE_THROWS_WITH(pot.compute(atoms, neighbors, box), ContainsSubstring("not yet implemented"));
-}
+// Note: the T8.4a "compute throws until T8.4b" skeleton test was retired when
+// the force body landed в T8.4b (see tests/potentials/test_snap_compute.cpp для
+// the real compute-path coverage).
 
 TEST_CASE("SnapPotential: constructor rejects inconsistent β count",
           "[potentials][snap][skeleton][t8.4a]") {
