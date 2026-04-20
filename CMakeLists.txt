@@ -34,8 +34,13 @@ set(TDMD_BUILD_FLAVOR
     CACHE STRING "Active BuildFlavor (master spec §7.1)")
 set_property(
   CACHE TDMD_BUILD_FLAVOR
-  PROPERTY STRINGS "Fp64ReferenceBuild" "Fp64ProductionBuild" "MixedFastBuild"
-           "MixedFastAggressiveBuild" "Fp32ExperimentalBuild")
+  PROPERTY STRINGS
+           "Fp64ReferenceBuild"
+           "Fp64ProductionBuild"
+           "MixedFastBuild"
+           "MixedFastSnapOnlyBuild"
+           "MixedFastAggressiveBuild"
+           "Fp32ExperimentalBuild")
 
 # RTX 5080 (Blackwell) = sm_120, requires CUDA 12.8+. Users on CUDA 12.6 must override:
 # -DTDMD_CUDA_ARCHS=89

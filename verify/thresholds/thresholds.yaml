@@ -17,7 +17,7 @@
 # Sections for other benchmarks land as they come online (T3 at M5, ...).
 
 schema_version: 1
-last_updated: 2026-04-19
+last_updated: 2026-04-20
 
 tolerances:
 
@@ -175,6 +175,74 @@ tolerances:
         Summary: dense-cutoff 1e-5 is an FP32 precision ceiling. Relaxing
         the test thresholds would hide real regressions; tightening them
         would fail for physics reasons, not implementation reasons.
+
+    # -------------------------------------------------------------------------
+    # GPU MixedFastSnapOnly (Philosophy B-het) differential thresholds.
+    #
+    # SPEC delta history
+    # ------------------
+    # v1.0.0 (M8 T8.8 landed 2026-04-20): §D.17 7-step procedure closed; new
+    #   BuildFlavor `MixedFastSnapOnlyBuild` shipped with SNAP=FP32 + EAM=FP64
+    #   per-kernel precision split (heterogeneous = Philosophy B-het).
+    #
+    # Derivation summary
+    # ------------------
+    # * SNAP force / energy budgets inherit MixedFastBuild dense-cutoff
+    #   D-M6-8 analog (D-M8-8): FP32 SNAP force chain, FP64 state + accum +
+    #   reduction. Justified by SNAP fit RMSE ≈ 13.8 meV/atom (Wood&Thompson
+    #   2017, arXiv:1702.07042) being ~3 orders of magnitude above FP32 force
+    #   residual at dense-cutoff stencils (~1e-5 rel). FP32 SNAP is
+    #   scientifically indistinguishable from FP64 SNAP at the ML noise floor.
+    # * EAM force / energy / virial budgets inherit MixedFastBuild values
+    #   verbatim: **EAM stays FP64 in this flavor**, so residual vs FP64
+    #   reference is pure reduction-order roundoff (~1e-14), but the
+    #   published ceiling is anchored at MixedFastBuild's 1e-5/1e-7/5e-6
+    #   dense-cutoff values (T6.8a / T7.0 history — `project_fp32_eam_ceiling.md`
+    #   memory). This is **not** a relaxation — it is the "we do not exceed
+    #   MixedFastBuild on any metric" commitment this flavor makes.
+    # * NVE drift per 1000 steps inherits MixedFastBuild 1e-5 ceiling: both
+    #   flavors ship FP64 state + FP64 accumulators; integrator-level drift
+    #   is bounded by reduction-order roundoff, not by per-kernel precision.
+    #
+    # Promise: **all thresholds equal-or-tighter than `gpu_mixed_fast`.** This
+    # flavor narrows the precision combination; it does not widen any
+    # envelope.
+    #
+    # Status
+    # ------
+    # * active from T8.8 (SPEC + CMake option shipped 2026-04-20);
+    # * kernel split emission lands at T8.9 (SNAP FP32 branch under
+    #   `TDMD_FLAVOR_MIXED_FAST_SNAP_ONLY` + EAM FP64 preservation);
+    # * slow-tier VerifyLab pass (§D.17 step 5) under T8.12 — hard gate
+    #   before M8 closure. Any failure blocks v1.0.0-alpha1 tag.
+    #
+    # Rationale doc: docs/specs/potentials/mixed_fast_snap_only_rationale.md
+    # -------------------------------------------------------------------------
+    gpu_mixed_fast_snap_only:
+      snap:
+        # Per-atom SNAP force L∞ rel-diff vs Fp64ReferenceBuild GPU on T6
+        # tungsten fixture (W_2940_2017_2.snap, 2048-atom BCC W). Inherits
+        # MixedFastBuild dense-cutoff 1e-5 ceiling per D-M8-8.
+        force_relative: 1.0e-5
+        # Total SNAP PE rel-diff under same fixture. Pair-sum cancellation
+        # ~10x over force residual.
+        energy_relative: 1.0e-7
+      eam:
+        # EAM in this flavor runs FP64 — residual is pure reduction-order
+        # roundoff (~1e-14 empirically). Budget anchored at MixedFastBuild's
+        # published dense-cutoff ceiling to keep "equal-or-tighter" promise.
+        force_relative: 1.0e-5
+        energy_relative: 1.0e-7
+        virial_rel_to_max: 5.0e-6
+      # NVE energy conservation over 1000 steps. Integrator-level; FP64
+      # state + accum preserves same envelope as MixedFastBuild.
+      nve_drift_per_1000_steps: 1.0e-5
+      rationale: |
+        Full derivation in docs/specs/potentials/mixed_fast_snap_only_rationale.md
+        §3 (empirical evidence SNAP FP32 is below ML fit noise floor) and §4
+        (threshold budget table). All thresholds equal-or-tighter than
+        `gpu_mixed_fast` — this flavor narrows the precision combination
+        without widening any envelope.
 
     t4_nial_alloy:
       # Ni-Al FCC 6×6×6 (864 atoms), 50:50 random, Mishin 2004 EAM/alloy, NVE,

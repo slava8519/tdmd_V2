@@ -1355,10 +1355,42 @@ log, release notes, git tag `v1.0.0-alpha1` annotated.
 - [ ] **T8.7** — GPU FP64 bit-exact gate (D-M6-7 chain extension): SNAP GPU ≡
   SNAP CPU @ Fp64Reference+Reference на T6 fixture; per-atom 1e-12 rel + virial
   byte-exact.
-- [ ] **T8.8** — MixedFastSnapOnlyBuild new BuildFlavor shipped per §D.17 7-step:
-  formal rationale doc (1), §D.11 matrix update (2), threshold registry (3),
-  CMake option (4), slow-tier placeholder (5 — T8.12 closes), scientist
-  docs (6), Architect+Validation review (7).
+- [x] **T8.8** — MixedFastSnapOnlyBuild new BuildFlavor shipped per §D.17
+  7-step (2026-04-20):
+  (1) Formal rationale doc —
+  `docs/specs/potentials/mixed_fast_snap_only_rationale.md` (256 lines, 10
+  sections covering need, flavor comparison, empirical SNAP-fit-RMSE vs
+  FP32-ULP evidence, threshold derivation, compat matrix, CMake integration,
+  T8.12 slow-tier pass obligation, scientist docs pointer, two-reviewer
+  signoff mandate, out-of-scope follow-ons).
+  (2) Master spec §D.12 compat matrix updated (+ §D.11 "shipped flavor"
+  paragraph replacing "roadmap extension"; + §7.1 BuildFlavor table
+  extended with SNAP/EAM split columns + B-het philosophy row; + §D.2
+  five→six canonical flavors; + §D.13 thresholds column; + §D.14 build
+  system rewritten to single-binary `TDMD_BUILD_FLAVOR` model matching
+  actual CMake implementation; + §D.15 `tdmd_mixed_snap_only` binary label).
+  (3) Threshold registry entries —
+  `verify/thresholds/thresholds.yaml` new `benchmarks.gpu_mixed_fast_snap_only`
+  section with SNAP force 1e-5 / energy 1e-7, EAM inherited 1e-5/1e-7/5e-6,
+  and NVE drift 1e-5/1000 steps; all equal-or-tighter than `gpu_mixed_fast`.
+  (4) CMake option — `TDMD_BUILD_FLAVOR=MixedFastSnapOnlyBuild` registered
+  in `CMakeLists.txt` cache STRINGS (fourth entry); `cmake/BuildFlavors.cmake`
+  `_tdmd_apply_mixed_fast_snap_only` function defines
+  `TDMD_FLAVOR_MIXED_FAST_SNAP_ONLY` compile symbol + emits "T8.9 kernel
+  split pending" status message. Configures cleanly verified via
+  `/tmp/tdmd_snaponly_probe`.
+  (5) Slow-tier VerifyLab pass **pending T8.12** — recorded as hard gate
+  before M8 closure in rationale doc §7 + this checklist (T8.12 entry).
+  (6) Scientist docs — `docs/user/build_flavors.md` new 6-flavor guide
+  with decision tree + per-flavor when-to-use/when-not-to + warnings for
+  research-only flavors.
+  (7) Architect + Validation Engineer joint review **pending PR thread
+  signoffs** — two-reviewer mandate recorded in rationale doc §9. Not
+  optional per §D.17 step 7.
+  SPEC delta PR per playbook §9.1 — no functional code changes. Kernel
+  split emission = T8.9 (requires T8.4b SNAP force body port). Flavor
+  configures cleanly but emits no heterogeneous code paths yet — until
+  T8.9 + T8.12, continue using `MixedFastBuild` for production SNAP runs.
 - [ ] **T8.9** — SNAP MixedFast kernel ≤ 1e-5 rel force / ≤ 1e-7 rel PE vs FP64
   GPU oracle на T6 tungsten. EAM MixedFast unchanged under new flavor.
 - [ ] **T8.10** — T6 tungsten SNAP fixture canonical; verify/SPEC T6 section

@@ -718,11 +718,21 @@ Per §8 (numeric precision) + §D.11 (one-precision rule + mixed policy):
   analog (D-M8-8 in m8 exec pack). Motivation: SNAP ML coefficients are fit
   against DFT energies with RMSE ≈ 1e-3 eV/atom >> FP32 ULP — FP32 is
   numerically appropriate for the physics.
-- **MixedFastSnapOnlyBuild (new at M8 T8.8):** heterogeneous precision —
-  SNAP kernels в FP32, EAM / pair kernels в FP64, State в FP64 (matches
-  MixedFastBuild state policy). Only approved per-kernel precision mix (see
-  §8.7). Введение этого BuildFlavor проходит через формальную §D.17 7-step
-  procedure (T8.8 scope); до T8.8 landing этот flavor **не доступен**.
+- **MixedFastSnapOnlyBuild (landed M8 T8.8, 2026-04-20):** heterogeneous
+  precision — SNAP kernels в FP32, EAM / pair kernels в FP64, State в FP64
+  (matches MixedFastBuild state policy), AccumReal в FP64, ReductionReal в
+  FP64. Only approved per-kernel precision mix (see §8.7). Формальное
+  introduction через §D.17 7-step procedure shipped T8.8 — full rationale +
+  threshold derivation + compat analysis в
+  `docs/specs/potentials/mixed_fast_snap_only_rationale.md`. Activation: (i)
+  SPEC + CMake option landed T8.8, (ii) kernel split emission T8.9 (requires
+  T8.4b SNAP force body port), (iii) slow-tier VerifyLab pass (§D.17 step 5)
+  T8.12 — **hard gate before M8 closure**. Threshold registry entries в
+  `verify/thresholds/thresholds.yaml` под `benchmarks.gpu_mixed_fast_snap_only`
+  (SNAP force ≤ 1e-5 rel / energy ≤ 1e-7 rel; EAM inherited MixedFastBuild
+  ceiling 1e-5/1e-7/5e-6; NVE drift ≤ 1e-5 per 1000 steps). Все thresholds
+  равны или строже MixedFastBuild — flavor narrows combination без widening
+  envelope.
 
 Auto-reject (master spec §D.11):
 

@@ -828,15 +828,17 @@ function select_ready_tasks(priority):
 
 **BuildFlavor** (compile-time, фиксирует numerical semantics):
 
-| Flavor | StateReal | ForceReal | AccumReal | ReductionReal | Philosophy |
-|---|---|---|---|---|---|
-| `Fp64ReferenceBuild` | double | double | double | double | FP64 |
-| `Fp64ProductionBuild` | double | double | double | double | FP64 |
-| `MixedFastBuild` | double | float | double | double | **B** (safe mixed, default) |
-| `MixedFastAggressiveBuild` | double | float | float | double | **A** (opt-in research) |
-| `Fp32ExperimentalBuild` | float | float | float | double | Single |
+| Flavor | StateReal | ForceReal (SNAP) | ForceReal (EAM/pair) | AccumReal | ReductionReal | Philosophy |
+|---|---|---|---|---|---|---|
+| `Fp64ReferenceBuild` | double | double | double | double | double | FP64 |
+| `Fp64ProductionBuild` | double | double | double | double | double | FP64 |
+| `MixedFastBuild` | double | float | float | double | double | **B** (safe mixed, default) |
+| `MixedFastSnapOnlyBuild` | double | **float** | **double** | double | double | **B-het** (SNAP=FP32, EAM=FP64) |
+| `MixedFastAggressiveBuild` | double | float | float | float | double | **A** (opt-in research) |
+| `Fp32ExperimentalBuild` | float | float | float | float | double | Single |
 
 Philosophy B (default mixed) — float compute, double accumulate. Сохраняет energy conservation в K-batched TD pipeline.
+Philosophy B-het (heterogeneous) — per-kernel precision split, одобрено только через §D.17 процедуру. SNAP=FP32 (фит-шум DFT ≈ 10⁻³ eV/atom >> FP32 ULP), EAM=FP64 (table Horner требует double по D-M6-8). Введён на M8 T8.8; см. `docs/specs/potentials/mixed_fast_snap_only_rationale.md`.
 Philosophy A (opt-in) — float всюду. Быстрее на 3-8%, но с отключёнными NVE drift gates и без layout-invariant guarantees. См. §D.1.
 
 **ExecProfile** (runtime, управляет policies):
@@ -852,6 +854,7 @@ Philosophy A (opt-in) — float всюду. Быстрее на 3-8%, но с о
 | `Fp64ReferenceBuild` | ✓ канон | ✓ | ⚠ overkill (warning) |
 | `Fp64ProductionBuild` | ⚠ warn (identical to Ref) | ✓ канон | ✓ |
 | `MixedFastBuild` | ✗ reject (philosophy mismatch) | ✓ validated only | ✓ канон |
+| `MixedFastSnapOnlyBuild` | ✗ reject (philosophy mismatch) | ✓ **канон** (SNAP-dominant workloads) | ✓ |
 | `MixedFastAggressiveBuild` | ✗ reject | ⚠ warn (NVE gates disabled) | ✓ канон |
 | `Fp32ExperimentalBuild` | ✗ reject | ✗ reject | ✓ канон |
 
@@ -869,7 +872,7 @@ Full matrix с rationale — см. §D.12.
 
 **v2 (M7+):** добавляются `Fp64ProductionBuild` как отдельный target, `MixedFastBuild` — после полной differential validation. `MixedFastAggressiveBuild` — отдельный opt-in target с warnings. `Fp32ExperimentalBuild` — только как extreme opt-in research.
 
-**M8 extension:** `MixedFastSnapOnlyBuild` — специализированный BuildFlavor для SNAP-dominated workloads, combination `StateReal=double, EAM в double, SNAP в float`. Это единственный допустимый путь per-kernel precision разнообразия — через явный отдельный BuildFlavor, не через runtime overrides (см. §D.11).
+**M8 extension (landed T8.8, 2026-04-20):** `MixedFastSnapOnlyBuild` — специализированный BuildFlavor для SNAP-dominated workloads, combination `StateReal=double, EAM в double, SNAP в float`. Это единственный допустимый путь per-kernel precision разнообразия — через явный отдельный BuildFlavor, не через runtime overrides (см. §D.11). Формальный §D.17 7-step procedure документирован в `docs/specs/potentials/mixed_fast_snap_only_rationale.md`. CMake option `-DTDMD_BUILD_FLAVOR=MixedFastSnapOnlyBuild` зарегистрирован в T8.8; kernel split emission — T8.9; slow-tier VerifyLab pass (§D.17 step 5) — T8.12 hard gate перед M8 closure.
 
 ---
 
@@ -1911,19 +1914,22 @@ TDMD следует **"float compute, double accumulate"** философии (P
 
 Philosophy A предоставляется как opt-in BuildFlavor `MixedFastAggressive` для specific research purposes (ensemble screening, throughput demonstrations), с **явным отключением** NVE drift gates и layout-invariant guarantees.
 
-### D.2. Пять канонических BuildFlavor'ов
+### D.2. Шесть канонических BuildFlavor'ов
 
-Обновлённый список (v2.2 имел 4, v2.3 добавляет `MixedFastAggressive`):
+Обновлённый список (v2.2 имел 4, v2.3 добавил `MixedFastAggressive`, v2.5 M8 T8.8 добавляет `MixedFastSnapOnlyBuild`):
 
-| BuildFlavor | StateReal | ForceReal | AccumReal | ReductionReal | Philosophy | Default для |
-|---|---|---|---|---|---|---|
-| `Fp64ReferenceBuild` | double | double | double | double | FP64 | Development, CI, reference runs |
-| `Fp64ProductionBuild` | double | double | double | double | FP64 | Scientific production runs |
-| `MixedFastBuild` | double | float | double | double | **B** (safe mixed) | Fast production, default throughput target |
-| `MixedFastAggressiveBuild` | double | float | float | double | **A** (unsafe mixed) | Opt-in research, ensemble screening |
-| `Fp32ExperimentalBuild` | float | float | float | double | Single | Extreme throughput research |
+| BuildFlavor | StateReal | ForceReal (SNAP) | ForceReal (EAM/pair) | AccumReal | ReductionReal | Philosophy | Default для |
+|---|---|---|---|---|---|---|---|
+| `Fp64ReferenceBuild` | double | double | double | double | double | FP64 | Development, CI, reference runs |
+| `Fp64ProductionBuild` | double | double | double | double | double | FP64 | Scientific production runs |
+| `MixedFastBuild` | double | float | float | double | double | **B** (safe mixed) | Fast production, default throughput target |
+| `MixedFastSnapOnlyBuild` | double | **float** | **double** | double | double | **B-het** (heterogeneous) | SNAP-dominant production (pure SNAP или SNAP+EAM hybrid где EAM precision matters) |
+| `MixedFastAggressiveBuild` | double | float | float | float | double | **A** (unsafe mixed) | Opt-in research, ensemble screening |
+| `Fp32ExperimentalBuild` | float | float | float | float | double | Single | Extreme throughput research |
 
 **ReductionReal = double во всех случаях** (one double dimension сохраняется глобально) — это гарантирует что global energy / virial / temperature sums не deteriorated.
+
+**Philosophy B-het** — единственный utverzhdёnный per-kernel precision mix. Path к этому flavor не runtime override (запрещено §D.11), а explicit отдельный BuildFlavor, прошедший полную §D.17 7-step procedure. Формальный rationale + threshold derivation + compat analysis для `MixedFastSnapOnlyBuild` — `docs/specs/potentials/mixed_fast_snap_only_rationale.md` (T8.8 landed 2026-04-20).
 
 ### D.3. NumericConfig templates
 
@@ -2213,68 +2219,72 @@ Per-kernel overrides создают неявные mode switches внутри о
 
 **Правильный подход:** если нужна специальная combination — создать новый BuildFlavor. Это explicit, versionable, testable.
 
-**Roadmap extension:** `MixedFastSnapOnlyBuild` запланирован на **M8** когда SNAP будет implemented. Combination: `StateReal=double, ForceReal=float для SNAP, ForceReal=double для EAM`. Появится как new entry в таблице §D.2 с отдельными acceptance thresholds и CI tier.
+**Shipped flavor (M8 T8.8, 2026-04-20):** `MixedFastSnapOnlyBuild` — combination `StateReal=double, ForceReal=float для SNAP, ForceReal=double для EAM, AccumReal=double, ReductionReal=double`. Прошёл полную §D.17 7-step procedure. Entries landed: §D.2 (шестая строка canonical flavors), §D.12 (compat matrix), §D.13 (thresholds column), §D.14 (CMake integration), §D.15 (user-facing label), formal rationale в `docs/specs/potentials/mixed_fast_snap_only_rationale.md`, threshold registry в `verify/thresholds/thresholds.yaml` под `benchmarks.gpu_mixed_fast_snap_only`. Kernel split emission — T8.9; slow-tier VerifyLab pass (§D.17 step 5) — T8.12 hard gate перед M8 closure.
 
 ### D.12. Matrix совместимости BuildFlavor × ExecProfile
 
-Обновлённая matrix (v2.3):
+Обновлённая matrix (v2.5 M8 T8.8 — добавлена шестая строка `MixedFastSnapOnlyBuild`):
 
 | BuildFlavor ↓ \ ExecProfile → | Reference | Production | FastExperimental |
 |---|---|---|---|
 | Fp64ReferenceBuild | ✓ canonical | ✓ | ⚠ warn (FP64 overkill для fast) |
 | Fp64ProductionBuild | ⚠ warn (identical to Ref) | ✓ canonical | ✓ |
 | MixedFastBuild | ✗ REJECT (philosophy mismatch) | ✓ validated only | ✓ canonical |
+| MixedFastSnapOnlyBuild | ✗ REJECT (philosophy mismatch) | ✓ **canonical** (SNAP-dominant) | ✓ |
 | MixedFastAggressiveBuild | ✗ REJECT | ⚠ warn (NVE gates disabled) | ✓ canonical |
 | Fp32ExperimentalBuild | ✗ REJECT | ✗ REJECT | ✓ canonical |
 
 **Enforcement:** `PolicyValidator` в `runtime/SPEC.md` §4.3 validates compat при `resolve_policies()`. Incompatible → `Failed` state с clear error.
 
+**`MixedFastSnapOnlyBuild + Production` canonical cell rationale:** heterogeneous precision split живёт внутри SNAP/EAM kernels, а не в compiler flags — production runtime policies (atomics, stream overlap) остаются под ExecProfile control. Pure SNAP + EAM-FP64 workflows получают предсказуемую D-M8-8 envelope. FastExperimental permitted но не канон — atomics/overlap политики ортогональны к per-kernel precision split и поверх B-het heterogeneity не дают дополнительной throughput win vs MixedFastBuild+FastExperimental.
+
 ### D.13. Acceptance thresholds по BuildFlavor
 
 Каноническая mapping из `verify/thresholds.yaml`:
 
-| Check | Fp64Reference | Fp64Production | MixedFast | MixedFastAggressive | Fp32Experimental |
-|---|---|---|---|---|---|
-| Forces vs LAMMPS (relative) | 1e-10 | 1e-10 | 1e-5 | 1e-4 | 1e-3 |
-| Energy vs LAMMPS (relative) | 1e-10 | 1e-10 | 1e-6 | 1e-4 | 1e-4 |
-| NVE drift per ns | 1e-8 | 1e-6 | 1e-4 | **gate disabled** | gate disabled |
-| Layout-invariant determinism | exact | exact (stretch) | observables | **gate disabled** | gate disabled |
-| Bitwise same-run reproduce | exact | exact | exact | exact* | exact* |
+| Check | Fp64Reference | Fp64Production | MixedFast | MixedFastSnapOnly | MixedFastAggressive | Fp32Experimental |
+|---|---|---|---|---|---|---|
+| Forces vs LAMMPS (SNAP, rel) | 1e-10 | 1e-10 | 1e-5 | **1e-5** | 1e-4 | 1e-3 |
+| Forces vs LAMMPS (EAM/pair, rel) | 1e-10 | 1e-10 | 1e-5 | **1e-5** (EAM в FP64 — residual pure reduction-order roundoff; published ceiling) | 1e-4 | 1e-3 |
+| Energy vs LAMMPS (SNAP, rel) | 1e-10 | 1e-10 | 1e-7 | **1e-7** | 1e-4 | 1e-4 |
+| Energy vs LAMMPS (EAM/pair, rel) | 1e-10 | 1e-10 | 1e-7 | **1e-7** | 1e-4 | 1e-4 |
+| NVE drift per 1000 steps | 1e-8 | 1e-6 | 1e-5 | **1e-5** | **gate disabled** | gate disabled |
+| Layout-invariant determinism | exact | exact (stretch) | observables | observables | **gate disabled** | gate disabled |
+| Bitwise same-run reproduce | exact | exact | exact | exact | exact* | exact* |
 
 \* Same binary same hardware same input даёт bitwise identical result для любого BuildFlavor — non-determinism приходит от layout или hardware differences.
+
+**Особенность `MixedFastSnapOnly`:** все thresholds **равны или строже** чем `MixedFast` — flavor не расслабляет envelope, а обещает более узкую combination (SNAP=FP32 + EAM=FP64) которую определённый subset workflows может использовать как throughput baseline. Полный derivation — `docs/specs/potentials/mixed_fast_snap_only_rationale.md` §3–§4.
 
 **Особенность `MixedFastAggressive`:** NVE drift gates **явно отключены** — это documented consequence Philosophy A. Пользователи этого build flavor обязаны **сами** валидировать energy conservation для своих specific systems через shorter runs, или принять потенциальный drift.
 
 ### D.14. Build system integration
 
-Каждый BuildFlavor — отдельный CMake target:
+TDMD использует single-binary multi-flavor модель через `TDMD_BUILD_FLAVOR` cache-variable (см. `cmake/BuildFlavors.cmake` + root `CMakeLists.txt`). Каждый BuildFlavor активируется выбором флейвора при configure time:
 
-```cmake
-# CMakeLists.txt
-add_executable(tdmd_fp64_ref   ${SRC}) # Fp64ReferenceBuild
-target_compile_definitions(tdmd_fp64_ref PRIVATE
-    TDMD_NUMERIC_CONFIG=Fp64Reference)
-target_compile_options(tdmd_fp64_ref PRIVATE
-    -fno-fast-math -fno-unsafe-math-optimizations)
+```bash
+# Canonical reference build:
+cmake -B build-ref -DTDMD_BUILD_FLAVOR=Fp64ReferenceBuild .
 
-add_executable(tdmd_fp64_prod  ${SRC}) # Fp64ProductionBuild
-target_compile_definitions(tdmd_fp64_prod PRIVATE
-    TDMD_NUMERIC_CONFIG=Fp64Production)
+# Production FP64:
+cmake -B build-prod -DTDMD_BUILD_FLAVOR=Fp64ProductionBuild .
 
-add_executable(tdmd_mixed      ${SRC}) # MixedFastBuild (Philosophy B)
-target_compile_definitions(tdmd_mixed PRIVATE
-    TDMD_NUMERIC_CONFIG=MixedFast)
-target_compile_options(tdmd_mixed PRIVATE
-    -ffast-math --use_fast_math --ftz=true)
+# Default mixed (Philosophy B):
+cmake -B build-mixed -DTDMD_BUILD_FLAVOR=MixedFastBuild .
 
-add_executable(tdmd_mixed_agg  ${SRC}) # MixedFastAggressiveBuild (Philosophy A)
-target_compile_definitions(tdmd_mixed_agg PRIVATE
-    TDMD_NUMERIC_CONFIG=MixedFastAggressive)
-target_compile_options(tdmd_mixed_agg PRIVATE
-    -ffast-math --use_fast_math --ftz=true)
+# SNAP-only heterogeneous (Philosophy B-het) — landed M8 T8.8:
+cmake -B build-mixed-snap-only -DTDMD_BUILD_FLAVOR=MixedFastSnapOnlyBuild .
+
+# Aggressive mixed (Philosophy A, opt-in research):
+cmake -B build-mixed-agg -DTDMD_BUILD_FLAVOR=MixedFastAggressiveBuild .
+
+# Extreme single-precision (research only):
+cmake -B build-fp32 -DTDMD_BUILD_FLAVOR=Fp32ExperimentalBuild .
 ```
 
-CI builds все five targets. Каждый проходит свой tier verify-test suite (§D.13 thresholds).
+`tdmd_apply_build_flavor(target)` из `cmake/BuildFlavors.cmake` prepends compile options (host `-fno-fast-math`, CUDA `--fmad={false,true}` per flavor) и defines `TDMD_FLAVOR_<NAME>` macro + `TDMD_BUILD_FLAVOR_NAME` string literal. Per-kernel дispatch (e.g. SNAP FP32 branch в `MixedFastSnapOnlyBuild`) происходит через `#if defined(TDMD_FLAVOR_MIXED_FAST_SNAP_ONLY)` в kernel TU (T8.9 for SNAP).
+
+CI builds все six flavor configurations (compile-only для non-Reference в public CI — Option A). Каждый проходит свой tier verify-test suite (§D.13 thresholds) в slow-tier pass.
 
 ### D.15. User experience
 
@@ -2290,6 +2300,7 @@ Binary выбирает user при install / run:
 - `tdmd_fp64_ref` — "reference"
 - `tdmd_fp64_prod` — "production" (recommended)
 - `tdmd_mixed` — "fast" (default throughput target)
+- `tdmd_mixed_snap_only` — "fast-snap-only" (SNAP-dominant workloads; EAM stays FP64 — landed M8 T8.8)
 - `tdmd_mixed_agg` — "research-fast" (opt-in, warnings in docs)
 - `tdmd_fp32` — "research-single" (extreme opt-in)
 
@@ -2804,6 +2815,8 @@ Hosting: ReadTheDocs + versioned docs per release.
    - Telemetry: `global_reduction_time_ms_total`, reduction breakdown в final report.
 
 **Rationale для выбора items:** все 4 — actual silent failures observed в production MD codes. Items 5-12 из анализа (PP/PME split, ML potentials framework, Newton×atomics, thread-MPI, GPU direct comm, clock sensitivity, PME FFT) — документированы в open questions per module SPECs, адресуются когда станут релевантны в v1.5-v2.0.
+
+**T8.8 addendum (2026-04-20) — M8: MixedFastSnapOnlyBuild new BuildFlavor shipped via §D.17 7-step formal procedure (Architect + Validation Engineer joint role).** `docs/specs/potentials/mixed_fast_snap_only_rationale.md` (new, 256 lines) + master spec §7.1 (BuildFlavor table extended: SNAP/EAM split columns + B-het row) + §7.2 (compat matrix row) + §7.4 (M8 extension paragraph promoted from "запланирован" to "landed T8.8") + §D.2 (five→шесть canonical flavors table; B-het philosophy row) + §D.11 (roadmap-extension paragraph promoted to landed-flavor reference with 7-step artefact pointers) + §D.12 (compat matrix row + canonical-cell rationale) + §D.13 (thresholds table extended with SnapOnly column; SNAP and EAM rows now split) + §D.14 (build system rewritten from 5-target multi-binary snippet to single-binary `TDMD_BUILD_FLAVOR` cache-variable model matching actual `cmake/BuildFlavors.cmake` implementation; all six flavors listed) + §D.15 (new `tdmd_mixed_snap_only` binary label entry) + `verify/thresholds/thresholds.yaml` (new `benchmarks.gpu_mixed_fast_snap_only` section — SNAP force 1e-5 / SNAP energy 1e-7 / EAM force 1e-5 / EAM energy 1e-7 / EAM virial 5e-6 / NVE drift 1e-5 per 1000 steps; all thresholds equal-or-tighter than MixedFastBuild) + `docs/specs/potentials/SPEC.md` §6.7 (promoted from "до T8.8 landing этот flavor не доступен" placeholder to finalized interface with rationale-doc cross-ref and T8.12 slow-tier pass marker) + `docs/user/build_flavors.md` (new scientist-facing 6-flavor guide with decision tree + per-flavor use cases + warnings for research-only flavors) + `docs/development/m8_execution_pack.md` §5 T8.8 checklist marked `[x]` with step 5/7 satisfied-by pointers (step 5 → T8.12 VerifyLab pass; step 7 → review signoffs recorded on PR thread) + `CMakeLists.txt` (cache STRINGS list extended with `MixedFastSnapOnlyBuild` as fourth entry) + `cmake/BuildFlavors.cmake` (new `_tdmd_apply_mixed_fast_snap_only` function defining `TDMD_FLAVOR_MIXED_FAST_SNAP_ONLY` compile symbol; elseif dispatch branch in `tdmd_apply_build_flavor`; host `-fno-fast-math` + CUDA `--fmad=true` matching MixedFastBuild because heterogeneous precision split lives inside SNAP/EAM kernel TUs not in compiler flags). **What landed under the 7-step procedure.** Step 1 (formal rationale): `mixed_fast_snap_only_rationale.md` documents the need (pure SNAP runs + hybrid SNAP+EAM runs where EAM precision must stay FP64), why existing flavors don't suffice (4-row comparison table), empirical evidence the precision mix is physically sound (SNAP fit RMSE ≈ 13.8 meV/atom vs FP32 force residual ~1e-5 rel — three orders of magnitude below ML noise floor, cites Wood&Thompson arXiv:1702.07042 and T6.8a `project_fp32_eam_ceiling.md` EAM ceiling), threshold budget derivation (D-M8-8 dense-cutoff analog inheriting MixedFastBuild envelope), compat matrix proposal, CMake integration, slow-tier pass obligation, scientist docs pointer, two-reviewer signoff mandate, out-of-scope follow-on tasks (T8.9 SNAP FP32 kernel + EAM FP64 branch preservation; T8.11 cloud-burst scaling with this flavor active; T8.12 slow-tier VerifyLab pass; T8.13 v1.0.0-alpha1 release notes mention). Step 2 (compat matrix): §D.12 row added + canonical-cell rationale explaining why SnapOnly+Production is canonical and SnapOnly+FastExperimental is permitted-not-canonical. Step 3 (threshold registry): `verify/thresholds/thresholds.yaml` `benchmarks.gpu_mixed_fast_snap_only` section with all 8 metrics + derivation rationale + status=active_T8.12_slow_tier. Step 4 (CMake option): `TDMD_BUILD_FLAVOR=MixedFastSnapOnlyBuild` registered in cache STRINGS; `_tdmd_apply_mixed_fast_snap_only` function wires compile flags + `TDMD_FLAVOR_MIXED_FAST_SNAP_ONLY` define + status message "T8.9 kernel split pending"; configure verified cleanly via `cmake -DTDMD_BUILD_FLAVOR=MixedFastSnapOnlyBuild ...` in /tmp probe — emits flavor status line for every TDMD library target. Step 5 (slow-tier VerifyLab pass): recorded as **T8.12 hard gate before M8 closure** in rationale doc §7 + exec pack §5 T8.8 entry; full T0+T1+T3+T4+T6 battery required on `MixedFastSnapOnlyBuild` binary, any single failure blocks M8 closure. Step 6 (user documentation): `docs/user/build_flavors.md` 6-flavor guide with decision tree covering pure SNAP / pure EAM / mixed SNAP+EAM / bitwise-determinism workflows + per-flavor when-to-use-and-when-not-to guidance. Step 7 (Architect+Validation joint review): two-reviewer signoff mandate recorded in rationale doc §9 checkboxes; signoffs tracked on T8.8 PR thread per master spec §D.17 final step requirement (**not optional**). **What remains pending for SnapOnly activation:** T8.9 kernel split emission (SNAP FP32 kernel variant + EAM FP64 branch preservation under this flavor; requires T8.4b SNAP force body port as prerequisite) + T8.12 slow-tier VerifyLab pass + PR-thread review signoffs. Pure SPEC+CMake PR per playbook §9.1 — no functional code changes; configures cleanly but emits no heterogeneous kernel paths yet. Все три CI flavors (Lint, Docs lint, Build CPU gcc-13 + clang-17, Build GPU compile-only Fp64Reference + MixedFast) — push pending.
 
 **T8.4a addendum (2026-04-20) — M8: SNAP types + parser + SnapPotential skeleton (Physics Engineer role).** `src/potentials/include/tdmd/potentials/snap_file.hpp` (new, 121 lines) + `src/potentials/snap_file.cpp` (new, 382 lines) + `src/potentials/include/tdmd/potentials/snap.hpp` (new) + `src/potentials/snap.cpp` (new, skeleton) + `tests/potentials/test_snap_file.cpp` (new, 13 cases / 51 assertions) + `src/potentials/CMakeLists.txt` (snap_file.cpp + snap.cpp добавлены в `tdmd_potentials`) + `tests/potentials/CMakeLists.txt` (new `test_snap_file` target with submodule SKIP_RETURN_CODE 77). **What landed.** `SnapParams` (11 hyperparameters — twojmax, rcutfac, rfac0, rmin0, switchflag, bzeroflag, quadraticflag, chemflag, bnormflag, wselfallflag, switchinnerflag — defaults match LAMMPS `pair_snap.cpp` constructor); `SnapSpecies` (name, radius_elem, weight_elem, β coefficient vector); `SnapData` (params + species + derived k_max + symmetric rcut_sq_ab n×n matrix + FNV-1a 64-bit checksum over all parsed fields). Parsers `parse_snap_coeff(path)` / `parse_snap_param(path)` / `parse_snap_files(coeff, param)`: whitespace-tokenised, `#`-comments stripped, `path:line: message` diagnostic format, missing-required-key + invalid-bool + unknown-key + coefficient-count-mismatch all tagged с file position, `chemflag=1` + `switchinnerflag=1` rejected с forward-looking "deferred to M9+" diagnostic. `snap_k_max(twojmax)` implements LAMMPS `SNA::compute_ncoeff` — verified 1/5/14/30/55/91/140 for twojmax=0/2/4/6/8/10/12 (k_max=55 cross-checks с `W_2940_2017_2.snapcoeff` header declaration of 56 coefficients = k_max + 1). `SnapPotential final : Potential` constructor validates SnapData internal consistency (species count > 0, twojmax ≥ 0 ∧ even, β count = k_max + 1 linear or k_max + 1 + k_max(k_max+1)/2 quadratic, rcutfac > 0) и throws `std::invalid_argument` on mismatch; `compute()` throws `std::logic_error("SnapPotential::compute: force evaluation not yet implemented — T8.4b — LAMMPS USER-SNAP port")` — force body = verbatim port of LAMMPS `sna.cpp` (1597 lines) + `pair_snap.cpp` (808 lines) deferred to T8.4b as a follow-up PR (total ≈ 1600 lines of Clebsch-Gordan / bispectrum / three-pass force code, not session-sized). `cutoff()` returns `data_.max_pairwise_cutoff() = max over pairs of rcutfac·(R_α + R_β)`. Test suite: 13 Catch2 cases / 51 assertions, all green locally — covers snap_k_max formula, canonical W_2940_2017_2 parse (twojmax=8, rcutfac=4.73442, β[0]=0.781170857801, β[55]=−0.008314173699, checksum stable через re-parse), coefficient-count mismatch error message, missing-required-key, odd-twojmax rejection, chemflag=1 rejection, invalid header, skeleton throw, constructor validator. Tests auto-skip exit 77 on uninitialized LAMMPS submodule (matches T8.2 oracle fixture gate behaviour; pure-C++ + no LAMMPS link / no CUDA). Full build + entire ctest bank (45/45 passed, 1 pre-existing skip) clean — no regressions. Pre-commit (clang-format + cmake-format + cmake-lint + trailing-ws + EOF + restrict-stub) green. **Out of scope (handed off T8.4b):** `SnapPotential::compute` three-pass bispectrum → energy → force evaluator (Pass 1 compute_sna_atom с U-matrix accumulation + CG contraction + bzero subtract; Pass 2 E_i = β_k · B_{k,i} + β·B cache; Pass 3 F_ij via −Σ_k β_k · dB_k/dr) + scratch layout preservation for D-M8-7 byte-exact; lands as dedicated PR under Physics Engineer role с GPLv2 attribution block in the newly-created `src/potentials/snap/` sub-tree. **Why this split.** T8.4 combined body was sized at ~1600 lines in the exec pack T8.4 task template; the port must preserve the LAMMPS FP summation ordering verbatim so that MixedFastSnapOnlyBuild (T8.8) and GPU kernels (T8.6) land as precision policies over a shared core instead of parallel implementations. Splitting T8.4 into T8.4a (types + parser + skeleton landing now) + T8.4b (force body port) lets T8.5 (CPU differential harness against LAMMPS) start planning directly against the parsed `SnapData` while T8.4b is in flight. M8 execution pack §5 updated accordingly (T8.4 → T8.4a [x] ∧ T8.4b carry-forward note). All three CI flavors (Lint, Docs lint, Build CPU gcc-13 + clang-17, Build GPU compile-only Fp64Reference + MixedFast) — push pending.
 
