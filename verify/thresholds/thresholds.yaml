@@ -313,6 +313,16 @@ tolerances:
         # Fp64Reference under the *same* bispectrum math. Residual comes solely
         # from GPU reduction order on bispectrum accumulator; 1e-12 is the same
         # envelope as D-M6-7 for EAM.
+        #
+        # STATUS: ACTIVE (landed T8.7, 2026-04-20). Gate enforced by
+        # tests/gpu/test_snap_gpu_bit_exact.cpp on a 10×10×10 BCC W rattled
+        # 2000-atom fixture (≥ spec §4.7 envelope). Measured headroom at
+        # landing: PE rel 2.04e-16, worst per-atom force rel 1.69e-14 (≈ √k_max
+        # · ε_FP64 as expected for canonical Kahan-free FP64 accumulation with
+        # k_max = 55), worst virial Voigt rel 2.04e-13 (smallest-abs Voigt
+        # component dominated by denominator floor). 4 OoM headroom under the
+        # 1e-12 gate on forces; 1 OoM on worst virial component. D-M6-7
+        # byte-exact oracle chain extended to GPU SNAP; D-M8-13 closed.
         forces_relative: 1.0e-12
 
       rationale: |

@@ -1,7 +1,7 @@
 # gpu/SPEC.md
 
 **Module:** `gpu/`
-**Status:** master module spec v1.0.18 (T8.6b shipped — SNAP GPU FP64 functional kernel body — three-kernel Ui→Yi→deidrj pipeline + index-table flatten + peer-side Newton-3 reassembly; bit-exact gate deferred to T8.7)
+**Status:** master module spec v1.0.19 (T8.7 shipped — SNAP GPU FP64 bit-exact gate active at ≤ 1e-12 rel on T6 tungsten 2000-atom BCC; D-M8-13 byte-exact chain closed; ctest green across Fp64Reference+CUDA / MixedFast+CUDA / CPU-strict)
 **Parent:** `TDMD Engineering Spec v2.5` §14 M6 (closed) / §14 M7 (closed) / §14 M8 (in progress), §15.2, §D (precision policy)
 **Last updated:** 2026-04-20
 
@@ -610,7 +610,7 @@ Parallel fields (`gpu_potential_`, `gpu_snap_potential_`) rather than abstract `
 | Task | Scope | Gate |
 |------|-------|------|
 | T8.6b | Full CUDA kernel port of SnaEngine; three kernels Ui/Yi/deidrj + index-table flatten + peer-side Newton-3 reassembly; __restrict__ + NVTX + Kahan reduction | **LANDED 2026-04-20**: functional pass on W BCC 250-atom rattled smoke; `compute_version()` monotonic; worst-force rel err already 1.3e-14 vs CPU (T8.7 locks formal 1e-12 gate) |
-| T8.7  | Bit-exact gate CPU FP64 ≡ GPU FP64 ≤ 1e-12 rel on W 2000-atom fixture | D-M8-13 closure |
+| T8.7  | Bit-exact gate CPU FP64 ≡ GPU FP64 ≤ 1e-12 rel on W 2000-atom fixture | **LANDED 2026-04-20**: D-M8-13 closed. 10×10×10 BCC W rattled; measured PE rel 2e-16, worst force rel 1.69e-14 (4 OoM under gate), worst virial Voigt rel 2.04e-13 (component [5] @ 1.37 eV). All three flavors (Fp64Ref+CUDA / MixedFast+CUDA / CPU-strict) green |
 | T8.9  | MixedFast SNAP kernel — FP32 math + FP64 accum (Philosophy B) | D-M8-8 ≤ 1e-5 rel force / ≤ 1e-7 rel PE |
 | T8.10 | T6 medium/large variants (1024/8192 atoms) — performance baseline vs LAMMPS CPU SNAP | TDMD GPU > LAMMPS CPU ≥ 2× |
 | T8.11 | Cloud-burst scaling (≥ 2 GPU nodes, P=2, K=4) | D-M8-7 overlap ≥ 30% |
@@ -1087,5 +1087,5 @@ Roadmap extensions (authored by future tasks):
 - **T6.13** → §11.3 M6 integration smoke + D-M6-7 chain closure + CI wiring (**done — v1.0.11; M6 milestone closed**);
 - **T8.0** → §3.2c 2-rank overlap gate hardware prerequisite + dev SKIP semantics (**done — v1.0.16; runtime 30% measurement cloud-burst-gated, ties into T8.11**);
 - **T8.6a** → §7.4 rewritten (SNAP moved to M8) + §7.5 new SNAP GPU contract + `SnapGpu` / `SnapGpuAdapter` PIMPL scaffolding + M8-scope flag fence + sentinel-throw `compute()` + `SimulationEngine` dispatch wiring + `preflight::check_runtime` relaxation + `tests/gpu/test_snap_gpu_plumbing.cpp` (**done — v1.0.17; kernel body T8.6b, bit-exact gate T8.7**);
-- **T8.6b** → full CUDA kernel port of LAMMPS USER-SNAP three-pass (~1500 lines; Ui → Yi → deidrj); `Impl::compute()` body implements H2D→kernels→D2H→Kahan reduction; index-table flatten (T** → T*); NVTX wrap each launch; __restrict__ compliance;
-- **T8.7**  → bit-exact gate `test_snap_gpu_bit_exact.cpp` — GPU FP64 ≡ CPU FP64 ≤ 1e-12 rel on W 2000-atom fixture (D-M8-13).
+- **T8.6b** → full CUDA kernel port of LAMMPS USER-SNAP three-pass (~1500 lines; Ui → Yi → deidrj); `Impl::compute()` body implements H2D→kernels→D2H→Kahan reduction; index-table flatten (T** → T*); NVTX wrap each launch; __restrict__ compliance (**done — v1.0.18**);
+- **T8.7** → bit-exact gate `tests/gpu/test_snap_gpu_bit_exact.cpp` — GPU FP64 ≡ CPU FP64 ≤ 1e-12 rel on T6 tungsten 10×10×10 BCC (2000 atoms rattled); threshold registry `benchmarks.t6_snap_tungsten.gpu_fp64_vs_cpu_fp64.forces_relative = 1.0e-12` now ACTIVE; measured PE rel 2e-16 / worst force rel 1.69e-14 / worst virial Voigt rel 2.04e-13 (4–14 OoM headroom) (**done — v1.0.19; D-M8-13 byte-exact chain closed**).

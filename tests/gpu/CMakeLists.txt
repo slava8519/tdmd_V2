@@ -56,6 +56,20 @@ target_compile_definitions(
 add_test(NAME test_snap_gpu_functional COMMAND test_snap_gpu_functional)
 set_tests_properties(test_snap_gpu_functional PROPERTIES SKIP_RETURN_CODE 77)
 
+# T8.7: SnapGpu formal bit-exact gate — GPU FP64 Reference ≡ CPU FP64 Reference at ≤ 1e-12 rel on
+# forces, PE, and all six virial Voigt components. 10×10×10 BCC W = 2000-atom rattled lattice per
+# spec §4.7 (verify/SPEC.md t6_snap_tungsten). Threshold registry: verify/thresholds/thresholds.yaml
+# benchmarks.t6_snap_tungsten.gpu_fp64_vs_cpu_fp64. Self-skips exit 77 if CUDA is unavailable or the
+# LAMMPS submodule is uninitialized.
+add_executable(test_snap_gpu_bit_exact test_snap_gpu_bit_exact.cpp)
+target_link_libraries(test_snap_gpu_bit_exact PRIVATE tdmd::gpu tdmd::potentials tdmd::neighbor
+                                                      tdmd::state Catch2::Catch2WithMain)
+target_compile_definitions(
+  test_snap_gpu_bit_exact
+  PRIVATE TDMD_TEST_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/potentials/fixtures")
+add_test(NAME test_snap_gpu_bit_exact COMMAND test_snap_gpu_bit_exact)
+set_tests_properties(test_snap_gpu_bit_exact PROPERTIES SKIP_RETURN_CODE 77)
+
 # T6.6: VV NVE integrator GPU kernel — bit-exact vs CPU reference (gpu/SPEC §7.3).
 add_executable(test_integrator_vv_gpu test_integrator_vv_gpu.cpp)
 target_link_libraries(test_integrator_vv_gpu PRIVATE tdmd::gpu tdmd::integrator tdmd::state

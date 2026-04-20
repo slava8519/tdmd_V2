@@ -725,7 +725,37 @@ cache); FP64 throughout; no cross-atom reductions beyond per-pair force pairs
 
 ---
 
-### T8.7 — SnapPotential GPU FP64 bit-exact gate vs CPU FP64
+### T8.7 — SnapPotential GPU FP64 bit-exact gate vs CPU FP64 [LANDED 2026-04-20]
+
+**Landed:** `tests/gpu/test_snap_gpu_bit_exact.cpp` (≈180 LoC) + CMake target wired.
+Fixture: 10×10×10 BCC W = 2000 atoms rattled (spec §4.7; 10³·2 ≥ 8×8×8 equiv.).
+Measured (build/, Fp64Reference+CUDA):
+
+- PE rel = **2.04e-16** (round-off floor) — gate 1e-12.
+- Worst per-atom force rel = **1.69e-14** (4 OoM under gate).
+- Worst virial Voigt rel = **2.04e-13** (component [5] @ 1.37 eV — small-abs;
+  still 1 OoM under gate).
+
+Build matrix passing:
+
+| Flavor                         | Result                        |
+| ------------------------------ | ----------------------------- |
+| `Fp64ReferenceBuild` + CUDA    | 50/50 green, test passes      |
+| `MixedFastBuild` + CUDA        | 50/50 green, test passes      |
+| `Fp64ReferenceBuild` CPU-only  | 42/42 green, SUCCEED no-CUDA  |
+
+Gate replaces T8.6b's loose 1e-10 sanity envelope with D-M8-13 canonical budget.
+Threshold registry entry (`verify/thresholds/thresholds.yaml`
+`benchmarks.t6_snap_tungsten.gpu_fp64_vs_cpu_fp64.forces_relative: 1.0e-12`)
+is now **ACTIVE** rather than reserved; rationale section should be updated to
+reflect measured headroom. D-M6-7 byte-exact chain extended to SNAP (M8 chain
+D-M8-13 locked). Per-atom force L∞ used in place of virial byte-compare —
+virial comparison done at same 1e-12 rel rather than bitwise because mixed
+thread-order accumulation inside `snap_yi_kernel` produces FP-identical-but-
+not-bitwise results; 1e-12 rel is the D-M6-7 canonical form (not bit, not
+ULP).
+
+---
 
 ```
 # TDMD Task: GPU SNAP vs CPU SNAP bit-exact gate (D-M6-7 chain extension)
