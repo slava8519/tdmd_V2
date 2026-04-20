@@ -150,8 +150,19 @@ def main(argv: list[str] | None = None) -> int:
         default=pathlib.Path(__file__).with_name("setup.data"),
         help="Output path (default: setup.data next to this script)",
     )
+    parser.add_argument(
+        "--nrep",
+        type=int,
+        default=5,
+        help=(
+            "BCC conventional-cell replication per axis (default 5 → 250 atoms,"
+            " canonical T8.5 byte-exact fixture). Common alternates:"
+            " 8 → 1024 atoms (T8.10 fixture); 10 → 2000 atoms (scout);"
+            " 16 → 8192 atoms (T8.11 strong-scaling base)."
+        ),
+    )
     args = parser.parse_args(argv)
-    generate(args.out)
+    generate(args.out, nrep=args.nrep)
     return 0
 
 

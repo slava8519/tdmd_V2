@@ -1,0 +1,32 @@
+# Shortened 100-step variant of tdmd_gpu.yaml for scout calibration probes.
+# Identical fixture + integrator + potential; only run.n_steps differs.
+
+simulation:
+  units: metal
+  seed: 12345
+
+atoms:
+  source: lammps_data
+  path: setup_2000.data
+
+potential:
+  style: snap
+  params:
+    coeff_file: ../../../third_party/lammps/examples/snap/W_2940_2017_2.snapcoeff
+    param_file: ../../../third_party/lammps/examples/snap/W_2940_2017_2.snapparam
+
+integrator:
+  style: velocity_verlet
+  dt: 0.0005
+
+neighbor:
+  skin: 1.0
+
+thermo:
+  every: 10
+
+run:
+  n_steps: 100
+
+runtime:
+  backend: gpu

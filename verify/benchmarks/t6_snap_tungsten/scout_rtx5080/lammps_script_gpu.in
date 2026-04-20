@@ -1,0 +1,46 @@
+# T8.10 scout — LAMMPS GPU SNAP driver (2000-atom BCC W, pure SNAP, NVE).
+#
+# Pair apples-to-apples with the three TDMD configs in this dir:
+#   * same atom count (2000 — 10x10x10 BCC W, seed=12345)
+#   * same potential (pure SNAP, W_2940_2017_2; NO ZBL — matches TDMD
+#     SnapPotential which implements the bispectrum path only)
+#   * same timestep (0.5 fs) and integrator (NVE)
+#   * same n_steps (1000)
+#
+# GPU dispatch: enable via command line `-sf gpu -pk gpu 1`. That rewrites
+# `pair_style snap` as `pair_style snap/gpu` and offloads the force kernel
+# to the LAMMPS ML-SNAP GPU package (FP64 per `lmp -h`).
+#
+# Invoked by run_scout.sh. Variables passed via -var:
+#   snap_dir  — absolute path to directory containing W_2940_2017_2.snap{coeff,param,}
+#   nsteps    — run length (default 1000 at call site)
+
+variable a equal 3.1803
+variable nrep equal 10
+
+units           metal
+atom_style      atomic
+boundary        p p p
+
+read_data       setup_2000.data
+
+# Pure SNAP — no ZBL overlay. We want to measure the bispectrum kernel,
+# not a pair-potential sum where ZBL dominates at short range.
+pair_style      snap
+pair_coeff      * * ${snap_dir}/W_2940_2017_2.snapcoeff ${snap_dir}/W_2940_2017_2.snapparam W
+
+neighbor        1.0 bin
+neigh_modify    every 1 delay 0 check yes
+
+timestep        0.5e-3
+fix             1 all nve
+
+# Thermo frequency matched to TDMD's 100-step cadence — avoids thermo overhead
+# skewing a 1000-step scout.
+thermo          100
+thermo_style    custom step temp pe ke etotal press
+thermo_modify   format float "%.10e" norm no flush yes
+
+# Zero warmup discard inside script — run_scout.sh discards the first pass of
+# each flavor and reports the median of the next 3.
+run             ${nsteps}

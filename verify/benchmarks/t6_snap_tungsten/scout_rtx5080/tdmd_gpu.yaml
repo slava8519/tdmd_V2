@@ -1,0 +1,36 @@
+# T8.10 scout — TDMD config, Fp64ReferenceBuild + runtime.backend=gpu.
+# Pair with the corresponding LAMMPS script (lammps_script_gpu.in) for the
+# dev-only perf comparison run by run_scout.sh.
+#
+# 2000-atom BCC W (10x10x10), pure SNAP (W_2940_2017_2), NVE 1000 steps,
+# metal units. No ZBL — TDMD's SnapPotential implements bispectrum only.
+
+simulation:
+  units: metal
+  seed: 12345
+
+atoms:
+  source: lammps_data
+  path: setup_2000.data
+
+potential:
+  style: snap
+  params:
+    coeff_file: ../../../third_party/lammps/examples/snap/W_2940_2017_2.snapcoeff
+    param_file: ../../../third_party/lammps/examples/snap/W_2940_2017_2.snapparam
+
+integrator:
+  style: velocity_verlet
+  dt: 0.0005
+
+neighbor:
+  skin: 1.0
+
+thermo:
+  every: 100
+
+run:
+  n_steps: 1000
+
+runtime:
+  backend: gpu
