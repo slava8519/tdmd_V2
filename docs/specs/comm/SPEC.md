@@ -773,6 +773,20 @@ Comm backend diagnostics:
 
 ## 14. Change log
 
+- **2026-04-20** — **T7.14 — M7 acceptance gate landed; M7 milestone closed
+  on the MpiHostStaging path.** `tests/integration/m7_smoke/` exercises
+  the M7 Pattern 2 K=1 P_space=2 surface end-to-end on top of the M5
+  `MpiHostStagingBackend` transport — `comm.backend: mpi_host_staging`
+  is the canonical byte-exact path for the D-M7-10 golden chain (M3 ≡
+  M4 ≡ M5 ≡ M6 ≡ M7). HybridBackend / NCCL / GpuAwareMPI paths are
+  exercised by T7.4 / T7.5 unit gates (byte-exact vs MpiHostStaging on
+  M5 fixture) and T7.11 scaling benchmark — deliberately NOT layered
+  into the M7 smoke to keep the failure signal tight (one transport,
+  one byte-exact gate). The M7 smoke step self-skips on public CI via
+  `nvidia-smi -L` (Option A / D-M6-6), still asserts golden parity and
+  infrastructure integrity on every PR. D-M5-9 deterministic Kahan
+  reduction contract preserved through Pattern 2 (`OuterSdCoordinator`
+  peer-halo canonicalisation feeds the same reduction tree).
 - **2026-04-19** — **T7.5 — `HybridBackend` composition + `TopologyResolver`
   landed (M7).** New §3.4 (`TopologyResolver`) and §6.4 "Implementation"
   subsection authored. `HybridBackend` is policy-free composition of inner

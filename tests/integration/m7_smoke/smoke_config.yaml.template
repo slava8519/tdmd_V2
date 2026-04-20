@@ -1,0 +1,75 @@
+# M7 integration-smoke TDMD config — Pattern 2 Ni-Al EAM/alloy NVE, 10 steps,
+# 2-rank MPI with MpiHostStaging backend, GPU runtime, 2 subdomains (Pattern 2
+# K=1 P_space=2).
+#
+# Exec pack: docs/development/m7_execution_pack.md §T7.14.
+# SPEC: docs/specs/scheduler/SPEC.md Pattern 2 integration (T7.2/T7.7);
+#       docs/specs/zoning/SPEC.md (subdomains linear_1d);
+#       docs/specs/comm/SPEC.md §3 (MpiHostStaging); master spec §14 M7.
+# Decisions: D-M7-10 (byte-exact chain extension), D-M7-17 (regression
+#            preservation).
+#
+# This config is byte-for-byte the M6 smoke config with a single addition:
+# `zoning.subdomains: [2, 1, 1]`. The D-M7-10 chain extends D-M6-7: Pattern 2
+# K=1 P_space=2 Reference thermo MUST equal Pattern 1 K=1 P=2 Reference (the
+# M6 golden = M5 golden = M4 golden = M3 golden). Proof obligation is a
+# scheduler invariant (Pattern 2 with K=1 degenerates to Pattern 1 spatial
+# decomposition — no time-dimension pipelining introduces new ordering), not
+# a tolerance window.
+#
+# The harness substitutes {{ATOMS_PATH}} and {{EAM_PATH}} at smoke-run time.
+
+simulation:
+  units: metal
+  seed: 12345
+
+atoms:
+  source: lammps_data
+  path: "{{ATOMS_PATH}}"   # verify/benchmarks/t4_nial_alloy/setup.data (LFS)
+
+potential:
+  style: eam/alloy
+  params:
+    file: "{{EAM_PATH}}"   # verify/third_party/potentials/NiAl_Mishin_2004.eam.alloy
+
+integrator:
+  style: velocity_verlet
+  dt: 0.001                # ps — identical to M2 / M3 / M4 / M5 / M6 smokes
+
+neighbor:
+  skin: 0.05               # Å — forces mid-run rebuild, same as M3 / M4 / M5 / M6
+
+thermo:
+  every: 1                 # full-trace thermo for golden match
+
+run:
+  n_steps: 10
+
+# M4 layer: opt-in deterministic TD scheduler (D-M4-11). K=1 ⇒ scheduler
+# observes legacy physics sequence.
+scheduler:
+  td_mode: true
+  pipeline_depth_cap: 1
+
+# M5 layer: MPI host-staging comm backend (D-M5-9 Kahan-ring guarantees
+# reduction-order determinism). M7 keeps this backend for the byte-exact
+# gate; HybridBackend (T7.5) is exercised by scaling benchmarks, not by
+# the D-M7-10 byte-exact gate.
+comm:
+  backend: mpi_host_staging
+  topology: mesh
+
+# M6 layer: GPU force path + GPU integrator via runtime::GpuContext. On
+# Fp64ReferenceBuild this path MUST reproduce the CPU Reference thermo
+# stream bit-for-bit (D-M6-7).
+runtime:
+  backend: gpu
+
+# M7 layer: Pattern 2 two-level TD × SD scheduling (master spec §12.7a /
+# §12.8). With 2 ranks and 2 subdomains, each rank owns one subdomain;
+# `linear_1d` splits the box along X so `P_space=2`. K=1
+# (`pipeline_depth_cap: 1`) keeps the scheduler in single-level mode, so
+# the thermo stream is identical to M6 (D-M7-10 byte-exact gate).
+zoning:
+  scheme: linear_1d
+  subdomains: [2, 1, 1]

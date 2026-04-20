@@ -784,6 +784,7 @@ NVTX ranges:
 
 ## Change log
 
+- **v1.0.3 — 2026-04-20 (T7.14):** §2.4 Pattern 2 engine wiring validated end-to-end by `tests/integration/m7_smoke/` — 2-rank 2-subdomain `runtime.backend: gpu` + `zoning.subdomains: [2,1,1]` + `scheduler.td_mode: true, pipeline_depth_cap: 1` + `comm.backend: mpi_host_staging`. Thermo byte-for-byte matches the M6 golden (D-M7-10 chain: M3 ≡ M4 ≡ M5 ≡ M6 ≡ M7 Pattern 2 K=1 P_space=2). Preflight Pattern 2 consistency (T7.9) confirmed on both the single-rank pre-fail path (step 3/7) and the 2-rank launch path (step 4/7). The runtime GPU wire + M7 scheduler attach run clean on a production-shaped run loop without regressing Pattern 1. M7 milestone closed on this path; HybridBackend transport exercise is T7.5/T7.11 territory (orthogonal; not in the byte-exact gate).
 - **v1.0.2 — 2026-04-19 (T7.9):** added §2.4 Pattern 2 engine wiring — `zoning.subdomains` + `comm.backend: hybrid` YAML knobs, equal-tile orthogonal-brick decomposition with lex id + 1:1 rank binding (D-M7-2), `outer_coord_` ownership + attach contract, preflight Pattern 2 consistency, Pattern 1 byte-exact regression invariant. Transport probe + full 2-rank smoke deferred to T7.14.
 - **v1.0.1 — 2026-04-19 (T6.7):** added §2.3 GPU backend wiring — `runtime.backend` knob, `GpuContext` RAII ownership, EAM/alloy + VV GPU path, M6 byte-exact gates.
 - **v1.0.0 — initial:** baseline runtime/SPEC.

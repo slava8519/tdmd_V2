@@ -146,6 +146,15 @@ jobs:
         # in step 1/6 of the harness before it needs a GPU at all.
         run: tests/integration/m6_smoke/run_m6_smoke.sh --tdmd build_cpu/src/cli/tdmd
 
+      - name: M7 smoke (GPU Pattern 2 K=1 P_space=2, byte-exact to M6 — SKIP on public CI)
+        # T7.14 / D-M7-10: Pattern 2 two-level TD×SD with K=1 degenerates
+        # to Pattern 1 spatial decomposition. Same Option A policy as M6 —
+        # harness self-skips (exit 0) when `nvidia-smi -L` reports no CUDA
+        # device. The pre-flight step 1/7 asserts M7 thermo golden ≡ M6
+        # golden byte-for-byte (D-M7-10 chain: M3 ≡ M4 ≡ M5 ≡ M6 ≡ M7),
+        # so golden drift fails CI even without a GPU.
+        run: tests/integration/m7_smoke/run_m7_smoke.sh --tdmd build_cpu/src/cli/tdmd
+
       - name: Upload compile_commands.json
         if: matrix.compiler == 'clang-17'
         uses: actions/upload-artifact@v4

@@ -970,6 +970,33 @@ NVTX ranges для Nsight:
 
 ## 16. Change log
 
+- **2026-04-20** — **T7.14 — M7 integration smoke + acceptance gate landed
+  (M7 milestone closed).** `tests/integration/m7_smoke/` shipped (7-step
+  harness: golden parity pre-flight → GPU visibility probe → single-rank
+  Pattern 2 preflight → `mpirun -np 2 tdmd validate` → `tdmd run` →
+  byte-exact thermo diff vs M7 golden → telemetry invariants); the M7
+  `thermo_golden.txt` is a byte-for-byte copy of M6's (= M5 = M4 = M3),
+  step 1 asserts `diff -q` parity, so editing one golden without syncing
+  the others fails CI before any GPU time is paid. **D-M7-10 byte-exact
+  chain green end-to-end on an automated harness:** M3 ≡ M4 ≡ M5 ≡ M6
+  ≡ M7 Pattern 2 K=1 P_space=2 thermo golden. With `pipeline_depth_cap:
+  1` the two-level scheduler degenerates to Pattern 1 spatial
+  decomposition — same DAG topology, same halo arrival ordering (plus
+  the `OuterSdCoordinator` R-M7-5 peer-halo canonicalisation via
+  `(peer_subdomain_id, time_level)` sort); the M4 deadlock watchdog +
+  M5 Kahan-ring + M6 GPU gather-Kahan + M7 `SubdomainBoundaryDependency`
+  bit-4 release gate all fire on the critical path without perturbing
+  the bit sequence. `.github/workflows/ci.yml` extended with an `M7
+  smoke` step inside `build-cpu` right after M6's — self-skips on
+  public CI via `nvidia-smi -L` probe (Option A / D-M6-6), still runs
+  infrastructure checks (golden parity, template substitution, LFS
+  asset presence) so rot surfaces loudly even without a GPU. Local
+  pre-push ≤3 s on commodity GPU (2 s measured on RTX 5080 dev box).
+  **M7 milestone closed** per master spec §14 acceptance gate.
+  Telemetry invariant added — `boundary_stalls_total == 0` on the
+  nominal 10-step run (K=1 has no legitimate stall pressure); the
+  harness tolerates absence on pre-T7.14 telemetry emitters by
+  fallback-treating it as `0`, so older builds stay compatible.
 - **2026-04-19** — **T7.2 — Pattern 2 SPEC integration (M7 entry).**
   Pure SPEC delta, no code lands здесь (concrete implementation — T7.6 +
   T7.7 + T7.9 per M7 execution pack §6 dependency graph). Fills the

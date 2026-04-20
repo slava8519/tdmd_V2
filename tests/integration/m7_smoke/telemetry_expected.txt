@@ -1,0 +1,31 @@
+# Expected telemetry counters for the M7 2-rank GPU Pattern 2 smoke
+# (10 steps, K=1, P_space=2, TD).
+#
+# Same philosophy as M5/M6's: these are invariants, not point values.
+# The smoke harness extracts the named JSON fields from
+# `--telemetry-jsonl` and checks each against its expected property.
+#
+# Format: <dotted_key>  <op>  <value>
+#   op ∈ { == , >= , <= , > , < }
+#
+# Reference: m7_execution_pack.md §T7.14 "Mandatory invariants".
+
+# Every run must finish its end-of-run JSONL emit (run_end event).
+event                        ==  run_end
+
+# Wall-time sanity — the 2-rank 10-step Pattern 2 GPU run should
+# finish under 60s (M7 local gate, §T7.14). Reference builds pay a
+# small FP64 premium vs CPU; MixedFast variant is faster but uses
+# the same budget.
+total_wall_sec               <=  60.0
+
+# CommBackend / Telemetry lifecycle must be clean — any mismatched
+# ScopedSection scope indicates a RAII bug or exception escape.
+ignored_end_calls            ==  0
+
+# M7 new invariant (D-M7-14): subdomain boundary stalls must be zero
+# on the nominal 10-step run. Non-zero indicates OuterSdCoordinator
+# watchdog fired — either a pathological scheduling bug or a test-
+# environment hang. With K=1 Pattern 2 degenerates to Pattern 1
+# spatial decomposition, so there is no legitimate stall pressure.
+boundary_stalls_total        ==  0
