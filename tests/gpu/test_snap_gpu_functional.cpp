@@ -260,6 +260,14 @@ TEST_CASE("SnapGpu — CPU reference agrees within 1e-10 rel on BCC W", "[gpu][s
   if (!cuda_device_available()) {
     SKIP("no CUDA device available");
   }
+#ifdef TDMD_FLAVOR_MIXED_FAST_SNAP_ONLY
+  // D-M8-8 supersedes the 1e-10 loose diff gate — SNAP adapter dispatches to
+  // SnapGpuMixed (narrow-FP32 pair-math) on this flavor, and the D-M8-8
+  // 1e-5/1e-7/5e-6 envelope is exercised by
+  // test_snap_mixed_fast_within_threshold.
+  SUCCEED("MixedFastSnapOnlyBuild — D-M8-8 gate supersedes D-M8-13 for SNAP");
+  return;
+#else
 
   const tp::SnapData data = load_w_fixture();
 
@@ -306,6 +314,7 @@ TEST_CASE("SnapGpu — CPU reference agrees within 1e-10 rel on BCC W", "[gpu][s
     INFO("virial[" << k << "] cpu=" << cpu_r.virial[k] << " gpu=" << gpu_r.virial[k]);
     REQUIRE(rel(cpu_r.virial[k], gpu_r.virial[k]) <= 1e-10);
   }
+#endif  // TDMD_FLAVOR_MIXED_FAST_SNAP_ONLY
 }
 
 TEST_CASE("SnapGpu — compute_version monotone across repeat calls", "[gpu][snap][t8.6b]") {

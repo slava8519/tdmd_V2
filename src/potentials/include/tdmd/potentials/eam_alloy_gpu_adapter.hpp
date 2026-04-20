@@ -42,10 +42,19 @@ class DeviceStream;
 class EamAlloyGpu;
 class EamAlloyGpuMixed;
 // Compile-time dispatch between Fp64 reference and Philosophy-B MixedFast
-// EAM backends. Selected by the `TDMD_FLAVOR_MIXED_FAST` PUBLIC define that
+// EAM backends. Selected by the build-flavor PUBLIC define that
 // `tdmd_apply_build_flavor` sets on every tdmd target, so the adapter's
 // ABI is consistent across all consumers of this header (D-M6-5).
-#ifdef TDMD_FLAVOR_MIXED_FAST
+//
+// Policy (per D-M8-4, landed T8.8):
+//   * MixedFastBuild            — EAM → `EamAlloyGpuMixed` (FP32 pair-math)
+//   * MixedFastSnapOnlyBuild    — EAM → `EamAlloyGpu` (FP64) + SNAP → FP32
+//                                 (SNAP narrowing is wired in the SNAP adapter;
+//                                  EAM stays FP64 because tabulated Horner
+//                                  splines fail monotonicity in FP32 — see
+//                                  memory project_fp32_eam_ceiling)
+//   * all other flavors         — EAM → `EamAlloyGpu` (FP64 reference path)
+#if defined(TDMD_FLAVOR_MIXED_FAST) && !defined(TDMD_FLAVOR_MIXED_FAST_SNAP_ONLY)
 using EamAlloyGpuActive = EamAlloyGpuMixed;
 #else
 using EamAlloyGpuActive = EamAlloyGpu;

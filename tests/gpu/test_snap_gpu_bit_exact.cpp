@@ -168,6 +168,14 @@ TEST_CASE("SnapGpu — T6 tungsten bit-exact gate: GPU FP64 ≡ CPU FP64 within 
   if (!cuda_device_available()) {
     SKIP("no CUDA device available");
   }
+#ifdef TDMD_FLAVOR_MIXED_FAST_SNAP_ONLY
+  // D-M8-8 supersedes D-M8-13 on this flavor — SNAP adapter dispatches to
+  // SnapGpuMixed (narrow-FP32 pair-math), so CPU FP64 ≡ GPU at 1e-12 is
+  // structurally impossible. The D-M8-8 1e-5/1e-7/5e-6 gate is exercised by
+  // test_snap_mixed_fast_within_threshold on this flavor.
+  SUCCEED("MixedFastSnapOnlyBuild — D-M8-8 gate supersedes D-M8-13 for SNAP");
+  return;
+#else
 
   const tp::SnapData data = load_w_fixture();
 
@@ -228,6 +236,7 @@ TEST_CASE("SnapGpu — T6 tungsten bit-exact gate: GPU FP64 ≡ CPU FP64 within 
                    << " rel=" << v_rel);
     REQUIRE(v_rel <= kTol);
   }
+#endif  // TDMD_FLAVOR_MIXED_FAST_SNAP_ONLY
 }
 
 #else  // !TDMD_BUILD_CUDA

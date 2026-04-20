@@ -46,6 +46,19 @@ namespace tdmd::gpu {
 class DevicePool;
 class DeviceStream;
 class SnapGpu;
+class SnapGpuMixed;
+// Compile-time dispatch between Fp64 reference and T8.9 Phase A (Philosophy B
+// narrow-FP32 pair-math) SNAP backends. Only the `MixedFastSnapOnlyBuild`
+// flavor routes SNAP through `SnapGpuMixed`; all other flavors keep SNAP on
+// the FP64 `SnapGpu` reference (D-M8-4: MixedFastBuild keeps SNAP FP64 because
+// SNAP's dominant cost is a small ML-fit of potentials and per-rank SNAP
+// throughput is dominated by the bispectrum, which is scientifically identical
+// in both paths; MixedFastSnapOnlyBuild is the opt-in throughput path).
+#ifdef TDMD_FLAVOR_MIXED_FAST_SNAP_ONLY
+using SnapGpuActive = SnapGpuMixed;
+#else
+using SnapGpuActive = SnapGpu;
+#endif
 }  // namespace tdmd::gpu
 
 namespace tdmd::potentials {
@@ -101,7 +114,7 @@ private:
   std::vector<double> weight_elem_flat_;
   std::vector<double> beta_flat_;
 
-  std::unique_ptr<tdmd::gpu::SnapGpu> gpu_;
+  std::unique_ptr<tdmd::gpu::SnapGpuActive> gpu_;
 };
 
 }  // namespace tdmd::potentials

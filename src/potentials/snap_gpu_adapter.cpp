@@ -6,6 +6,7 @@
 #include "tdmd/gpu/device_pool.hpp"
 #include "tdmd/gpu/neighbor_list_gpu.hpp"  // BoxParams
 #include "tdmd/gpu/snap_gpu.hpp"
+#include "tdmd/gpu/snap_gpu_mixed.hpp"
 #include "tdmd/neighbor/cell_grid.hpp"
 #include "tdmd/state/atom_soa.hpp"
 #include "tdmd/state/box.hpp"
@@ -17,7 +18,7 @@
 namespace tdmd::potentials {
 
 SnapGpuAdapter::SnapGpuAdapter(const SnapData& data)
-    : data_(&data), gpu_(std::make_unique<tdmd::gpu::SnapGpu>()) {
+    : data_(&data), gpu_(std::make_unique<tdmd::gpu::SnapGpuActive>()) {
   const std::size_t n_species = data.species.size();
   if (n_species == 0) {
     throw std::invalid_argument("SnapGpuAdapter: SnapData has no species");

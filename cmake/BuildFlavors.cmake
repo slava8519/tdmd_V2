@@ -51,20 +51,23 @@ function(_tdmd_apply_mixed_fast target)
 endfunction()
 
 # MixedFastSnapOnlyBuild — heterogeneous precision per §D.11 formal exception (M8 T8.8 §D.17
-# procedure). StateReal=double, ForceReal=float for SNAP kernels ONLY, ForceReal=double for EAM
-# kernels, AccumReal=double. Motivation: SNAP ML-fit RMSE (~1e-3 eV/atom) is orders of magnitude
-# above FP32 ULP (~6e-8 rel), so FP32 SNAP force is scientifically indistinguishable from FP64 at MD
-# scales; EAM tabulated Horner splines fail monotonicity in FP32 per D-M6-8 empirical data so they
-# stay FP64. Acceptance thresholds: D-M8-8 dense-cutoff analog (SNAP force ≤ 1e-5 rel / energy ≤
-# 1e-7 rel; EAM inherits MixedFastBuild 1e-5/1e-7/5e-6 ceiling; NVE drift ≤ 1e-5 per 1000 steps).
-# Implementation kernel dispatch lands at T8.9 — this flavor configures cleanly at T8.8 but does not
-# yet emit heterogeneous code paths.
+# procedure). StateReal=double, ForceReal=float for SNAP pair-math (sqrtf) only, ForceReal=double
+# for EAM kernels, AccumReal=double. Motivation: SNAP ML-fit RMSE (~1e-3 eV/atom) is orders of
+# magnitude above FP32 ULP (~6e-8 rel), so narrow-FP32 SNAP force is scientifically
+# indistinguishable from FP64 at MD scales; EAM tabulated Horner splines fail monotonicity in FP32
+# per D-M6-8 empirical data so they stay FP64. Acceptance thresholds: D-M8-8 dense-cutoff analog
+# (SNAP force ≤ 1e-5 rel / energy ≤ 1e-7 rel / virial ≤ 5e-6 rel-to-max; EAM inherits MixedFastBuild
+# 1e-5/1e-7/5e-6 ceiling; NVE drift ≤ 1e-5 per 1000 steps). T8.9 landed narrow-FP32 pair-math — only
+# `sqrtf(rsq)` is FP32; `sincos` + z0 + dz0dr stayed FP64 because their FP32 error amplifies through
+# the bispectrum recurrence and blows past the D-M8-8 1e-5 force cap (measured 2.1e-5 in wider-FP32
+# exploratory trials). Realized throughput lever is modest — pair-math is < 5 % of total SNAP
+# runtime.
 function(_tdmd_apply_mixed_fast_snap_only target)
   _tdmd_define_flavor(${target} TDMD_FLAVOR_MIXED_FAST_SNAP_ONLY)
   target_compile_options(${target} PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-fno-fast-math>
                                            $<$<COMPILE_LANGUAGE:CUDA>:--fmad=true>)
   message(
-    STATUS "  [flavor] MixedFastSnapOnlyBuild on target ${target} — T8.9 kernel split pending")
+    STATUS "  [flavor] MixedFastSnapOnlyBuild on target ${target} — narrow-FP32 pair-math (T8.9)")
 endfunction()
 
 function(_tdmd_apply_mixed_fast_aggressive target)

@@ -17,6 +17,7 @@ set(tdmd_gpu_sources
     eam_alloy_gpu_mixed.cu
     integrator_vv_gpu.cu
     snap_gpu.cu
+    snap_gpu_mixed.cu
     snap_gpu_tables.cu)
 
 # T6.4 / T6.5 / T6.6 / T6.8 / T8.6a / T8.6b: the .cu TUs carry both CUDA kernels (TDMD_BUILD_CUDA=1
@@ -29,8 +30,14 @@ set(tdmd_gpu_sources
 # selected flavor.
 if(NOT TDMD_BUILD_CUDA)
   set_source_files_properties(
-    neighbor_list_gpu.cu eam_alloy_gpu.cu eam_alloy_gpu_mixed.cu integrator_vv_gpu.cu snap_gpu.cu
-    snap_gpu_tables.cu PROPERTIES LANGUAGE CXX)
+    neighbor_list_gpu.cu
+    eam_alloy_gpu.cu
+    eam_alloy_gpu_mixed.cu
+    integrator_vv_gpu.cu
+    snap_gpu.cu
+    snap_gpu_mixed.cu
+    snap_gpu_tables.cu
+    PROPERTIES LANGUAGE CXX)
 endif()
 
 add_library(tdmd_gpu STATIC ${tdmd_gpu_sources})

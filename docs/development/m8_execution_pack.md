@@ -923,7 +923,34 @@ no code. Implementation kernel lands in T8.9. The 7 steps:
 
 ---
 
-### T8.9 — SnapPotential MixedFast kernel (GPU FP32 force, state FP64)
+### T8.9 — SnapPotential MixedFast kernel (GPU FP32 force, state FP64) [LANDED 2026-04-20]
+
+**Landing record:**
+- Scope narrowed from the original spec: after empirical measurement on the
+  T6 fixture (2000-atom rattled BCC W, twojmax=8), the only FP32 site that
+  keeps the D-M8-8 budget is `r = sqrtf(static_cast<float>(rsq))` in the
+  `ui` and `deidrj` kernels. A wider FP32 scope (also `__sincosf` + `z0` +
+  `dz0dr` + `sfac`) produced force worst rel 2.1e-5, above the 1e-5 cap,
+  because FP32 sin/cos error (~6e-8 rel) feeds `z0`, which enters the
+  U-recurrence multiplicatively and compounds through a length-O(165)
+  bispectrum dot product.
+- Measured residuals on 2000-atom rattled BCC W fixture (SnapGpuMixed vs
+  SnapGpu FP64 GPU oracle): force worst rel = **9.51e-6** (tol 1e-5), PE
+  rel = **1.70e-9** (tol 1e-7), virial max rel-to-max = **3.94e-9** (tol
+  5e-6). All three gates pass; force is close to the cap but deterministic.
+- Realized throughput lever is **modest**: SNAP pair-math is <5 % of SNAP
+  runtime (U-recurrence dominates). Real SNAP throughput gains come from
+  Fp64Production + dense-cutoff GPU path (T8.6b landed). MixedFastSnapOnly
+  remains opt-in; Phase B (full-FP32 bispectrum) is deferred to a §D.17
+  procedure if T8.11 cloud-burst shows Phase A insufficient.
+- Regression check: all 51 ctest gates green on Fp64ReferenceBuild,
+  MixedFastBuild, MixedFastSnapOnlyBuild (one structural skip —
+  `test_t4_nve_drift` is MixedFast-only by design).
+- Tests `test_snap_gpu_functional` and `test_snap_gpu_bit_exact` now
+  SUCCEED-skip on MixedFastSnapOnlyBuild with comment "D-M8-8 gate
+  supersedes D-M8-13 for SNAP" — the adapter dispatches to SnapGpuMixed
+  on this flavor so CPU FP64 ≡ GPU at 1e-12 is structurally impossible.
+  `test_snap_mixed_fast_within_threshold` is the acceptance gate here.
 
 ```
 # TDMD Task: SnapPotential MixedFast GPU kernel — throughput path

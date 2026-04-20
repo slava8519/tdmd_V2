@@ -70,6 +70,21 @@ target_compile_definitions(
 add_test(NAME test_snap_gpu_bit_exact COMMAND test_snap_gpu_bit_exact)
 set_tests_properties(test_snap_gpu_bit_exact PROPERTIES SKIP_RETURN_CODE 77)
 
+# T8.9: SnapGpuMixed (Philosophy B narrow-FP32 pair-math) vs Fp64 Reference GPU on T6 tungsten
+# 2000-atom rattled BCC. Gates D-M8-8 dense-cutoff budget: force L∞ rel ≤ 1e-5, PE rel ≤ 1e-7,
+# virial rel-to-max ≤ 5e-6. Bypasses flavor-dispatched adapter — constructs SnapGpu + SnapGpuMixed
+# directly so the FP32 kernel is exercised in every flavor's CI pass regardless of SnapGpuActive
+# typedef. Self-skips exit 77 on no-CUDA host or LAMMPS submodule uninitialized.
+add_executable(test_snap_mixed_fast_within_threshold test_snap_mixed_fast_within_threshold.cpp)
+target_link_libraries(
+  test_snap_mixed_fast_within_threshold PRIVATE tdmd::gpu tdmd::potentials tdmd::neighbor
+                                                tdmd::state Catch2::Catch2WithMain)
+target_compile_definitions(
+  test_snap_mixed_fast_within_threshold
+  PRIVATE TDMD_TEST_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/potentials/fixtures")
+add_test(NAME test_snap_mixed_fast_within_threshold COMMAND test_snap_mixed_fast_within_threshold)
+set_tests_properties(test_snap_mixed_fast_within_threshold PROPERTIES SKIP_RETURN_CODE 77)
+
 # T6.6: VV NVE integrator GPU kernel — bit-exact vs CPU reference (gpu/SPEC §7.3).
 add_executable(test_integrator_vv_gpu test_integrator_vv_gpu.cpp)
 target_link_libraries(test_integrator_vv_gpu PRIVATE tdmd::gpu tdmd::integrator tdmd::state
