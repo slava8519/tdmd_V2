@@ -28,7 +28,7 @@ T7.8b carry-forward, 30% runtime measurement cloud-burst-gated). M8 добавл
   flow, linear regression на per-atom energy/force; Wood+Thompson+Trott 2014 formulation;
 - **LAMMPS SNAP oracle via submodule** — canonical per-atom reference; differential
   harness `t_snap_cpu_vs_lammps` + `t_snap_gpu_vs_lammps`; T6 tungsten
-  `W_Wood_PRB2019.snap` coefficient set resolved via submodule path (no binary в
+  `W_2940_2017_2.snap` coefficient set resolved via submodule path (no binary в
   tdmd repo per OQ-M8-3);
 - **GPU SNAP bit-exact gate** — D-M6-7 extended: GPU FP64 SNAP ≤ 1e-12 rel vs CPU
   FP64 SNAP на T6 tungsten (2048-atom BCC W fixture);
@@ -87,8 +87,8 @@ mandate (master spec §14 M8).
 | # | Решение | Значение | Rationale / источник |
 |---|---|---|---|
 | **D-M8-1** | SNAP implementation strategy | **Port from LAMMPS USER-SNAP** с explicit attribution в LICENSE + source headers. GPL-compatible license chain (LAMMPS: GPLv2; TDMD: Apache-2.0 compatible via GPLv2 re-license clause). Не reimplement from scratch — risk of subtle bispectrum basis function bugs слишком высок. | OQ-M8-1 resolution; master spec §12.1 "port SNAP from LAMMPS"; USER-SNAP is canonical reference implementation; reimplementation adds months of bug-hunting without science value. |
-| **D-M8-2** | LAMMPS oracle integration | **git submodule** at `third_party/lammps/` pinned на tag `stable_28Mar2023` (long-term stable; contains T6 tungsten `W_Wood_PRB2019.snap` в `examples/snap/`). CMake option `TDMD_ENABLE_LAMMPS_ORACLE=ON` builds stripped-down LAMMPS (`liblammps.a`) для differential harness only. | Memory `project_option_a_ci.md` Option A policy continuation: LAMMPS oracle binary SKIP on public CI (too heavy), runs pre-push locally. Submodule approach reuses M6 differential infrastructure. |
-| **D-M8-3** | T6 tungsten coefficient file | `W_Wood_PRB2019.snap` resolved via submodule path `third_party/lammps/examples/snap/W_Wood_PRB2019.snap`. **No binary tracked by tdmd repo.** CMake fixture path: `${CMAKE_SOURCE_DIR}/third_party/lammps/examples/snap/`. | OQ-M8-3 resolution; preserves git repo size budget; LAMMPS license covers coefficient file distribution; submodule init is one-time dev setup cost. |
+| **D-M8-2** | LAMMPS oracle integration | **Already landed M1 T1.11** — git submodule at `verify/third_party/lammps/` pinned `stable_22Jul2025_update4`; `PKG_ML-SNAP=on` already in `tools/build_lammps.sh`; `cmake/FindLammps.cmake` locates install prefix `verify/third_party/lammps/install_tdmd/`. M8 reuses existing infrastructure; T8.2 reduces to **SNAP subset verification + canonical fixture selection + docs** (not submodule add + CMake option authoring). | Discovery 2026-04-20 while prepping T8.2: LAMMPS oracle shipped в M1 T1.11 per `verify/third_party/lammps_README.md`; `lammps_README.md` Required packages table lists `ML-SNAP` with milestone = `M8`. No new submodule or CMake work required. |
+| **D-M8-3** | T6 tungsten coefficient file | **`W_2940_2017_2.snap`** — single-species pure W BCC, Wood & Thompson 2017, 2940 DFT training configs. Path: `verify/third_party/lammps/examples/snap/W_2940_2017_2.snap`. **No binary tracked by tdmd repo** (lives inside submodule). CMake fixture dir: `${CMAKE_SOURCE_DIR}/verify/third_party/lammps/examples/snap/`. Driver example: `in.snap.W.2940`. | OQ-M8-3 resolution. Earlier draft referenced `W_2940_2017_2.snap` which is actually `WBe_Wood_PRB2019.snap` (W-Be binary alloy, not pure W) — corrected 2026-04-20. Pure W single-species simpler для T6 canonical; WBe available если binary-alloy SNAP gate added M9+. |
 | **D-M8-4** | `MixedFastSnapOnlyBuild` scope | **Heterogeneous precision**: SNAP kernels use `ForceReal=float`, EAM kernels use `ForceReal=double`. **State always `double`** (matches MixedFastBuild policy). Motivation: SNAP bispectrum coefficients are empirically fit against FP32-noise-tolerant DFT energies (typical fit RMSE ≈ 1e-3 eV/atom >> FP32 ULP); EAM tabulated potentials require FP64 Horner stability (D-M6-8 evidence). | Master spec §D.11 addition; §D.17 7-step procedure enforces formal justification; slow-tier VerifyLab pass is hard gate. |
 | **D-M8-5** | Cloud burst acceptance | **≥ 8-rank scaling measurement requires cloud burst**. Dev hardware = single RTX 5080 (1 GPU). Acceptance run uses cloud-burst-gated harness (AWS p4d.24xlarge = 8× A100, or equivalent); measurement result checked into `verify/benchmarks/t6_snap_scaling/results_<date>.json`. | D-M6-6 Option A CI policy: no self-hosted GPU runner в public repo; scaling measurements are pre-release workflow, not CI gate. Memory `project_option_a_ci.md`. |
 | **D-M8-6** | Artifact gate interpretation | Master spec §14 M8 artifact gate literal: "либо обгоняет LAMMPS ≥ 20 % на целевой конфигурации, либо документирует, почему не обгоняет и что делать дальше". **Both outcomes close M8** provided the measurement was performed honestly on a representative config. Cherry-picking degenerate configs (e.g. extreme subdomain aspect) to force 20% win is auto-reject (master spec §11.4). | Honest engineering mandate; project-level credibility gate; full comparison methodology в T8.11 scope. |
@@ -115,8 +115,8 @@ mandate (master spec §14 M8).
 | GPU archs | sm_80, sm_86, sm_89, sm_90, sm_100, sm_120 | D-M6-1 carry-forward |
 | MPI | **CUDA-aware OpenMPI ≥4.1** preferred; non-CUDA-aware → fallback | D-M7-3 carry-forward |
 | NCCL | **≥2.18** (bundled с CUDA 13.x) | D-M7-4 carry-forward; intra-node only в M8 |
-| LAMMPS oracle | **git submodule `third_party/lammps/` pinned `stable_28Mar2023`** | D-M8-2; local-only per Option A |
-| LAMMPS SNAP fixture | `third_party/lammps/examples/snap/W_Wood_PRB2019.snap` | D-M8-3; no binary tracked by tdmd |
+| LAMMPS oracle | **Already shipped M1 T1.11** — submodule `verify/third_party/lammps/` pinned `stable_22Jul2025_update4`; `tools/build_lammps.sh` with `PKG_ML-SNAP=on`; install prefix `verify/third_party/lammps/install_tdmd/` | D-M8-2 (corrected); SKIP on public CI per Option A |
+| LAMMPS SNAP fixture | `verify/third_party/lammps/examples/snap/W_2940_2017_2.snap` (pure W BCC, 2017, 2940 DFT configs) | D-M8-3 (corrected); no binary tracked by tdmd |
 | Python | 3.10+ | pre-commit + anchor-test + T6 scaling harness + cloud burst orchestration |
 | Test framework | Catch2 v3 (FetchContent) + MPI wrapper | GPU+MPI tests local-only per D-M7-11 |
 | Active BuildFlavors | `Fp64ReferenceBuild`, `MixedFastBuild`, **`MixedFastSnapOnlyBuild`** (new) | D-M8-10 |
@@ -139,7 +139,7 @@ mandate (master spec §14 M8).
 ```
 T8.0 (T7.8b carry-fwd, LANDED) ─┐
                                 │
-T8.1 (this pack) ───────────────┼──► T8.2 (LAMMPS submodule + oracle build)
+T8.1 (this pack) ───────────────┼──► T8.2 (verify LAMMPS SNAP subset + T6 fixture)
                                 │         │
                                 │         ▼
                                 │     T8.3 (potentials/SPEC SNAP body)
@@ -290,7 +290,7 @@ MixedFastSnapOnly + v1 alpha closure). Document-only PR per playbook §9.1.
 ## Out of scope
 - [excluded] Any code changes (T8.2+ territory)
 - [excluded] SPEC deltas (T8.3 onwards; T8.8 carries major §D.11/§D.17 delta)
-- [excluded] LAMMPS submodule hookup (T8.2 territory)
+- [excluded] LAMMPS SNAP subset verification (T8.2 territory)
 
 ## Required files
 - `docs/development/m8_execution_pack.md`
@@ -304,81 +304,93 @@ MixedFastSnapOnly + v1 alpha closure). Document-only PR per playbook §9.1.
 
 ---
 
-### T8.2 — LAMMPS submodule hookup + SNAP oracle build option
+### T8.2 — Verify LAMMPS SNAP oracle subset + canonical W fixture selection
 
 ```
-# TDMD Task: LAMMPS git submodule + liblammps oracle build for SNAP differential
+# TDMD Task: Verify M1-landed LAMMPS oracle ML-SNAP subset + pick T6 canonical fixture
 
 ## Context
 - Master spec: §12.1 ("port SNAP from LAMMPS"), §13.7 (differential thresholds)
-- Module SPEC: `docs/specs/verify/SPEC.md` (T6 tungsten benchmark definition)
-- D-M8-2 (git submodule pinned stable_28Mar2023); D-M8-3 (no binary in tdmd repo)
+- Module SPEC: `docs/specs/verify/SPEC.md` §3 (LAMMPS as oracle, T6 tungsten)
+- D-M8-2 (corrected): LAMMPS oracle already shipped M1 T1.11 —
+  `verify/third_party/lammps/` submodule pinned `stable_22Jul2025_update4`;
+  `tools/build_lammps.sh` has `PKG_ML-SNAP=on`; no new infrastructure needed.
+- D-M8-3 (corrected): canonical T6 fixture is `W_2940_2017_2.snap` (pure W BCC,
+  Wood & Thompson 2017, 2940 DFT configs); available в submodule at
+  `verify/third_party/lammps/examples/snap/`.
+- Discovery 2026-04-20: prior draft assumed fresh submodule setup; reality —
+  M1 already landed full LAMMPS oracle с SNAP readiness marked for M8.
 - Role: Validation / Reference Engineer
 - Depends: T8.1 (pack authored)
 
 ## Goal
-Add `third_party/lammps/` git submodule pinned на `stable_28Mar2023` tag; CMake
-option `TDMD_ENABLE_LAMMPS_ORACLE=ON` (default OFF; ON in local pre-push workflow)
-builds minimal `liblammps.a` with USER-SNAP package enabled; expose oracle API
-for differential harness. Submodule carries coefficient fixture `W_Wood_PRB2019.snap`
-at `third_party/lammps/examples/snap/`. **No binary `.snap` tracked by tdmd repo
-per D-M8-3.**
+Verify that the LAMMPS ML-SNAP subset is operational на dev hardware and pick
+the canonical T6 tungsten SNAP fixture. Much smaller scope than originally
+drafted — no new submodule, no new CMake option, no new helper cmake module.
+The task reduces to: (a) run `tools/build_lammps.sh` end-to-end и confirm
+ML-SNAP compiles cleanly + `lmp -h | grep ML-SNAP` reports present; (b) run
+LAMMPS SNAP example `in.snap.W.2940` to confirm SNAP functionally executes;
+(c) document canonical T6 fixture choice (`W_2940_2017_2.snap` pure W BCC) в
+`verify/third_party/lammps_README.md` SNAP section + `docs/specs/verify/SPEC.md`
+§3 T6 sub-section.
 
 ## Scope
-- [included] `git submodule add -b stable_28Mar2023 https://github.com/lammps/lammps
-  third_party/lammps` — submodule pinned
-- [included] `third_party/lammps/` registered in `.gitmodules`
-- [included] `CMakeLists.txt` root — new option `TDMD_ENABLE_LAMMPS_ORACLE=OFF`
-  (default); when ON, adds subproject target `lammps_oracle` building liblammps.a
-  with SNAP/MANYBODY/KSPACE packages
-- [included] `cmake/tdmd_lammps_oracle.cmake` — helper module; wraps LAMMPS cmake
-  invocation, sets BUILD_SHARED_LIBS=OFF; excludes MPI-dependent packages не
-  needed for SNAP oracle (REAXFF, USER-MISC, etc.)
-- [included] `verify/third_party/lammps_oracle/README.md` — dev onboarding:
-  how to init submodule (`git submodule update --init --recursive`), build flag,
-  location of W SNAP fixture
-- [included] `.github/workflows/ci.yml` — LAMMPS oracle build job **not** added
-  to public CI (D-M8-2: too heavy); documented as pre-push local gate only
-- [included] `tests/potentials/CMakeLists.txt` — stub `test_snap_lammps_oracle_available`
-  Catch2 test that checks submodule path resolves; self-skips если submodule
-  not initialized (clean dev experience)
+- [included] Run `tools/build_lammps.sh` end-to-end; record build time + install
+  size + `lmp -h | grep ML-SNAP` output в verification log (attached в PR desc)
+- [included] Run `verify/third_party/lammps/install_tdmd/bin/lmp -in
+  verify/third_party/lammps/examples/snap/in.snap.W.2940` и confirm SNAP
+  functional (total PE matches upstream LAMMPS `log.15Jun20.snap.W.2940.g++.1`
+  reference to LAMMPS float precision — sanity check, not TDMD gate)
+- [included] Update `verify/third_party/lammps_README.md` — new **SNAP fixture**
+  section: canonical T6 = `W_2940_2017_2.snap`; optional W-Be alloy =
+  `WBe_Wood_PRB2019.snap` (deferred M9+ binary alloy gate)
+- [included] Update `docs/specs/verify/SPEC.md` §3 — T6 tungsten benchmark
+  fixture choice = `W_2940_2017_2.snap`; driver example `in.snap.W.2940`
+- [included] `tests/potentials/test_lammps_oracle_snap_available.cpp` — Catch2
+  gate: fixture file exists at canonical path; self-skips exit 4 if oracle
+  build missing (matches existing EAM oracle test pattern); на public CI
+  skips cleanly (submodule init not required)
+- [included] `tests/potentials/CMakeLists.txt` edit — register new test
 - [included] pre-impl + session reports
 
 ## Out of scope
-- [excluded] SnapPotential implementation (T8.4 territory)
-- [excluded] Differential harness code (T8.5 territory)
-- [excluded] Any SPEC delta (T8.3 territory — potentials/SPEC SNAP body)
+- [excluded] Re-pinning submodule (D-M8-2 corrected locks current pin)
+- [excluded] New submodule add (M1 T1.11 already shipped it)
+- [excluded] CMake option authoring (FindLammps.cmake already exists)
+- [excluded] Helper cmake module (tools/build_lammps.sh is authoritative)
+- [excluded] SnapPotential implementation (T8.4)
+- [excluded] Differential harness (T8.5)
+- [excluded] potentials/SPEC SNAP body (T8.3)
 
 ## Mandatory invariants
-- Submodule init does NOT break existing builds (default TDMD_ENABLE_LAMMPS_ORACLE=OFF).
-- No binary `.snap` in tdmd repo (repo size preserved).
-- LAMMPS license chain preserved: GPLv2 upstream; tdmd remains Apache-2.0 except
-  differential harness code that links against liblammps.a (local-only; not
-  shipped in distribution).
-- Submodule init detectable at CMake configure time; clear error if oracle
-  enabled but submodule missing.
+- Existing builds unchanged (no CMake surface churn).
+- ML-SNAP subset proven functional via `in.snap.W.2940` example run.
+- `W_2940_2017_2.snap` path resolution tested в new Catch2 gate.
+- All M1..M7 regressions green; no regression on existing EAM oracle tests
+  (`test_lammps_oracle_available` or equivalent from M1).
 
 ## Required files
-- `.gitmodules` (edit) — add lammps submodule entry
-- `third_party/lammps/` (submodule reference, not tracked files)
-- `CMakeLists.txt` (edit) — add option + conditional subproject
-- `cmake/tdmd_lammps_oracle.cmake` (new)
-- `verify/third_party/lammps_oracle/README.md` (new)
-- `tests/potentials/test_snap_lammps_oracle_available.cpp` (new; stub)
-- `docs/development/m8_execution_pack.md` §5 (edit — mark T8.2 closed)
+- `verify/third_party/lammps_README.md` (edit — add SNAP fixture section)
+- `docs/specs/verify/SPEC.md` (edit — §3 T6 tungsten fixture choice)
+- `tests/potentials/test_lammps_oracle_snap_available.cpp` (new — Catch2 gate)
+- `tests/potentials/CMakeLists.txt` (edit — register test)
+- `TDMD_Engineering_Spec.md` Приложение C — T8.2 addendum
 
 ## Required tests
-- `test_snap_lammps_oracle_available::submodule_path_resolves` — checks
-  `third_party/lammps/examples/snap/W_Wood_PRB2019.snap` exists; self-skips with
-  clear message if submodule not initialized.
-- Local verification: `cmake -DTDMD_ENABLE_LAMMPS_ORACLE=ON ..` configures
-  cleanly; `make lammps_oracle` builds liblammps.a successfully on dev machine.
+- `test_lammps_oracle_snap_available::fixture_path_resolves` — checks
+  `verify/third_party/lammps/examples/snap/W_2940_2017_2.snap` exists; self-skips
+  с clear message if submodule not initialized.
+- Local verification: `tools/build_lammps.sh` completes successfully; `lmp -h |
+  grep ML-SNAP` reports non-empty; `lmp -in in.snap.W.2940` produces expected
+  total PE.
 
 ## Acceptance criteria
-- Submodule added, pinned на stable_28Mar2023 tag.
-- Default build (oracle OFF) continues unchanged; existing M1..M7 smokes green.
-- Oracle build (ON) configures and compiles locally.
-- Submodule fixture path resolves on dev machine.
+- ML-SNAP package builds + installs cleanly via `tools/build_lammps.sh`.
+- `in.snap.W.2940` example runs successfully; PE matches reference log.
+- Canonical T6 fixture choice documented in two places (submodule README +
+  verify/SPEC §3).
+- New Catch2 gate green on dev machine; skips cleanly on public CI.
+- M1..M7 regressions green.
 - Pre-impl + session reports attached.
 - Human review approval.
 ```
@@ -561,19 +573,19 @@ FP64 oracle** — all downstream GPU variants measured against this.
 - Module SPEC: `docs/specs/verify/SPEC.md` (T6 tungsten benchmark)
 - D-M8-8 CPU FP64 SNAP ≤ 1e-12 rel per-atom force + ≤ 1e-12 rel total PE
 - Role: Validation / Reference Engineer
-- Depends: T8.4 (SnapPotential CPU), T8.2 (LAMMPS oracle build)
+- Depends: T8.4 (SnapPotential CPU), T8.2 (SNAP subset verified + fixture)
 
 ## Goal
 Добавить differential runner config `verify/differentials/t6_snap_cpu_vs_lammps/` —
 uses existing `DifferentialRunner` infrastructure (M1/M6 precedent). Fixture: T6
-tungsten 8×8×8 (2048-atom) + `W_Wood_PRB2019.snap` via submodule path. Runs TDMD
+tungsten 8×8×8 (2048-atom) + `W_2940_2017_2.snap` via submodule path. Runs TDMD
 SnapPotential CPU FP64 vs LAMMPS `pair_style snap` FP64; compares per-atom force
 + total PE. Gate: both ≤ 1e-12 rel. This is the canonical CPU FP64 oracle lock
 — all downstream GPU variants use TDMD CPU FP64 as source-of-truth.
 
 ## Scope
 - [included] `verify/differentials/t6_snap_cpu_vs_lammps/config.yaml.template` —
-  2048-atom W BCC, W_Wood_PRB2019.snap, runs=1 (diff is per-atom-force snapshot,
+  2048-atom W BCC, W_2940_2017_2.snap, runs=1 (diff is per-atom-force snapshot,
   not time evolution)
 - [included] `verify/differentials/t6_snap_cpu_vs_lammps/checks.yaml` — gates:
   `force_per_atom_rel_max ≤ 1e-12`, `total_pe_rel ≤ 1e-12`
@@ -974,7 +986,7 @@ fixture.
 
 ## Goal
 Register T6 tungsten SNAP как official verify benchmark target. Fixture config:
-8×8×8 BCC W (2048 atoms) + W_Wood_PRB2019.snap coefficient set (via submodule);
+8×8×8 BCC W (2048 atoms) + W_2940_2017_2.snap coefficient set (via submodule);
 run configs: single-subdomain single-rank (Fp64Reference + MixedFast + MixedFastSnapOnly);
 multi-subdomain 2-rank Pattern 2 K=1 (Fp64Reference only — byte-exact chain
 extension); 4-rank Pattern 2 K=1 (opportunistic); all gated by D-M8-8 threshold
@@ -983,7 +995,7 @@ local; compile-only на public CI per Option A).
 
 ## Scope
 - [included] `verify/benchmarks/t6_tungsten_snap/` directory:
-  - `config.yaml.template` — 2048-atom W BCC, W_Wood_PRB2019 via submodule path
+  - `config.yaml.template` — 2048-atom W BCC, W_2940_2017_2 via submodule path
   - `config_16384.yaml.template` — 16×16×16 scaling variant
   - `checks.yaml` — thresholds (D-M8-8 budget per flavor)
   - `README.md` — T6 description, how to run, what it validates
@@ -1001,7 +1013,7 @@ local; compile-only на public CI per Option A).
 - [excluded] TDMD vs LAMMPS comparison (T8.11)
 
 ## Mandatory invariants
-- Fixture uses canonical W_Wood_PRB2019.snap via submodule (no binary tracked).
+- Fixture uses canonical W_2940_2017_2.snap via submodule (no binary tracked).
 - Self-skips if submodule not initialized (clean dev experience).
 - Energy conservation gate ≤ 1e-12 rel on 10-step Fp64Reference run.
 - M1..M7 + M8 T8.4..T8.9 all green; T6 fixture doesn't break existing gates.
@@ -1292,8 +1304,9 @@ log, release notes, git tag `v1.0.0-alpha1` annotated.
   shipped 2026-04-20; runtime 30% measurement deferred to T8.11 cloud burst
   (hardware prerequisite: ≥ 2 GPU).
 - [ ] **T8.1** — M8 execution pack authored (this document).
-- [ ] **T8.2** — LAMMPS submodule hookup; `TDMD_ENABLE_LAMMPS_ORACLE` CMake
-  option; W_Wood_PRB2019 fixture resolves via submodule path.
+- [ ] **T8.2** — LAMMPS SNAP subset verified (ML-SNAP builds via `tools/build_lammps.sh`;
+  `in.snap.W.2940` example runs); canonical T6 fixture = `W_2940_2017_2.snap`
+  documented в verify/SPEC §3 + lammps_README; path-resolution Catch2 gate lands.
 - [ ] **T8.3** — potentials/SPEC §4 SnapPotential body authored; interface
   contract finalized; `§4a MixedFastSnapOnly prep` placeholder landed.
 - [ ] **T8.4** — SnapPotential CPU FP64 ported from LAMMPS USER-SNAP с attribution;
@@ -1393,7 +1406,7 @@ family + Morse GPU kernel — unblocks T3-gpu full dissertation replication).
   FP32 EAM kernel instead of FP64 under new flavor. Mitigation: T8.9 adapter
   test explicitly verifies EAM MixedFast D-M6-8 gate still holds under new
   flavor (regression check).
-- **R-M8-7 — T6 fixture coefficient file size.** `W_Wood_PRB2019.snap` is ~few
+- **R-M8-7 — T6 fixture coefficient file size.** `W_2940_2017_2.snap` is ~few
   KB (small), but future SNAP coefficients (e.g. tungsten-rhenium alloy) могут
   быть larger. Mitigation: no binary tracked in tdmd repo (D-M8-3); submodule
   approach scales.
@@ -1468,7 +1481,7 @@ family + Morse GPU kernel — unblocks T3-gpu full dissertation replication).
 | Deliverable | Consumer milestone | Why it matters |
 |---|---|---|
 | T8.0 T7.8b carry-forward closure | M11 long-range overlap (needs 30% overlap baseline) | Clears M7 debt; infrastructure available on ≥ 2 GPU |
-| LAMMPS submodule (T8.2) | M9 MEAM differential; M10 PACE differential; all future LAMMPS cross-checks | Oracle infrastructure once-and-for-all |
+| LAMMPS SNAP subset verified (T8.2) | M9 MEAM differential; M10 PACE differential; all future LAMMPS cross-checks | Oracle infrastructure (landed M1) exercised on ML-SNAP path |
 | SnapPotential CPU (T8.4) | M9 MEAM potential family (similar density-coefficient flavour); M10 PACE (ML kernel template) | Precedent for porting LAMMPS potentials; attribution pattern locked |
 | CPU SNAP diff (T8.5) | M9 MEAM diff template; M11 NVT/NPT SNAP research | Canonical CPU FP64 SNAP oracle for all downstream SNAP work |
 | SnapPotential GPU (T8.6) | M8 scaling gate; M9 MEAM GPU (shares kernel architecture) | GPU SNAP in production |
@@ -1492,7 +1505,7 @@ family + Morse GPU kernel — unblocks T3-gpu full dissertation replication).
 - **M11 (v1 beta — NVT/NPT mature + long-range overlap):** T8.12 slow-tier
   process reused для new flavors; T8.0 2-rank overlap infra matures к N-rank.
 - **M12 (MLIAP + observability hardening):** T8.4 port pattern reused for
-  MLIAP; LAMMPS submodule (T8.2) remains the canonical oracle.
+  MLIAP; LAMMPS oracle (M1-landed, SNAP subset verified T8.2) remains canonical.
 - **M13 (v1.0.0 — public release):** T8.13 v1.0.0-alpha1 tag + CHANGELOG.md
   pattern extended to v1.0.0 final; M8 artifact gate REPORT.md included в
   public release communication.
