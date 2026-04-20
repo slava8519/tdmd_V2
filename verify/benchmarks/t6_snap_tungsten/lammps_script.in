@@ -1,0 +1,81 @@
+# T6 LAMMPS reference script — SNAP tungsten differential (Wood & Thompson 2017).
+# Adapted from upstream `verify/third_party/lammps/examples/snap/in.snap.W.2940`
+# with variable-driven knobs so the same script serves all three variants
+# (small / medium / large — see README.md "Test configurations" table) and so
+# cloud-burst runners can relocate the coefficient-file directory.
+#
+# Variables (resolved via `-var`):
+#   workdir   — output directory; `final.data`, `lammps.log`, `lammps.dump`
+#               are written here.
+#   nrep      — lattice replication factor (BCC): N = 2·nrep^3 atoms.
+#                 small  variant → nrep=4  → 128 atoms
+#                 medium variant → nrep=8  → 1024 atoms
+#                 large  variant → nrep=16 → 8192 atoms
+#   nsteps    — NVE run length.
+#                 small=100, medium=500, large=1000.
+#   snap_dir  — directory containing `W_2940_2017_2.snap`,
+#               `.snapcoeff`, `.snapparam`. Defaults to the LAMMPS submodule
+#               `examples/snap/` path at the call site; differs on cloud-burst
+#               hosts where the submodule sits at a different absolute path
+#               (see README.md "Path resolution").
+#
+# Hands T8.10 proper the canonical oracle trace: thermo every 10 steps in
+# high-precision format + per-atom forces dump at the last step. The TDMD-side
+# `run_differential.py` extension (lands at T8.10 after T8.4b) parses both.
+#
+# Fixture provenance: Wood & Thompson, arXiv:1702.07042 (2017), 2940 DFT
+# training configs → linear SNAP, 56 coefficients, twojmax=8, rcutfac=4.73442.
+# Pair style `hybrid/overlay zbl 4.0 4.8 snap` matches the published setup;
+# the ZBL core is what lets SNAP coefficients stay physical at short range
+# without being asked to extrapolate below the training distribution.
+
+variable a equal 3.1803
+
+units           metal
+atom_style      atomic
+boundary        p p p
+
+# generate the box and atom positions using a BCC lattice
+variable nx equal ${nrep}
+variable ny equal ${nrep}
+variable nz equal ${nrep}
+
+lattice         bcc ${a}
+region          box block 0 ${nx} 0 ${ny} 0 ${nz}
+create_box      1 box
+create_atoms    1 box
+
+mass 1 183.84
+
+# SNAP + ZBL hybrid potential — `include` pulls in a short stanza from the
+# `.snap` wrapper that invokes `pair_style hybrid/overlay zbl 4.0 4.8 snap`
+# and `pair_coeff * * snap W_2940_2017_2.snapcoeff W_2940_2017_2.snapparam W`.
+# The `snap_dir` variable fans out across machines.
+include ${snap_dir}/W_2940_2017_2.snap
+
+neighbor        1.0 bin
+neigh_modify    once no every 1 delay 0 check yes
+
+timestep        0.5e-3
+
+velocity        all create 300.0 4928459 loop geom
+fix             1 all nve
+
+# High-precision thermo (matches T1/T4 format so the shared harness parser
+# consumes this without a per-benchmark branch). `norm no` keeps extensive
+# quantities extensive — the comparator divides by N internally when needed.
+thermo          10
+thermo_style    custom step temp pe ke etotal press
+thermo_modify   format float "%.10e" norm no flush yes
+
+log             ${workdir}/lammps.log
+
+# Per-atom forces dump at the final step. `dump_modify sort id` pins row order
+# so LAMMPS migrations do not reshuffle on-disk layout vs TDMD's stable-reorder.
+# %.16e format is well beyond the 1e-12 forces threshold (D-M8-7).
+dump            forces_d all custom ${nsteps} ${workdir}/lammps.dump id type x y z fx fy fz
+dump_modify     forces_d sort id first no format line "%d %d %.16e %.16e %.16e %.16e %.16e %.16e"
+
+run             ${nsteps}
+
+write_data      ${workdir}/final.data nocoeff

@@ -280,3 +280,60 @@ tolerances:
         M2 acceptance gate (master spec §14 M2): failing this benchmark
         blocks M2 closure.  Treat threshold relaxations here as a red flag
         — first bisect the regression.
+
+    t6_snap_tungsten:
+      # SNAP tungsten differential vs LAMMPS ML-SNAP (Wood & Thompson 2017,
+      # arXiv:1702.07042, 2940 DFT configs, pure W, BCC, twojmax=8, rcutfac=4.73442,
+      # 56 linear coefficients). Canonical fixture D-M8-3. Entries below scaffold
+      # the M8 acceptance gate (master spec §14 M8); full scientific context +
+      # variant table in verify/benchmarks/t6_snap_tungsten/README.md.
+      #
+      # Scaffold landed T8.10a (2026-04-20). Measurement lands at T8.10 proper,
+      # gated on T8.4b (SnapPotential force body port). Threshold numbers below
+      # are budget-set from the SNAP-specific analysis in
+      # docs/specs/potentials/mixed_fast_snap_only_rationale.md §4 and the
+      # D-M6-7 byte-exact extension precedent (§6.7 SPEC).
+      cpu_fp64_vs_lammps:
+        # D-M8-7 (master spec §14 M8): TDMD Fp64Reference CPU path ≡ LAMMPS FP64
+        # to ≤ 1e-12 relative on both thermo columns and per-atom forces. Both
+        # sides consume the same .snap/.snapcoeff/.snapparam bytes (verbatim,
+        # via the submodule) and the same ZBL screening form, so the residual
+        # is bounded by FP64 eps · O(N_pair · k_max) ~ 1e-14 empirically on the
+        # 128-atom small variant; 1e-12 preserves two decades of headroom.
+        thermo_temperature_relative: 2.0e-6   # k_B discrepancy floor (same as T1/T4).
+        thermo_potential_energy_relative: 1.0e-12
+        thermo_kinetic_energy_relative: 1.0e-12
+        thermo_total_energy_relative: 1.0e-12
+        thermo_pressure_relative: 1.0e-10     # nktv2p + virial reduction order.
+        forces_relative: 1.0e-12
+
+      gpu_fp64_vs_cpu_fp64:
+        # D-M6-7 byte-exact extension to SNAP (landed gate pattern — see
+        # docs/specs/potentials/SPEC.md §6.7). GPU Fp64Production vs CPU
+        # Fp64Reference under the *same* bispectrum math. Residual comes solely
+        # from GPU reduction order on bispectrum accumulator; 1e-12 is the same
+        # envelope as D-M6-7 for EAM.
+        forces_relative: 1.0e-12
+
+      rationale: |
+        M8 primary acceptance gate (master spec §14 M8): SNAP proof-of-value.
+        Three check layers nest from oracle to product:
+          * CPU FP64 ≡ LAMMPS FP64 (this `cpu_fp64_vs_lammps.*` block,
+            exercised by T8.5 — blocks M8 close).
+          * GPU FP64 ≡ CPU FP64 (this `gpu_fp64_vs_cpu_fp64.*` block,
+            exercised by T8.7 — blocks the GPU oracle gate).
+          * GPU MixedFastSnapOnly dense-cutoff (uses the shared
+            `gpu_mixed_fast_snap_only.*` block above — this benchmark does not
+            re-declare those thresholds; exercised by T8.9 + T8.12 slow-tier).
+
+        Tightness vs T4 (EAM 1e-10): SNAP fixture uses the canonical Wood 2017
+        coefficient set (no local refit) and its bispectrum summation depth
+        is shallower than EAM's embedding two-pass, so FP64 residual bounds
+        are one or two decades tighter. Relaxing any threshold in this block
+        is a red flag — master spec §D.15 bisect protocol applies.
+
+        Repo-size note (D-M8-3): coefficient files are NOT tracked by TDMD;
+        they arrive via the LAMMPS submodule (pin stable_22Jul2025_update4) at
+        `verify/third_party/lammps/examples/snap/`. Benchmark driver resolves
+        them via `LAMMPS_EXAMPLES_DIR` env var (default = submodule path) so
+        cloud-burst hosts can relocate without a threshold change.

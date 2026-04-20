@@ -1,0 +1,73 @@
+# T6 benchmark check declarations — SNAP tungsten differential (Wood & Thompson 2017).
+#
+# Parsed by verify/t6/run_differential.py (lands at T8.10 proper, after T8.4b
+# ships SnapPotential force body — see `README.md` Status section). This
+# scaffold authored T8.10a (2026-04-20) so threshold entries, column map, and
+# check list are reviewable ahead of the SNAP compute path.
+#
+# Column names match the TDMD thermo header emitted by
+# `SimulationEngine::write_thermo_header("# step temp pe ke etotal press")`,
+# identical to T1/T4. LAMMPS mapping mirrors that layout — ZBL+SNAP hybrid/overlay
+# still produces a single `poteng` field (LAMMPS sums pair contributions
+# internally before emitting thermo).
+
+benchmark: t6_snap_tungsten
+
+thermo_columns:
+  # tdmd-column : lammps-column mapping. `compare.extract_lammps_thermo()`
+  # lowercases the CamelCase oracle headers so the rhs strings match.
+  temp: temp
+  pe: poteng
+  ke: kineng
+  etotal: toteng
+  press: press          # LAMMPS in bar; harness converts to eV/Å³ before diffing.
+
+checks:
+  # ---------------------------------------------------------------------------
+  # D-M8-7: CPU FP64 byte-exact (TDMD Fp64Reference ≡ LAMMPS FP64, ≤ 1e-12 rel).
+  # Same envelope as T4 EAM (both sides consume the same .snap/.snapcoeff/
+  # .snapparam bytes, same bispectrum math, same ZBL form). This is the SNAP
+  # analogue of T4's forces_relative=1e-10 gate — tightened to 1e-12 for M8
+  # because Wood 2017 coefficients are the canonical published set (no
+  # reparametrization noise) and SNAP bispectrum has shallower summation depth
+  # than EAM's two-pass embedding.
+  # ---------------------------------------------------------------------------
+  - name: thermo_temp
+    type: column_relative
+    column: temp
+    threshold_path: benchmarks.t6_snap_tungsten.cpu_fp64_vs_lammps.thermo_temperature_relative
+    required: true
+
+  - name: thermo_pe
+    type: column_relative
+    column: pe
+    threshold_path: benchmarks.t6_snap_tungsten.cpu_fp64_vs_lammps.thermo_potential_energy_relative
+    required: true
+
+  - name: thermo_ke
+    type: column_relative
+    column: ke
+    threshold_path: benchmarks.t6_snap_tungsten.cpu_fp64_vs_lammps.thermo_kinetic_energy_relative
+    required: true
+
+  - name: thermo_etotal
+    type: column_relative
+    column: etotal
+    threshold_path: benchmarks.t6_snap_tungsten.cpu_fp64_vs_lammps.thermo_total_energy_relative
+    required: true
+
+  - name: thermo_press
+    type: column_relative
+    column: press
+    threshold_path: benchmarks.t6_snap_tungsten.cpu_fp64_vs_lammps.thermo_pressure_relative
+    required: true
+
+  # Per-atom-per-component forces diff. SNAP forces decompose as
+  # `f_i = -∑_α c_α ∂B_α/∂r_i + f_ZBL` — each term has a matched LAMMPS
+  # analogue (sna.cpp::compute_yi / compute_deidrj + pair_zbl.cpp). Residual is
+  # bounded by FP64 eps · O(N_atoms_per_cutoff · k_max) ~ O(1e-14) empirically
+  # on the 128-atom cell; 1e-12 preserves two decades of headroom.
+  - name: forces
+    type: forces_relative
+    threshold_path: benchmarks.t6_snap_tungsten.cpu_fp64_vs_lammps.forces_relative
+    required: true
