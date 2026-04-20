@@ -210,6 +210,20 @@ t=3:  stream_mem: MPI pack from pinned host buffer
 
 **T7.14 ownership.** Полный 30% overlap gate на 2-rank K=4 10k-atom setup (per exec pack §T7.8 «2-rank» specification) переносится в T7.14 M7 integration smoke, где Pattern 2 dispatch (T7.9) + halo traffic (T7.6 OuterSdCoordinator) активируется в end-to-end smoke run. T7.8 ships pipeline mechanism + bit-exact + functional single-rank gate.
 
+### 3.2c. T8.0 (T7.8b carry-forward) — 2-rank overlap gate: hardware prerequisite + dev SKIP semantics (v1.0.9)
+
+**Что landed.** `tests/gpu/test_overlap_budget_2rank.cpp` — MPI-aware 2-rank variant of T7.8 overlap gate. Per-rank device pinning (`cudaSetDevice(rank % device_count)`), K=4 `GpuDispatchAdapter`, synthetic halo `MPI_Sendrecv` (1024 doubles pinned ≈ 8 KB, modelling the halo slab volume of a P_space=2 split on a ~50 Å×50 Å contact face) interleaved with GPU compute. Serial baseline = K iterations of `{sync EAM compute, sync halo Sendrecv}`; pipelined = K async enqueues + K drains interleaved with Sendrecv. Gate: `REQUIRE(overlap_ratio >= 0.30)`, median of 9 repeats. Bit-exact slot 0 PE + virial vs serial oracle at ≤ 1e-12 rel (D-M6-7 preserved).
+
+**T7.14 closure note.** T7.14 as actually landed is a correctness-only smoke (thermo byte-exact chain + telemetry invariants) and does **not** measure overlap. The 2-rank 30% overlap measurement was therefore carried forward as T7.8b and ships its test infrastructure as T8.0. T7.14 section above is retained for historical context; current ownership of the 30% gate is T8.0 (infrastructure) + T8.11 (runtime measurement).
+
+**Hardware prerequisite.** Meaningful 2-rank overlap measurement requires **≥ 2 physical CUDA devices** so each rank owns a distinct GPU. On hosts with 1 GPU, co-tenancy of two ranks on the same device serializes compute + mem streams at the driver level, which kills overlap (ratio collapses to noise) and the test would flake or fail spuriously. The binary therefore checks `cudaGetDeviceCount() >= 2` at test entry and `SKIP`s with Catch2 exit code 4 when the host has fewer than 2 devices.
+
+**Dev SKIP semantics.** Dev workstations (this repo's reference: 1× RTX 5080) SKIP this test by design — not a gap, a deliberate hardware contract. CMake wraps the test with `set_tests_properties(test_overlap_budget_2rank PROPERTIES SKIP_RETURN_CODE 4)` so CTest surfaces the exit as SKIPPED rather than FAIL, keeping D-M6-6 Option A (no self-hosted GPU runner) CI matrices green. The real 30% measurement runs on cloud-burst hardware (≥ 2 GPU node) and is tied into T8.11 TDMD-vs-LAMMPS scaling harness.
+
+**Why 30% achievable at 2-rank K=4.** In 2-rank Pattern 2, halo D2H + MPI_Sendrecv + H2D per step roughly doubles the memory-traffic fraction of the step: `T_mem/T_k ≈ 0.24 → 0.55`. Asymptotic max overlap (K→∞) ≈ T_mem / (T_k + T_mem) ≈ 36%; at K=4 the achievable ratio is ~30–34% — the 30% bar is the conservative floor. This matches the exec pack §T7.8 derivation that the original 30% gate was always a 2-rank gate, never a single-rank one (see §3.2b «Почему не 30% single-rank»).
+
+**Change log.** v1.0.9 — 2026-04-20. T8.0 adds §3.2c (hardware prerequisite for 30% gate + dev SKIP semantics).
+
 ### 3.3. Debug single-stream mode
 
 `GpuConfig::streams = 1` force-serializes всё на `stream_compute`. Используется:

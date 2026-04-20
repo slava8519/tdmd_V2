@@ -1248,6 +1248,11 @@ T7.14 addendum.
   T7.8b under M7 smoke coverage — see gpu/SPEC v1.0.13 note; M7 milestone
   closure does not block on the 2-rank kernel-bound ceiling per D-M7-17
   orthogonality).
+  **T7.8b status (M8 window).** Infrastructure shipped as T8.0 2026-04-20
+  (`tests/gpu/test_overlap_budget_2rank.cpp` + gpu/SPEC §3.2c hardware
+  prerequisite + dev SKIP semantics, Catch2 `SKIP_RETURN_CODE 4`). Runtime 30%
+  measurement requires ≥ 2 GPU node — cloud-burst-gated, ties into T8.11
+  TDMD-vs-LAMMPS scaling harness.
 - [x] **T7.9** — `SimulationEngine` Pattern 2 wire-up; preflight validation with
   clear error messages; Pattern 1 config byte-exact regression.
 - [x] **T7.10** — `PerfModel::predict_step_hybrid_seconds` + Pattern 2 cost

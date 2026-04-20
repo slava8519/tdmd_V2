@@ -77,3 +77,44 @@ target_compile_definitions(
   test_overlap_budget
   PRIVATE TDMD_TEST_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/potentials/fixtures")
 add_test(NAME test_overlap_budget COMMAND test_overlap_budget)
+
+# ---------------------------------------------------------------------------
+# T8.0 (T7.8b carry-forward) — 2-rank K=4 overlap gate. K=4 sync vs pipelined EAM + synthetic halo
+# MPI_Sendrecv per slot; asserts overlap ratio >= 0.30 (gpu/SPEC §3.2c). Self-skips with exit code 4
+# when < 2 CUDA devices are visible (dev hosts with 1 GPU cannot measure 2-rank overlap
+# meaningfully; the real 30% measurement is cloud-burst-gated and ties into T8.11). Bit-exact slot 0
+# vs serial oracle checked inline at 1e-12 rel (D-M6-7).
+# ---------------------------------------------------------------------------
+if(TDMD_ENABLE_MPI)
+  find_program(MPIEXEC_EXECUTABLE NAMES mpirun mpiexec)
+  if(NOT MPIEXEC_EXECUTABLE)
+    message(WARNING "TDMD_ENABLE_MPI=ON but mpirun/mpiexec not found; "
+                    "skipping test_overlap_budget_2rank.")
+  else()
+    add_executable(test_overlap_budget_2rank main_mpi.cpp test_overlap_budget_2rank.cpp)
+
+    target_link_libraries(
+      test_overlap_budget_2rank
+      PRIVATE tdmd::gpu
+              tdmd::scheduler
+              tdmd::potentials
+              tdmd::neighbor
+              tdmd::state
+              Catch2::Catch2
+              MPI::MPI_CXX)
+
+    target_compile_definitions(
+      test_overlap_budget_2rank
+      PRIVATE TDMD_TEST_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/potentials/fixtures")
+
+    if(MPIEXEC_EXECUTABLE MATCHES "mpirun$")
+      set(TDMD_MPI_EXTRA_FLAGS "--oversubscribe")
+    else()
+      set(TDMD_MPI_EXTRA_FLAGS "")
+    endif()
+
+    add_test(NAME test_overlap_budget_2rank COMMAND ${MPIEXEC_EXECUTABLE} ${TDMD_MPI_EXTRA_FLAGS}
+                                                    -np 2 $<TARGET_FILE:test_overlap_budget_2rank>)
+    set_tests_properties(test_overlap_budget_2rank PROPERTIES SKIP_RETURN_CODE 4)
+  endif()
+endif()
