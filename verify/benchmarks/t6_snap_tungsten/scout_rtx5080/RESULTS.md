@@ -1,78 +1,90 @@
-# T8.10 scout — TDMD GPU SNAP vs LAMMPS CPU SNAP on RTX 5080
+# T8.10 scout — TDMD GPU SNAP vs LAMMPS CPU + KOKKOS-GPU SNAP on RTX 5080
 
-**Date:** 2026-04-20 (corrected 2026-04-20 — see "LAMMPS configuration note")
+**Date:** 2026-04-20 (revised 2026-04-20 with real LAMMPS GPU baseline via KOKKOS rebuild)
 **Hardware:** NVIDIA GeForce RTX 5080 (sm_120, 16 GB GDDR7, 32 °C idle, driver 590.48.01)
 **Build:** CUDA 13.1, per-flavor: `build/` (Fp64Reference), `build-mixed/` (MixedFast), `build-mixed-snap-only/` (MixedFastSnapOnly)
-**LAMMPS:** `verify/third_party/lammps/build_tdmd/lmp` — ML-SNAP + GPU + MANYBODY + KSPACE (CUDA FP64). **This build has no `snap/gpu` pair style** (KOKKOS package not compiled); `-sf gpu` on `pair_style snap` is a silent CPU fallthrough. Both "LAMMPS" rows below are therefore CPU 1-rank — see configuration note.
+**LAMMPS (CPU/legacy GPU pkg):** `verify/third_party/lammps/build_tdmd/lmp` — ML-SNAP + GPU + MANYBODY + KSPACE. This build has no `snap/gpu`/`snap/kk` pair style; `-sf gpu` on `pair_style snap` is a silent CPU fallthrough.
+**LAMMPS (KOKKOS GPU, NEW):** `verify/third_party/lammps/build_kokkos_cuda/lmp` — KOKKOS 4.6.2 + CUDA + ML-SNAP + sm_120 (`BLACKWELL120` arch). Provides `snap/kk` pair style running on CUDA device (FP64).
 **Fixture:** 2000-atom BCC W (10×10×10), seed=12345, T=300 K, W_2940_2017_2 pure SNAP (no ZBL)
-**Scope:** NVE, dt=0.5 fs, 100-step (all configs; extrapolates linearly for budgeting)
+**Scope:** NVE, dt=0.5 fs, 100-step (all configs)
 
-## Headline numbers
+## Headline numbers (revised — real LAMMPS GPU baseline)
 
-| Config                              | Build flags            | Wall (s) | ms/step | ratio vs LAMMPS CPU 1-rank |
-|-------------------------------------|------------------------|---------:|--------:|---------------------------:|
-| TDMD `Fp64ReferenceBuild` (GPU)     | `--fmad=false` oracle  |   44.83 |   448.3 |                   **2.52×**|
-| TDMD `MixedFastBuild` (GPU)         | `--fmad=true`          |   31.60 |   316.0 |                   **1.77×**|
-| TDMD `MixedFastSnapOnlyBuild` (GPU) | T8.9 narrow-FP32       |   31.61 |   326.1 |                   **1.83×**|
-| LAMMPS SNAP 1-rank (`-sf gpu` → CPU fallback) | FP64 + FMA   |   17.87 |   178.7 |                    ≡ 1-rank CPU (same code path) |
-| **LAMMPS SNAP CPU 1-rank**          | FP64 + FMA             |   17.79 |   177.9 |                   **1.00×**|
+| Config                              | Build flags            | Wall (s) | ms/step | ratio vs LAMMPS GPU | ratio vs LAMMPS CPU 1-rank |
+|-------------------------------------|------------------------|---------:|--------:|--------------------:|---------------------------:|
+| TDMD `Fp64ReferenceBuild` (GPU)     | `--fmad=false` oracle  |   44.83 |   448.3 |         **104×**    |                   **2.52×**|
+| TDMD `MixedFastBuild` (GPU)         | `--fmad=true`          |   31.60 |   316.0 |         **73.5×**   |                   **1.77×**|
+| TDMD `MixedFastSnapOnlyBuild` (GPU) | T8.9 narrow-FP32       |   31.61 |   326.1 |         **75.8×**   |                   **1.83×**|
+| LAMMPS SNAP 1-rank (`-sf gpu` → CPU fallback) | FP64 + FMA   |   17.87 |   178.7 |              41.5×  |                    ≡ 1-rank CPU |
+| LAMMPS SNAP CPU 1-rank              | FP64 + FMA             |   17.79 |   177.9 |              41.4×  |                   **1.00×**|
+| **LAMMPS SNAP KOKKOS snap/kk (GPU)** | CUDA FP64, newton on + neigh half | 0.4305 |   **4.30** | **1.00×**     |                   **0.0242×** (41.4× faster than LAMMPS CPU) |
 
-Ratios on the Pair timer only (dominant; neighbor ≤ 5 ms, comm ≤ 1 ms).
+LAMMPS KOKKOS numbers are median-of-3 after 1 warmup discard; 4 total runs with 15 s cooldown. Loop time from LAMMPS `Loop time of ...` report; Pair time 0.42392 s = 98.3 % of Loop.
 
-**Reference point:** LAMMPS SNAP CPU 1-rank (17.79 s). Target-to-beat for M8 ≥ 20 % gate.
+**Reference points:**
+- **LAMMPS GPU KOKKOS snap/kk (4.30 ms/step)** — the true M8 target-to-beat.
+- LAMMPS CPU 1-rank (178 ms/step) — informational, not the M8 gate reference.
 
 ## Key findings
 
-1. **TDMD GPU SNAP is 1.77× slower than LAMMPS SNAP CPU 1-rank** on the same
-   hardware, fixture, and potential. The reference point is a single CPU
-   thread, not a GPU — because this LAMMPS build has no `snap/gpu` pair
-   style (see configuration note). The headline gap TDMD must close for the
-   M8 artifact gate's ≥ 20 % beat is therefore **TDMD GPU vs LAMMPS 1-thread
-   CPU** on a consumer GPU. That's a starker comparison than originally
-   recorded, and it shifts kernel-tuning priority up sharply.
+1. **TDMD GPU SNAP is 73.5× slower than LAMMPS GPU SNAP** (`snap/kk` KOKKOS)
+   on the same hardware, fixture, and potential — measured at 316 ms/step
+   (TDMD MixedFast) vs 4.30 ms/step (LAMMPS KOKKOS). Relative to LAMMPS
+   CPU 1-rank (178 ms/step), LAMMPS GPU is 41.4× faster, so the GPU
+   baseline is the only honest reference for the M8 gate. This replaces
+   the original scout's "1.77× vs LAMMPS" headline, which was TDMD GPU vs
+   a silently-CPU LAMMPS run (see configuration note).
 
 2. **LAMMPS `-sf gpu -pk gpu 1` on `pair_style snap` is a silent CPU
-   fallthrough.** The GPU package is loaded (`Compatible GPU present: yes`,
-   CUDA 13.1), but only styles with a `/gpu` variant get offloaded. This
-   build lacks both the KOKKOS package and a GPU variant of `pair_snap`;
-   LAMMPS-diagnostic output confirms `(1) pair snap, perpetual` (no
-   `snap/gpu`), and an explicit `pair_style snap/gpu` test yields
-   *"Unrecognized pair style"*. The two LAMMPS rows (17.87 s "GPU" vs
-   17.79 s CPU) agree because they run identical code.
+   fallthrough on the original `build_tdmd` binary.** The GPU package is
+   loaded but only styles with a `/gpu` variant get offloaded. `pair_snap`
+   has no `/gpu` variant — the GPU package covers simple pair styles
+   (LJ, EAM, Coulomb). **ML-SNAP's GPU path is owned by the KOKKOS
+   package as `snap/kk`**, which required a separate build
+   (`build_kokkos_cuda/`, see below).
 
-3. **T8.9 MixedFastSnapOnly (narrow-FP32) provides ≤ 1 % speedup over
-   MixedFast FP64.** 31.61 s vs 31.60 s — within measurement noise. The
-   cmake comment was prophetic: "realised throughput lever is modest —
-   pair-math is < 5 % of total SNAP runtime." The dominant cost is the
-   bispectrum U-recurrence and Y-kernel; sqrtf's latency win doesn't move
-   the needle at this atom count / twojmax=8 working-set size.
+3. **The new `build_kokkos_cuda` LAMMPS binary** is built with
+   `-DPKG_KOKKOS=on -DPKG_ML-SNAP=on -DKokkos_ENABLE_CUDA=on
+   -DKokkos_ARCH_BLACKWELL120=on`. Run with
+   `-k on g 1 -sf kk -pk kokkos newton on neigh half`. `snap/kk` requires
+   `newton on + neigh half` (KOKKOS errors if `neigh full`; SNAP errors
+   if `newton off`). Diagnostic log:
+   `(1) pair snap/kk, perpetual, attributes: full, newton on, kokkos_device`.
 
-4. **Fp64Reference → MixedFast gives 30 % speedup** purely from
-   `--fmad=true`. This is the compile-flag delta expected from enabling
-   FMA merging on the bispectrum FMUL + FADD chains; `Fp64ReferenceBuild`
-   remains the oracle path with `--fmad=false` (D-M6-7, sacred — don't
-   weaken for perf). For production runs, `MixedFastBuild` is the
-   recommended single-GPU SNAP flavor (no precision loss: SNAP still FP64).
+4. **T8.9 MixedFastSnapOnly (narrow-FP32) provides ≤ 1 % speedup over
+   MixedFast FP64.** 31.61 s vs 31.60 s — within measurement noise.
+   Structurally capped: `ui` kernel is only 5.4 % of TDMD GPU runtime;
+   the bispectrum cost lives in `deidrj` (61.5 %) + `yi` (33 %).
 
-5. **Bitwise output match.** TDMD and LAMMPS report identical thermo at
-   step 100 (both show TotEng = −3.5575441440e+04). Physics confirmed;
-   the perf gap is purely kernel throughput, not an algorithmic divergence.
+5. **Fp64Reference → MixedFast gives 30 % speedup** purely from
+   `--fmad=true`. `Fp64ReferenceBuild` remains the oracle path with
+   `--fmad=false` (D-M6-7, sacred — don't weaken for perf). For production
+   runs, `MixedFastBuild` is the recommended single-GPU SNAP flavor (no
+   precision loss: SNAP still FP64).
 
-## LAMMPS configuration note (why "GPU" was CPU)
+6. **Bitwise output match across all 5 configurations.** TDMD (3 flavors)
+   and LAMMPS (CPU, "GPU" CPU-fallback, KOKKOS GPU snap/kk) report
+   identical thermo at step 100 (TotEng = −3.5575441440e+04 to 10
+   digits). Physics confirmed; the perf gap is purely kernel throughput
+   and parallelization strategy, not an algorithmic divergence.
 
-Evidence chain, reproducible on this machine:
+## LAMMPS configuration note (original "GPU" was CPU; KOKKOS rebuild fixes)
+
+### Original `build_tdmd` — silent CPU fallthrough
+
+Reproducible on this machine:
 
 ```bash
-$ lmp -h | grep -iE "snap"
+$ build_tdmd/lmp -h | grep -iE "snap"
 pedone          polymorphic     rebo            rebomos         snap
 sna/grid        sna/grid/local  snad/atom       snap            snav/atom
 #                                               ^^^^ only "snap" — no "snap/gpu"
 
 $ echo 'pair_style snap/gpu
-pair_coeff * * W.snapcoeff W.snapparam W' | lmp
+pair_coeff * * W.snapcoeff W.snapparam W' | build_tdmd/lmp
 ERROR: Unrecognized pair style 'snap/gpu' (src/force.cpp:275)
 
-$ lmp -sf gpu -pk gpu 1 -in lammps_script_gpu.in | grep -iE "pair snap"
+$ build_tdmd/lmp -sf gpu -pk gpu 1 -in lammps_script_gpu.in | grep -iE "pair snap"
 (1) pair snap, perpetual          # ← CPU snap, NOT snap/gpu
       pair build: full/bin/atomonly
 ```
@@ -80,15 +92,53 @@ $ lmp -sf gpu -pk gpu 1 -in lammps_script_gpu.in | grep -iE "pair snap"
 The **GPU package provides `/gpu` variants only for simple pair styles**
 (EAM, LJ, Coulomb, etc. — visible in `lmp -h`: `eam/gpu`, `eam/alloy/gpu`,
 `eam/fs/gpu`, `lj*/gpu`, …). **ML-SNAP's GPU path is owned by the KOKKOS
-package** (`snap/kk`), which is not compiled into this LAMMPS binary. The
-`-sf gpu` suffix silently skips styles with no `/gpu` variant, leaving
-`pair_style snap` on the CPU. No warning is emitted — this is standard
-LAMMPS behavior.
+package** (`snap/kk`).
 
-**Implication for T8.11:** a true TDMD-GPU vs LAMMPS-GPU apples-to-apples
-comparison requires rebuilding LAMMPS with KOKKOS + ML-SNAP + CUDA backend
-enabled. Until that rebuild, the measurement baseline is single-thread
-LAMMPS CPU (17.79 s).
+### New `build_kokkos_cuda` — real `snap/kk` on GPU
+
+Build command (from `verify/third_party/lammps/`):
+
+```bash
+cmake -B build_kokkos_cuda -S cmake \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DPKG_KOKKOS=on -DPKG_ML-SNAP=on \
+  -DKokkos_ENABLE_CUDA=on -DKokkos_ENABLE_SERIAL=on -DKokkos_ENABLE_OPENMP=off \
+  -DKokkos_ARCH_BLACKWELL120=on \
+  -DCMAKE_CXX_COMPILER=$(realpath lib/kokkos/bin/nvcc_wrapper)
+cmake --build build_kokkos_cuda -j $(nproc)
+```
+
+Verification:
+
+```bash
+$ build_kokkos_cuda/lmp -h | grep -E "(snap|KOKKOS|Kokkos)"
+Kokkos library version: 4.6.2
+KOKKOS package API: CUDA Serial
+KOKKOS package precision: double
+snap            snap/kk         soft            soft/kk         sw              # ← snap/kk present
+```
+
+Run invocation:
+
+```bash
+build_kokkos_cuda/lmp -k on g 1 -sf kk -pk kokkos newton on neigh half \
+  -var snap_dir "$(realpath ../../../third_party/lammps/examples/snap)" \
+  -var nsteps 100 -in lammps_script_gpu.in
+```
+
+Diagnostic output confirms real GPU dispatch:
+
+```
+(1) pair snap/kk, perpetual
+    attributes: full, newton on, kokkos_device
+    pair build: full/bin/kk/device
+    bin: kk/device
+```
+
+Constraint: `snap/kk` requires `newton on` + `neigh half`. KOKKOS errors
+if `neigh full` is requested with `newton on`; SNAP errors if `newton
+off`. This is orthogonal to TDMD's Newton-pair layout (TDMD uses a
+full-neighbor list with newton-on symmetry internally).
 
 ## TDMD SnapGpu kernel time breakdown (nsys profile, MixedFast)
 
@@ -181,33 +231,49 @@ LAMMPS.
 
 ## Implications for T8.11 (M8 cloud-burst gate)
 
-- **The reference to beat is LAMMPS CPU 1-rank (17.79 s).** The M8 gate's
-  ≥ 20 % beat requires TDMD GPU ≤ 14.23 s at 2000 atoms. Current MixedFast
-  is 31.60 s — need a **2.22× speedup** to land the gate.
-- **Kernel tuning on `deidrj` + `yi` is mandatory** before T8.11 cloud.
-  94.5 % of runtime lives in these two kernels; they have not been tuned
-  since the M6 port. Without reducing this, multi-rank scaling can only
-  amortise a per-rank handicap that starts at 1.77×.
-- **If LAMMPS is rebuilt with KOKKOS snap/kk,** the baseline changes
-  substantially. KOKKOS snap/kk is known to be highly optimised by the
-  SNL team — RTX 5080 numbers for it are likely 2–4× faster than LAMMPS
-  CPU at this fixture size. That would widen the gap TDMD must close, not
-  narrow it. Scout re-run after LAMMPS-KOKKOS rebuild is a T8.11
-  pre-requisite.
-- **Pre-T8.11 action items (revised):**
-  - (a) **Rebuild LAMMPS with KOKKOS + ML-SNAP + CUDA**; re-measure the
-    LAMMPS GPU baseline to get a real GPU-vs-GPU reference.
-  - (b) **Kernel restructuring on `deidrj` and `yi`**. Target occupancy,
-    register pressure, shared-memory tiling. ncu can be re-attempted if
-    the user grants profiling permissions (`nvidia-modprobe -u
-    -m nvidia-uvm` + `RmProfilingAdminOnly=0`); otherwise proceed via
-    source inspection + source-level micro-benchmarks.
-  - (c) **Bit-exact T8.7 gate is preserved** (CPU-FP64 ≡ GPU-FP64 ≤ 1e-12)
-    — any kernel-tuning attempt must re-prove bit-exact before merge.
-  - (d) **Defer T8.11 cloud burst** until (a) + (b) close the gap to
-    ≤ 1.3× vs the real LAMMPS GPU baseline, or demonstrate multi-rank
-    scaling wins even at the per-GPU handicap. Running cloud at 1.77×+
-    per-GPU handicap wastes budget.
+### The real M8 gate arithmetic
+
+- **M8 ≥ 20 % beat target: TDMD GPU ≤ 0.8 × 4.30 = 3.44 ms/step** at 2000
+  atoms BCC W SNAP. Current MixedFast is 316 ms/step — the required
+  speedup is **~92×**.
+- T8.6c (warp-parallel refactor of `ui` / `yi` / `deidrj` kernels) is
+  estimated to deliver 5–30× at realistic parallel efficiency. Even the
+  optimistic end (~30×) lands TDMD at ~10.5 ms/step — still **~2.4× slower**
+  than LAMMPS KOKKOS GPU. **T8.6c alone will not close the gate** on a
+  single RTX 5080.
+- The remaining gap after T8.6c must come from one or a combination of:
+  (i) algorithmic wins specific to TDMD (TD multi-step scheduling: zones
+  on coarser `dt` cost proportionally less per wall-second; typical dt
+  ratio 2–4× in Andreev's regime at comparable accuracy);
+  (ii) multi-rank scaling where the TDMD comm pattern amortises better
+  than KOKKOS's per-step all-to-all halo exchange;
+  (iii) SNAP-specific kernel optimisations beyond the warp-parallel
+  refactor (shared-memory blocking of the U-recurrence; persistent
+  kernel with sub-step amortisation; mixed-precision on non-ui kernels
+  proven bit-exact).
+
+### Revised action list for M8
+
+- (a) **DONE:** Rebuild LAMMPS with KOKKOS + ML-SNAP + CUDA. Real GPU
+  baseline is **4.30 ms/step**.
+- (b) **T8.6c warp-parallel refactor on `ui` + `yi` + `deidrj`** — pre-impl
+  report committed at `docs/development/t8.6c_pre_impl.md`. This is the
+  critical path; without it, every subsequent lever amplifies a large
+  handicap. Acceptance: scout MixedFast wall ≤ 6.3 s (≥ 5× speedup from
+  31.6 s). Even that lands above the M8 gate.
+- (c) **Bit-exact T8.7 gate preserved** (CPU-FP64 ≡ GPU-FP64 ≤ 1e-12) —
+  any kernel-tuning attempt re-proves bit-exact before merge.
+- (d) **Revisit M8 framing given the new baseline.** Master spec §14 M8
+  explicitly allows "honestly document why not" if the ≥ 20 % beat is
+  unreachable. That honest documentation is now plausibly the M8 outcome
+  for single-GPU; the multi-rank TD angle must be measured before a final
+  call is made. **Do not over-promise T8.11 cloud burst** on the ≥ 20 %
+  beat before T8.6c data lands.
+- (e) **Multi-rank TD scout** after T8.6c, comparing TDMD on 4 × RTX 5080
+  (or the cloud-burst analogue) against LAMMPS KOKKOS on the same
+  hardware. Andreev's dissertation anchor suggests TD should scale
+  sublinearly in comm cost where KOKKOS scales linearly — this is
+  TDMD's native lever, not the single-GPU kernel race.
 
 ## Methodology caveats
 
@@ -291,6 +357,37 @@ Elapsed 0:18.62
 ```
 </details>
 
+<details>
+<summary>LAMMPS SNAP KOKKOS snap/kk on GPU (NEW, real dispatch)</summary>
+
+4 back-to-back runs (first = warmup, median of remaining 3):
+
+```
+Run 1 (warmup):  Loop 0.430492 s   Pair 0.42353 s (98.38 %)   wall 0.77 s
+Run 2:           Loop 0.432854 s   Pair 0.42484 s (98.15 %)   wall 0.74 s
+Run 3:           Loop 0.430500 s   Pair 0.42392 s (98.47 %)   wall 0.76 s
+Run 4:           Loop 0.430222 s   Pair 0.42341 s (98.42 %)   wall 0.76 s
+
+Median of runs 2–4: Loop 0.4305 s = 4.30 ms/step
+                    Pair 0.42392 s = 4.24 ms/step
+Performance: 232.057 timesteps/s, 464.113 katom-step/s, 10.03 ns/day
+```
+
+Diagnostic output confirmed real GPU dispatch
+(`pair build: full/bin/kk/device`, `bin: kk/device`). Thermo at step 100
+identical to TDMD and to LAMMPS CPU: `TotEng -3.5575441440e+04`.
+
+Invocation:
+
+```bash
+build_kokkos_cuda/lmp -k on g 1 -sf kk -pk kokkos newton on neigh half \
+  -var snap_dir "$(realpath ../../../third_party/lammps/examples/snap)" \
+  -var nsteps 100 -in lammps_script_gpu.in
+```
+
+Full log captured at `lammps_kokkos_gpu_run.log`.
+</details>
+
 ## Reproducibility
 
 ```bash
@@ -312,12 +409,20 @@ Single-run spot checks (what this scout used):
   -var snap_dir "$(realpath ../../../third_party/lammps/examples/snap)" \
   -var nsteps 100 -in lammps_script_gpu.in
 
-# LAMMPS CPU 1-rank (canonical reference):
+# LAMMPS CPU 1-rank (informational reference):
 ../../../../verify/third_party/lammps/build_tdmd/lmp \
   -var snap_dir "$(realpath ../../../third_party/lammps/examples/snap)" \
   -var nsteps 100 -in lammps_script_gpu.in
 
-# Verify no snap/gpu variant in this build:
-../../../../verify/third_party/lammps/build_tdmd/lmp -h | grep -E "snap[/ ]"
-#   → prints "snap   snad/atom   snap   snav/atom" — no snap/gpu, no snap/kk.
+# LAMMPS GPU via KOKKOS snap/kk (the M8 target-to-beat):
+../../../../verify/third_party/lammps/build_kokkos_cuda/lmp \
+  -k on g 1 -sf kk -pk kokkos newton on neigh half \
+  -var snap_dir "$(realpath ../../../third_party/lammps/examples/snap)" \
+  -var nsteps 100 -in lammps_script_gpu.in
+
+# Verify snap/kk present in KOKKOS build, absent in legacy build:
+../../../../verify/third_party/lammps/build_tdmd/lmp        -h | grep -E "snap[/ ]"
+#   → "snap   snad/atom   snap   snav/atom" — no snap/gpu, no snap/kk.
+../../../../verify/third_party/lammps/build_kokkos_cuda/lmp -h | grep -E "snap[/ ]"
+#   → "snap   snap/kk   ..." — snap/kk present, CUDA device dispatch.
 ```
