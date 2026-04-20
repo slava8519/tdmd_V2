@@ -186,51 +186,104 @@ __device__ __forceinline__ std::size_t jkk_index_dev(int j1, int j2, int j, int 
 }
 
 // ---------------------------------------------------------------------------
-// compute_deidrj_device — port of SnaEngine::compute_deidrj (sna.cpp 620-672).
-// Single-elem case (nelements_=1): jelem=0, ylist indexed at jju.
+// compute_deidrj_parallel_device — T8.6c block-parallel port of the sequential
+// compute_deidrj_device below. All 128 threads walk the same (j, mb, ma)
+// visit pattern; each thread contributes only for positions where
+// `pos_idx % block_threads == tid`, accumulating into a per-thread register
+// partial sum. A warp-shuffle tree reduces 32-way within each warp, then the
+// 4 warp partials are summed sequentially in shared memory. Only the caller's
+// tid==0 receives the final `dedr[0..2]`; other lanes see undefined values.
+//
+// The final `*= 2.0` matches the single-lane compute_deidrj_device (sna.cpp
+// VMK symmetry double-counting). Byte-exact gate: tree reduction produces an
+// O(log n · ε) reassociation error relative to the CPU sequential walk,
+// comfortably under the T8.7 ≤ 1e-12 rel budget for W SNAP (twojmax=8,
+// ~150 positions per j-block).
 // ---------------------------------------------------------------------------
-__device__ __forceinline__ void compute_deidrj_device(int twojmax,
-                                                      const int* __restrict__ idxu_block,
-                                                      const double* __restrict__ dulist_r,
-                                                      const double* __restrict__ dulist_i,
-                                                      const double* __restrict__ ylist_r,
-                                                      const double* __restrict__ ylist_i,
-                                                      double* dedr) {
-  dedr[0] = 0.0;
-  dedr[1] = 0.0;
-  dedr[2] = 0.0;
+__device__ __forceinline__ void compute_deidrj_parallel_device(int twojmax,
+                                                               int tid,
+                                                               int block_threads,
+                                                               int warp_id,
+                                                               int lane_id,
+                                                               const int* __restrict__ idxu_block,
+                                                               const double* __restrict__ dulist_r,
+                                                               const double* __restrict__ dulist_i,
+                                                               const double* __restrict__ ylist_r,
+                                                               const double* __restrict__ ylist_i,
+                                                               double (*warp_sums)[3],
+                                                               double* dedr) {
+  double my0 = 0.0;
+  double my1 = 0.0;
+  double my2 = 0.0;
+
+  int pos_idx = 0;
   for (int j = 0; j <= twojmax; ++j) {
     int jju = idxu_block[j];
     for (int mb = 0; 2 * mb < j; ++mb) {
       for (int ma = 0; ma <= j; ++ma) {
-        const double yr = ylist_r[jju];
-        const double yi = ylist_i[jju];
-        dedr[0] += dulist_r[jju * 3 + 0] * yr + dulist_i[jju * 3 + 0] * yi;
-        dedr[1] += dulist_r[jju * 3 + 1] * yr + dulist_i[jju * 3 + 1] * yi;
-        dedr[2] += dulist_r[jju * 3 + 2] * yr + dulist_i[jju * 3 + 2] * yi;
+        if ((pos_idx % block_threads) == tid) {
+          const double yr = ylist_r[jju];
+          const double yi = ylist_i[jju];
+          my0 += dulist_r[jju * 3 + 0] * yr + dulist_i[jju * 3 + 0] * yi;
+          my1 += dulist_r[jju * 3 + 1] * yr + dulist_i[jju * 3 + 1] * yi;
+          my2 += dulist_r[jju * 3 + 2] * yr + dulist_i[jju * 3 + 2] * yi;
+        }
+        pos_idx++;
         jju++;
       }
     }
     if ((j % 2) == 0) {
       int mb = j / 2;
       for (int ma = 0; ma < mb; ++ma) {
-        const double yr = ylist_r[jju];
-        const double yi = ylist_i[jju];
-        dedr[0] += dulist_r[jju * 3 + 0] * yr + dulist_i[jju * 3 + 0] * yi;
-        dedr[1] += dulist_r[jju * 3 + 1] * yr + dulist_i[jju * 3 + 1] * yi;
-        dedr[2] += dulist_r[jju * 3 + 2] * yr + dulist_i[jju * 3 + 2] * yi;
+        if ((pos_idx % block_threads) == tid) {
+          const double yr = ylist_r[jju];
+          const double yi = ylist_i[jju];
+          my0 += dulist_r[jju * 3 + 0] * yr + dulist_i[jju * 3 + 0] * yi;
+          my1 += dulist_r[jju * 3 + 1] * yr + dulist_i[jju * 3 + 1] * yi;
+          my2 += dulist_r[jju * 3 + 2] * yr + dulist_i[jju * 3 + 2] * yi;
+        }
+        pos_idx++;
         jju++;
       }
-      const double yr = ylist_r[jju];
-      const double yi = ylist_i[jju];
-      dedr[0] += (dulist_r[jju * 3 + 0] * yr + dulist_i[jju * 3 + 0] * yi) * 0.5;
-      dedr[1] += (dulist_r[jju * 3 + 1] * yr + dulist_i[jju * 3 + 1] * yi) * 0.5;
-      dedr[2] += (dulist_r[jju * 3 + 2] * yr + dulist_i[jju * 3 + 2] * yi) * 0.5;
+      if ((pos_idx % block_threads) == tid) {
+        const double yr = ylist_r[jju];
+        const double yi = ylist_i[jju];
+        my0 += 0.5 * (dulist_r[jju * 3 + 0] * yr + dulist_i[jju * 3 + 0] * yi);
+        my1 += 0.5 * (dulist_r[jju * 3 + 1] * yr + dulist_i[jju * 3 + 1] * yi);
+        my2 += 0.5 * (dulist_r[jju * 3 + 2] * yr + dulist_i[jju * 3 + 2] * yi);
+      }
+      pos_idx++;
+      jju++;
     }
   }
-  dedr[0] *= 2.0;
-  dedr[1] *= 2.0;
-  dedr[2] *= 2.0;
+
+  // Warp-level reduction (deterministic __shfl_down_sync tree).
+  for (int offset = 16; offset > 0; offset >>= 1) {
+    my0 += __shfl_down_sync(0xFFFFFFFFu, my0, offset);
+    my1 += __shfl_down_sync(0xFFFFFFFFu, my1, offset);
+    my2 += __shfl_down_sync(0xFFFFFFFFu, my2, offset);
+  }
+  if (lane_id == 0) {
+    warp_sums[warp_id][0] = my0;
+    warp_sums[warp_id][1] = my1;
+    warp_sums[warp_id][2] = my2;
+  }
+  __syncthreads();
+
+  if (tid == 0) {
+    const int n_warps = (block_threads + 31) / 32;
+    double s0 = 0.0;
+    double s1 = 0.0;
+    double s2 = 0.0;
+    for (int w = 0; w < n_warps; ++w) {
+      s0 += warp_sums[w][0];
+      s1 += warp_sums[w][1];
+      s2 += warp_sums[w][2];
+    }
+    dedr[0] = s0 * 2.0;
+    dedr[1] = s1 * 2.0;
+    dedr[2] = s2 * 2.0;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -646,6 +699,11 @@ __global__ void snap_deidrj_kernel(std::uint32_t n,
   double* dulist_r = ulist_i + p.idxu_max;
   double* dulist_i = dulist_r + p.idxu_max * 3;
 
+  // T8.6c: cross-warp scratch for the block-parallel compute_deidrj tree
+  // reduction. kThreadsPerBlock = 128 = 4 warps, each warp reduces its lane
+  // subset via __shfl_down_sync then writes a per-warp partial here.
+  __shared__ double dedr_warp_sums[4][3];
+
   // Load atom i's ylist into shared.
   const std::size_t ubase = static_cast<std::size_t>(i) * static_cast<std::size_t>(p.idxu_max);
   for (int k = tid; k < p.idxu_max; k += block_threads) {
@@ -665,9 +723,11 @@ __global__ void snap_deidrj_kernel(std::uint32_t n,
   const auto iy_u = static_cast<int>(cell_index_axis_dev(yi, p.ylo, p.cell_y, p.ny));
   const auto iz_u = static_cast<int>(cell_index_axis_dev(zi, p.zlo, p.cell_z, p.nz));
 
-  // Per-atom accumulators — single-lane so we don't need warp reductions.
-  // (Fine for T8.6b correctness gate; warp-level parallel path is a T8.6c
-  // perf opt once the byte-exact gate lands at T8.7.)
+  const int warp_id = tid >> 5;    // tid / 32
+  const int lane_id = tid & 0x1f;  // tid % 32
+
+  // Per-atom accumulators live only on tid==0 but `double fx_acc = 0.0`
+  // trivially zero-inits on every thread; only tid==0 ever writes/reads them.
   double fx_acc = 0.0;
   double fy_acc = 0.0;
   double fz_acc = 0.0;
@@ -706,6 +766,14 @@ __global__ void snap_deidrj_kernel(std::uint32_t n,
             continue;
           }
 
+          // Scalars needed by all threads after tid==0 finishes compute_uarray
+          // + compute_duarray. Stashed through static __shared__ so the
+          // parallel compute_deidrj phase can see them.
+          __shared__ double r_sh;
+          __shared__ double z0_sh;
+          __shared__ double dz0dr_sh;
+          __shared__ double rcut_sh;
+
           if (tid == 0) {
             const double r = sqrt(rsq);
             const double radj = radius_elem[jtype];
@@ -717,8 +785,13 @@ __global__ void snap_deidrj_kernel(std::uint32_t n,
             const double sn = sin(theta0);
             const double z0 = r * cs / sn;
             const double dz0dr = z0 / r - (r * rscale0) * (rsq + z0 * z0) / rsq;
+            r_sh = r;
+            z0_sh = z0;
+            dz0dr_sh = dz0dr;
+            rcut_sh = rcut;
 
-            // --- OWN side: dulist(i→j) · ylist[i]. Sign: (ddx, ddy, ddz).
+            // --- OWN side: build ulist + dulist (sequential recurrence;
+            // stays single-lane for this T8.6c-v3 commit).
             snap_detail::compute_uarray_device(ddx,
                                                ddy,
                                                ddz,
@@ -748,16 +821,25 @@ __global__ void snap_deidrj_kernel(std::uint32_t n,
                                                 ulist_i,
                                                 dulist_r,
                                                 dulist_i);
-            double dedr_own[3];
-            compute_deidrj_device(p.twojmax,
-                                  idxu_block,
-                                  dulist_r,
-                                  dulist_i,
-                                  ylist_i_r,
-                                  ylist_i_i,
-                                  dedr_own);
-            // CPU: F_i += fij, F_j -= fij, virial += fij · (r_j - r_i).
-            // We're atom i accumulating i's F + i's virial share.
+          }
+          __syncthreads();
+
+          // --- OWN side: block-parallel dedr reduction (T8.6c).
+          double dedr_own[3];
+          compute_deidrj_parallel_device(p.twojmax,
+                                         tid,
+                                         block_threads,
+                                         warp_id,
+                                         lane_id,
+                                         idxu_block,
+                                         dulist_r,
+                                         dulist_i,
+                                         ylist_i_r,
+                                         ylist_i_i,
+                                         dedr_warp_sums,
+                                         dedr_own);
+          // dedr_own[0..2] is meaningful only on tid==0 after the reduction.
+          if (tid == 0) {
             fx_acc += dedr_own[0];
             fy_acc += dedr_own[1];
             fz_acc += dedr_own[2];
@@ -767,19 +849,16 @@ __global__ void snap_deidrj_kernel(std::uint32_t n,
             v_xy += dedr_own[0] * ddy;
             v_xz += dedr_own[0] * ddz;
             v_yz += dedr_own[1] * ddz;
+          }
+          __syncthreads();
 
-            // --- PEER side: from atom j's perspective, pair (j→i).
-            // At j's CPU outer loop, rij[jj] = r_i - r_j = -(ddx, ddy, ddz);
-            // wj[jj] = weight_elem[itype] = wi; theta0/z0/dz0dr are unchanged
-            // (depend only on r and rcut which is symmetric). ylist used is
-            // the peer's own ylist = d_ylist[j].
-            const std::size_t jbase =
-                static_cast<std::size_t>(j) * static_cast<std::size_t>(p.idxu_max);
+          // --- PEER side: rebuild ulist + dulist with flipped sign and wi.
+          if (tid == 0) {
             snap_detail::compute_uarray_device(-ddx,
                                                -ddy,
                                                -ddz,
-                                               z0,
-                                               r,
+                                               z0_sh,
+                                               r_sh,
                                                rootpq,
                                                p.jdimpq,
                                                idxu_block,
@@ -789,11 +868,11 @@ __global__ void snap_deidrj_kernel(std::uint32_t n,
             snap_detail::compute_duarray_device(-ddx,
                                                 -ddy,
                                                 -ddz,
-                                                z0,
-                                                r,
-                                                dz0dr,
+                                                z0_sh,
+                                                r_sh,
+                                                dz0dr_sh,
                                                 wi,
-                                                rcut,
+                                                rcut_sh,
                                                 p.rmin0,
                                                 p.switch_flag,
                                                 rootpq,
@@ -804,16 +883,26 @@ __global__ void snap_deidrj_kernel(std::uint32_t n,
                                                 ulist_i,
                                                 dulist_r,
                                                 dulist_i);
-            double dedr_peer[3];
-            compute_deidrj_device(p.twojmax,
-                                  idxu_block,
-                                  dulist_r,
-                                  dulist_i,
-                                  d_ylist_r + jbase,
-                                  d_ylist_i + jbase,
-                                  dedr_peer);
+          }
+          __syncthreads();
+
+          const std::size_t jbase =
+              static_cast<std::size_t>(j) * static_cast<std::size_t>(p.idxu_max);
+          double dedr_peer[3];
+          compute_deidrj_parallel_device(p.twojmax,
+                                         tid,
+                                         block_threads,
+                                         warp_id,
+                                         lane_id,
+                                         idxu_block,
+                                         dulist_r,
+                                         dulist_i,
+                                         d_ylist_r + jbase,
+                                         d_ylist_i + jbase,
+                                         dedr_warp_sums,
+                                         dedr_peer);
+          if (tid == 0) {
             // CPU at j's outer loop: F_j += dedr_peer, F_i -= dedr_peer.
-            // We accumulate the "-= peer" side at atom i.
             fx_acc -= dedr_peer[0];
             fy_acc -= dedr_peer[1];
             fz_acc -= dedr_peer[2];
