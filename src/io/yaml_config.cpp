@@ -174,10 +174,13 @@ PotentialStyle parse_potential_style(const YAML::Node& node, std::string_view ke
   if (raw == "eam/alloy") {
     return PotentialStyle::EamAlloy;
   }
+  if (raw == "snap") {
+    return PotentialStyle::Snap;
+  }
   throw_parse_error(node,
                     key_path,
                     "unsupported potential.style '" + raw +
-                        "' — accepted: morse, eam/alloy (eam/fs, snap, pace arrive in M2+)");
+                        "' — accepted: morse, eam/alloy, snap (eam/fs, pace arrive in M9+)");
 }
 
 MorseCutoffStrategy parse_cutoff_strategy(const YAML::Node& node, std::string_view key_path) {
@@ -264,6 +267,27 @@ EamAlloyParams parse_eam_alloy_params(const YAML::Node& node) {
   return out;
 }
 
+SnapParams parse_snap_params(const YAML::Node& node) {
+  constexpr std::string_view path = "potential.params";
+  reject_unknown_keys(node, path, {"coeff_file", "param_file"});
+  SnapParams out{};
+  out.coeff_file = as_scalar<std::string>(require_child(node, path, "coeff_file"),
+                                          "potential.params.coeff_file");
+  out.param_file = as_scalar<std::string>(require_child(node, path, "param_file"),
+                                          "potential.params.param_file");
+  if (out.coeff_file.empty()) {
+    throw_parse_error(node["coeff_file"],
+                      "potential.params.coeff_file",
+                      "potential.params.coeff_file must not be empty");
+  }
+  if (out.param_file.empty()) {
+    throw_parse_error(node["param_file"],
+                      "potential.params.param_file",
+                      "potential.params.param_file must not be empty");
+  }
+  return out;
+}
+
 PotentialBlock parse_potential_block(const YAML::Node& node) {
   constexpr std::string_view path = "potential";
   reject_unknown_keys(node, path, {"style", "params"});
@@ -276,6 +300,9 @@ PotentialBlock parse_potential_block(const YAML::Node& node) {
       break;
     case PotentialStyle::EamAlloy:
       out.eam_alloy = parse_eam_alloy_params(params);
+      break;
+    case PotentialStyle::Snap:
+      out.snap = parse_snap_params(params);
       break;
   }
   return out;

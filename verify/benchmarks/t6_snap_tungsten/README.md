@@ -1,6 +1,15 @@
 # T6 — SNAP tungsten differential (`t6_snap_tungsten`)
 
-**Status:** scaffold landed **M8 T8.10a (2026-04-20)**. Driver script (`lammps_script.in`) and declarative `checks.yaml` with threshold entries land now; TDMD-side `config.yaml` + differential driver (`run_differential.py` extension) land at **T8.10 proper** after SnapPotential force body ships in T8.4b. See §14 M8 acceptance gate in `TDMD_Engineering_Spec.md` and `docs/development/m8_execution_pack.md` T8.10.
+**Status:** **D-M8-7 byte-exact gate GREEN** — landed M8 **T8.5 (2026-04-20)**.
+CPU FP64 TDMD SnapPotential ≡ LAMMPS FP64 `pair_style snap` to per-atom-force
+max_rel ≈ 8.8e-13 under 1e-12 budget on 250-atom BCC W, 100 NVE steps. Thermo
+PE/KE/Etotal match to FP64 bytes, Temperature/Pressure within T1/T4 precedent
+budgets. Pure SNAP path only (no ZBL — deferred M9+); the canonical production
+fixture `lammps_script.in` retains `hybrid/overlay zbl+snap` for physics
+realism, but the byte-exact gate (`lammps_script_metal.in` + `config_metal.yaml`)
+scopes to the SNAP bispectrum path standalone. Scaling to 1024/8192-atom
+variants deferred to T8.10. See §14 M8 acceptance gate in `TDMD_Engineering_Spec.md`
+and `docs/development/m8_execution_pack.md` T8.5 / T8.10.
 
 ## Purpose
 
@@ -37,11 +46,22 @@ T6 ships **three size variants** per m8 exec pack §4 T8.10:
 
 | Variant | Box | N | Run length | Purpose |
 |---|---|---|---|---|
-| `small` | 4×4×4 BCC W (default upstream) | 128 | 100 steps | Smoke, CI, single-rank Fp64Reference byte-exact oracle |
-| `medium` | 8×8×8 BCC W | 1024 | 500 steps | D-M8-7 CPU differential + D-M8-8 GPU MixedFast |
+| `small` (landed T8.5) | **5×5×5** BCC W — see note below | **250** | 100 steps | Smoke, CI, single-rank Fp64Reference byte-exact oracle |
+| `medium` | 8×8×8 BCC W | 1024 | 500 steps | Scaling probe input (T8.10) |
 | `large` | 16×16×16 BCC W | 8192 | 1000 steps | Scaling probe (cloud-burst T8.11) |
 
-All variants use `dt = 5e-4 ps`, `T₀ = 300 K`, `seed = 4928459` (upstream), NVE integration, thermo every 10 steps.
+**Why 5×5×5 not 4×4×4 for the `small` variant:** TDMD's CellGrid halo stencil
+requires `L_axis ≥ 3·(cutoff + skin)`. For SNAP W (cutoff 4.73442 Å + skin 0.3 Å)
+that is 15.10 Å; the advertised 4×4×4 box is only 12.72 Å and fails box-
+too-small at ingest. 5×5×5 (15.90 Å) is the smallest BCC variant the SNAP path
+can run on; 8×8×8 and 16×16×16 clear the constraint with margin. This is a
+TDMD-side constraint, not a LAMMPS one — documented in `generate_setup.py`.
+
+All variants use `dt = 5e-4 ps`, `T₀ = 300 K`, `seed = 12345` (landed T8.5
+generator; upstream LAMMPS Wood 2017 fixture used 4928459 but that value only
+matters when `velocity create` is the source of initial velocities — this
+fixture pre-computes velocities in Python to avoid LAMMPS/TDMD RNG divergence),
+NVE integration, thermo every 10 steps.
 
 ## Acceptance thresholds
 
@@ -70,9 +90,30 @@ LD_LIBRARY_PATH=../../install_tdmd/lib ../../install_tdmd/bin/lmp -in in.snap.W.
 
 Path-existence Catch2 gate (T8.2): `tests/potentials/test_lammps_oracle_snap_fixture` self-skips (exit 77) on uninitialized submodule, fails if fixture files are missing from a correctly initialized submodule.
 
-## Running the benchmark (T8.10 onwards)
+## Running the benchmark (T8.5 onwards)
 
-**LAMMPS side (landed T8.10a):**
+**End-to-end differential harness (landed T8.5):**
+
+```bash
+# Fp64ReferenceBuild CPU binary (byte-exact oracle):
+python3 verify/t6/run_differential.py \
+    --benchmark verify/benchmarks/t6_snap_tungsten \
+    --tdmd build-cpu-strict/src/cli/tdmd \
+    --lammps verify/third_party/lammps/install_tdmd/bin/lmp \
+    --lammps-libdir verify/third_party/lammps/install_tdmd/lib \
+    --thresholds verify/thresholds/thresholds.yaml
+# → PASS at max_rel ≈ 8.8e-13 forces (under 1e-12 budget).
+```
+
+Catch2 wrapper exposing this as a ctest target:
+
+```bash
+ctest -R test_t6_differential --output-on-failure
+# → Pass at ~17s (LAMMPS+TDMD end-to-end).
+```
+
+Canonical production fixture (ZBL+SNAP, for physics-realism reference, NOT
+byte-exact gate):
 
 ```bash
 ./verify/third_party/lammps/install_tdmd/bin/lmp \
@@ -83,18 +124,11 @@ Path-existence Catch2 gate (T8.2): `tests/potentials/test_lammps_oracle_snap_fix
     -in verify/benchmarks/t6_snap_tungsten/lammps_script.in
 ```
 
-**TDMD side (lands at T8.10 proper after T8.4b unblocks SNAP compute):**
-
-```bash
-# Currently unavailable — SnapPotential::compute() throws std::logic_error.
-# When T8.4b lands, a config.yaml will follow and the full run_differential
-# driver will integrate with verify/harness/differential_runner/.
-```
-
-## Status checklist (M8 T8.10)
+## Status checklist (M8 T8.5 / T8.10)
 
 - [x] **T8.10a** — Scaffold landed 2026-04-20: `README.md`, `checks.yaml`, `lammps_script.in`, threshold-registry entries `benchmarks.t6_snap_tungsten.*` in `verify/thresholds/thresholds.yaml`.
-- [ ] **T8.10** — TDMD `config.yaml` (variants small/medium/large), `generate_setup.py` for deterministic initial state, `run_differential.py` extension for SNAP thermo columns + force vector diff. Depends on T8.4b (SnapPotential force body port).
+- [x] **T8.5** — D-M8-7 byte-exact gate landed 2026-04-20: `generate_setup.py` (5×5×5 BCC W, 250 atoms), `setup.data` (committed), `lammps_script_metal.in` (pure SNAP, no ZBL), `config_metal.yaml` (TDMD style:snap), `verify/t6/run_differential.py` driver, `verify/t6/test_t6_differential.cpp` Catch2 wrapper. Forces max_rel ≈ 8.8e-13 under 1e-12 budget. ctest 39/39 green.
+- [ ] **T8.10** — Medium/large variants (1024, 8192 atoms) + extended run lengths.
 - [ ] **T8.11** — Scaling probe driver (8-rank baseline + cloud-burst scaling). Feeds `verify/benchmarks/t6_snap_scaling/results_<date>.json` artefact for M8 acceptance gate close.
 
 ## Cross-references

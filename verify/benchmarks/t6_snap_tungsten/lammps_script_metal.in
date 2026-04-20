@@ -1,0 +1,57 @@
+# T6 LAMMPS reference script — pure SNAP tungsten NVE, 128 atoms, 100 steps.
+# Mirrors verify/benchmarks/t6_snap_tungsten/config_metal.yaml bit-for-bit.
+# Consumed by verify/t6/run_differential.py via verify.harness.differential_runner.
+#
+# Variables (resolved via `-var`):
+#   workdir     — output directory; `final.data`, `lammps.log`, `lammps.dump`.
+#   setup_data  — absolute path to the committed setup.data.
+#   snap_dir    — directory holding W_2940_2017_2.snapcoeff/.snapparam
+#                 (defaults to verify/third_party/lammps/examples/snap/).
+#
+# Important: this script uses `pair_style snap` (pure SNAP, no ZBL). The
+# canonical Wood 2017 production fixture (lammps_script.in next to this file)
+# uses `hybrid/overlay zbl 4.0 4.8 snap` for short-range physics realism, but
+# the D-M8-7 byte-exact gate compares pure SNAP vs pure SNAP — TDMD does not
+# yet implement ZBL (M9+). Adding ZBL would change the energy zero point but
+# not the SNAP gradient itself, so this byte-exact gate is the right scope to
+# verify the SnapPotential force body port (T8.4b).
+#
+# Initial state comes from the committed setup.data (deterministic generator
+# in generate_setup.py). LAMMPS consumes it verbatim — no `create_atoms`, no
+# `velocity create` — so both engines see byte-identical lattice + velocity
+# inputs.
+
+units           metal
+atom_style      atomic
+boundary        p p p
+
+read_data       ${setup_data}
+
+pair_style      snap
+pair_coeff      * * ${snap_dir}/W_2940_2017_2.snapcoeff ${snap_dir}/W_2940_2017_2.snapparam W
+
+neighbor        0.3 bin
+neigh_modify    every 1 delay 0 check yes
+
+timestep        0.0005
+
+fix             1 all nve
+
+# High-precision thermo so comparator roundoff is dominated by physics, not by
+# text-truncation. Identical layout to T1/T4 so the shared parser consumes it
+# without a per-benchmark branch.
+thermo          10
+thermo_style    custom step temp pe ke etotal press
+thermo_modify   format float "%.10e" norm no flush yes
+
+log             ${workdir}/lammps.log
+
+# Per-atom forces dump at the final step. `dump_modify sort id` pins row order
+# so LAMMPS migrations don't reshuffle on-disk layout vs TDMD's stable-reorder.
+# %.16e format is well beyond the 1e-12 forces threshold (D-M8-7).
+dump            forces_d all custom 100 ${workdir}/lammps.dump id type x y z fx fy fz
+dump_modify     forces_d sort id first no format line "%d %d %.16e %.16e %.16e %.16e %.16e %.16e"
+
+run             100
+
+write_data      ${workdir}/final.data nocoeff

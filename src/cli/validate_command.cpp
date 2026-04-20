@@ -73,7 +73,11 @@ void write_summary(std::ostream& out, const io::YamlConfig& config) {
       << (config.atoms.source == io::AtomsSource::LammpsData ? "lammps_data" : "<unknown>")
       << " from '" << config.atoms.path << "'\n"
       << "  potential:   "
-      << (config.potential.style == io::PotentialStyle::Morse ? "morse" : "<unknown>") << '\n'
+      << (config.potential.style == io::PotentialStyle::Morse      ? "morse"
+          : config.potential.style == io::PotentialStyle::EamAlloy ? "eam_alloy"
+          : config.potential.style == io::PotentialStyle::Snap     ? "snap"
+                                                                   : "<unknown>")
+      << '\n'
       << "  integrator:  "
       << (config.integrator.style == io::IntegratorStyle::VelocityVerlet ? "velocity_verlet"
                                                                          : "<unknown>")

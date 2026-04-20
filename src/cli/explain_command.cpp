@@ -6,6 +6,7 @@
 #include "tdmd/perfmodel/hardware_profile.hpp"
 #include "tdmd/perfmodel/perfmodel.hpp"
 #include "tdmd/potentials/eam_file.hpp"
+#include "tdmd/potentials/snap_file.hpp"
 #include "tdmd/state/atom_soa.hpp"
 #include "tdmd/state/box.hpp"
 #include "tdmd/state/species.hpp"
@@ -132,8 +133,14 @@ PotentialCost pick_potential_cost(io::PotentialStyle style) {
       // dedicated `PotentialCost::eam_fs()` lands with M5 when the EAM CPU
       // reference path is differential-tested.
       return PotentialCost::eam_alloy();
+    case io::PotentialStyle::Snap:
+      // SNAP cost is dominated by bispectrum (compute_ui/yi/duidrj), an
+      // order-of-magnitude heavier than EAM/alloy per neighbor pair. PerfModel
+      // gets a dedicated SnapCost factory in T8.10b — until then approximate
+      // with EAM/alloy so explain doesn't crash on snap configs.
+      return PotentialCost::eam_alloy();
   }
-  return PotentialCost::morse();  // unreachable — enum exhaustive on M2.
+  return PotentialCost::morse();  // unreachable — enum exhaustive.
 }
 
 std::string_view style_name(io::PotentialStyle style) {
@@ -142,6 +149,8 @@ std::string_view style_name(io::PotentialStyle style) {
       return "morse";
     case io::PotentialStyle::EamAlloy:
       return "eam_alloy";
+    case io::PotentialStyle::Snap:
+      return "snap";
   }
   return "<unknown>";
 }
@@ -283,8 +292,14 @@ double resolve_potential_cutoff(const io::YamlConfig& config, const std::string&
       const auto data = potentials::parse_eam_alloy(eam_path);
       return data.cutoff;
     }
+    case io::PotentialStyle::Snap: {
+      const std::string coeff_path = resolve_relative(config.potential.snap.coeff_file, config_dir);
+      const std::string param_path = resolve_relative(config.potential.snap.param_file, config_dir);
+      const auto data = potentials::parse_snap_files(coeff_path, param_path);
+      return data.max_pairwise_cutoff();
+    }
   }
-  return 0.0;  // unreachable — enum exhaustive in M3.
+  return 0.0;  // unreachable — enum exhaustive.
 }
 
 // Load box bounds via the canonical LAMMPS data reader. Atom positions are

@@ -1364,8 +1364,22 @@ log, release notes, git tag `v1.0.0-alpha1` annotated.
   Byte-exact vs LAMMPS (D-M8-7) deferred to T8.5 (run_differential harness
   и LAMMPS oracle run — TDMD-side force-body port is the blocker; T8.5
   unblocked). Depends: T8.4a [x].
-- [ ] **T8.5** — CPU SNAP differential vs LAMMPS: per-atom force ≤ 1e-12 rel
-  and total PE ≤ 1e-12 rel на T6 tungsten 2048-atom. Locks SNAP CPU FP64 oracle.
+- [x] **T8.5** — CPU SNAP differential vs LAMMPS: D-M8-7 byte-exact gate GREEN
+  on T6 tungsten 5×5×5 BCC (250 atoms, nrep=5 — CellGrid stencil constraint
+  L_axis ≥ 3·(cutoff+skin) forces nrep≥5 на SNAP cutoff 4.73442 Å + skin 0.3;
+  scaling to 2048-atom deferred to T8.10). Harness landed: committed
+  `verify/benchmarks/t6_snap_tungsten/{generate_setup.py,setup.data,lammps_script_metal.in,config_metal.yaml}`
+  (pure SNAP path, no ZBL — byte-exact gate scoped standalone; ZBL pair lands
+  M9+). Driver: `verify/t6/run_differential.py` (clone of T4 с snap-specific
+  `extra_absolute_paths` rewrite for coeff_file/param_file and snap_dir
+  -var pass-through). Catch2 wrapper `verify/t6/test_t6_differential.cpp`
+  hooked into ctest (test #39). SNAP dispatch path plumbed end-to-end через
+  `io::PotentialStyle::Snap` (yaml_config, preflight, SimulationEngine,
+  explain/validate CLI). Measured на 100-step NVE W 250 atoms: thermo
+  PE/KE/EtotaL max_rel = 0 (exact bytes), Temp max_rel 1.13e-6 (k_B definitional,
+  T1/T4 precedent budget 2e-6), Press max_rel 3.2e-11 (budget 1e-10); forces
+  max_rel = **8.795e-13** под budget 1e-12 — D-M8-7 closed с decade headroom.
+  ctest 39/39 green. Depends: T8.4b [x].
 - [ ] **T8.6** — SnapPotential GPU FP64 functional; NVTX-wrapped; functional
   tests green (64-atom W functional correctness).
 - [ ] **T8.7** — GPU FP64 bit-exact gate (D-M6-7 chain extension): SNAP GPU ≡

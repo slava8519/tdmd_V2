@@ -1,0 +1,43 @@
+# T6 differential benchmark — TDMD config (metal units, pure SNAP).
+#
+# Pairs with `lammps_script_metal.in` in the same directory. The committed
+# `setup.data` (128 BCC W atoms, generate_setup.py seed 12345) plus the
+# committed Wood & Thompson 2017 .snapcoeff + .snapparam form the bit-
+# identical input set both engines consume. See README.md "Test
+# configurations" + generate_setup.py docstring for provenance.
+#
+# Pure SNAP — no ZBL. The canonical T6 production fixture (lammps_script.in)
+# uses hybrid/overlay zbl+snap for physics realism, but the D-M8-7 byte-exact
+# gate (T8.5) compares the bispectrum path standalone. ZBL lands as a separate
+# pair potential in M9+.
+#
+# .snapcoeff/.snapparam paths resolve relative to this file. The harness
+# (verify/t6/run_differential.py) rewrites these to absolute paths in the
+# workdir copy of the config so a relocated config still finds the files.
+
+simulation:
+  units: metal
+  seed: 12345              # unused at ingest (atoms read verbatim from setup.data).
+
+atoms:
+  source: lammps_data
+  path: setup.data         # resolved relative to this file.
+
+potential:
+  style: snap
+  params:
+    coeff_file: ../../third_party/lammps/examples/snap/W_2940_2017_2.snapcoeff
+    param_file: ../../third_party/lammps/examples/snap/W_2940_2017_2.snapparam
+
+integrator:
+  style: velocity_verlet
+  dt: 0.0005               # ps — Wood 2017 timestep (matches lammps_script_metal.in).
+
+neighbor:
+  skin: 0.3                # Å
+
+thermo:
+  every: 10
+
+run:
+  n_steps: 100

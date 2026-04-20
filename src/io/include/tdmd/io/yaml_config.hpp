@@ -59,7 +59,8 @@ enum class AtomsSource : std::uint8_t {
 enum class PotentialStyle : std::uint8_t {
   Morse,
   EamAlloy,  // LAMMPS `pair_style eam/alloy` — setfl file (T2.7, T2.9).
-  // EAM/FS / SNAP / PACE — M2+ / M8.
+  Snap,      // LAMMPS `pair_style snap` — .snapcoeff + .snapparam (T8.4 / T8.5).
+  // EAM/FS / PACE — M9+.
 };
 
 enum class MorseCutoffStrategy : std::uint8_t {
@@ -92,6 +93,17 @@ struct EamAlloyParams {
   std::string file;
 };
 
+// LAMMPS-compatible `pair_style snap` parameters. Both `coeff_file` (.snapcoeff)
+// and `param_file` (.snapparam) paths resolve relative to the YAML file
+// directory, matching the convention used for atoms.path and EamAlloyParams.file.
+// Species ordering inside the .snapcoeff must match the LAMMPS type ordering in
+// the companion .data file — SnapPotential indexes data.species[] directly via
+// AtomSoA::type (M8 single-species W only; chemflag=1 deferred to M9+).
+struct SnapParams {
+  std::string coeff_file;
+  std::string param_file;
+};
+
 struct SimulationBlock {
   UnitsKind units = UnitsKind::Metal;
   std::uint64_t seed = 12345;
@@ -110,6 +122,7 @@ struct PotentialBlock {
   PotentialStyle style = PotentialStyle::Morse;
   MorseParams morse{};
   EamAlloyParams eam_alloy{};
+  SnapParams snap{};
 };
 
 struct IntegratorBlock {

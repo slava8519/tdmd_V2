@@ -158,6 +158,32 @@ void check_potential(const PotentialBlock& pot, std::vector<PreflightError>& out
       }
       break;
     }
+    case PotentialStyle::Snap: {
+      const auto& sp = pot.snap;
+      if (sp.coeff_file.empty()) {
+        push(out,
+             PreflightSeverity::Error,
+             "potential.params.coeff_file",
+             "SNAP potential.params.coeff_file must not be empty");
+      } else if (!std::filesystem::is_regular_file(sp.coeff_file)) {
+        push(out,
+             PreflightSeverity::Error,
+             "potential.params.coeff_file",
+             "SNAP potential.params.coeff_file '" + sp.coeff_file + "' is not a regular file");
+      }
+      if (sp.param_file.empty()) {
+        push(out,
+             PreflightSeverity::Error,
+             "potential.params.param_file",
+             "SNAP potential.params.param_file must not be empty");
+      } else if (!std::filesystem::is_regular_file(sp.param_file)) {
+        push(out,
+             PreflightSeverity::Error,
+             "potential.params.param_file",
+             "SNAP potential.params.param_file '" + sp.param_file + "' is not a regular file");
+      }
+      break;
+    }
   }
 }
 

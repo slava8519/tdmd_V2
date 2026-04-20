@@ -8,6 +8,8 @@
 #include "tdmd/potentials/eam_alloy_gpu_adapter.hpp"
 #include "tdmd/potentials/eam_file.hpp"
 #include "tdmd/potentials/morse.hpp"
+#include "tdmd/potentials/snap.hpp"
+#include "tdmd/potentials/snap_file.hpp"
 #include "tdmd/runtime/gpu_context.hpp"
 #include "tdmd/runtime/physical_constants.hpp"
 #include "tdmd/runtime/unit_converter.hpp"
@@ -230,6 +232,20 @@ void SimulationEngine::init(const io::YamlConfig& config, const std::string& con
       const std::string eam_path = resolve_atoms_path(config.potential.eam_alloy.file, config_dir);
       potentials::EamAlloyData eam = potentials::parse_eam_alloy(eam_path);
       potential_ = std::make_unique<EamAlloyPotential>(std::move(eam));
+      break;
+    }
+    case io::PotentialStyle::Snap: {
+      if (is_lj) {
+        throw std::invalid_argument(
+            "potential.style=snap is incompatible with simulation.units=lj "
+            "(SNAP coefficients are dimensional, metal units only)");
+      }
+      const std::string coeff_path =
+          resolve_atoms_path(config.potential.snap.coeff_file, config_dir);
+      const std::string param_path =
+          resolve_atoms_path(config.potential.snap.param_file, config_dir);
+      potentials::SnapData snap = potentials::parse_snap_files(coeff_path, param_path);
+      potential_ = std::make_unique<SnapPotential>(std::move(snap));
       break;
     }
   }
