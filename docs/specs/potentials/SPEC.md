@@ -3,7 +3,9 @@
 **Module:** `potentials/`
 **Status:** master module spec
 **Parent:** `TDMD Engineering Spec v2.1` §3.2, §5.1, §12.5
-**Last updated:** 2026-04-16
+**Last updated:** 2026-04-20 (T8.3 — §6 SNAP body authored; interface
+contract + force-evaluation algorithm + LAMMPS USER-SNAP attribution chain +
+MixedFastSnapOnly placeholder + validation gate matrix D-M8-7/D-M8-8)
 
 ---
 
@@ -476,46 +478,334 @@ class MeamPotential:
 
 ### 6.1. Форма
 
-SNAP (Spectral Neighbor Analysis Potential) — machine-learned potential, где энергия атома — linear regression на bispectrum descriptors:
+SNAP (Spectral Neighbor Analysis Potential, Thompson et al. J. Comp. Phys.
+2015) — machine-learned potential, где атомная энергия представляется как
+linear regression на bispectrum descriptors of the local neighbor density:
 
 ```
-E_i = β_0 + Σ_k  β_k · B_k(r_i)
+E_i = β_0^{(α_i)} + Σ_k  β_k^{(α_i)} · B_k(r_i)         (linear, default)
+
+или (quadratic extension, `quadraticflag = 1` в LAMMPS):
+
+E_i = β_0 + Σ_k β_k · B_k + (1/2) · Σ_{k ≤ l} β_{kl} · B_k · B_l
 ```
 
 Где:
-- `B_k(r_i)` — bispectrum component `k` для окружения атома `i`;
-- `β_k` — ML-learned coefficients (given в потенциале).
 
-Bispectrum — complex function от pairs/triplets within cutoff, involves spherical harmonics and Clebsch-Gordan coefficients. Typical `k_max = 56-220`.
+- `B_k(r_i)` — k-ый bispectrum component для окружения атома `i` внутри
+  cutoff `r_c = rcutfac · Σ_j R_j`, где `R_j` — per-species radius;
+- `β_k^{(α_i)}` — ML-learned coefficients для species `α_i` (из `.snapcoeff`);
+- `β_0^{(α_i)}` — per-species offset;
+- `B_k` строится из sum expansion of spherical harmonics `Y_{l,m}(r̂_ij)`
+  × radial basis `f(r_ij)` × Clebsch-Gordan coefficients `C^{j1,j2,j}_{m1,m2,m}`.
+
+Размер basis: `k_max = (J_max+1)(J_max+2)(J_max+3)/6` — typical
+values: `J_max = 4` → `k = 31`, `J_max = 8` → `k = 165`.
 
 ### 6.2. Why SNAP in Wave 1
 
-В §3.2 master spec: **TDMD's proof-of-value niche**. SNAP — flagship ML potential, широко используемый для металлов (W, Ta, Zr, Nb...) и доступен в LAMMPS для differential test. Если TDMD не обгоняет LAMMPS на SNAP — проект не имеет raison d'être.
+В §3.2 master spec: **TDMD's proof-of-value niche**. SNAP — flagship ML
+potential, широко используемый для металлов (W, Ta, Zr, Nb, Mo) и доступен в
+LAMMPS для differential test. Если TDMD не обгоняет LAMMPS на SNAP — проект
+не имеет raison d'être. M8 acceptance gate формализует это (мастер-спец §14):
+«TDMD либо обгоняет LAMMPS на ≥ 20% на ≥ 8 ranks, либо честно документирует
+почему нет».
 
 ### 6.3. Cost characteristics
 
 SNAP — **dramatically expensive** compared to EAM:
-- EAM: ~100 FLOP per neighbor pair;
-- SNAP (J_max=4): ~5000 FLOP per neighbor pair;
-- SNAP (J_max=8): ~50000 FLOP per neighbor pair.
 
-Это именно та ниша, где TD даёт драматический выигрыш: `T_c ≫ T_comm` absolutely, так что perfect overlap.
+| Potential | FLOP / neighbor pair | FLOP / atom (N_nbr ≈ 50) |
+|---|---|---|
+| Morse | ~20 | ~1 000 |
+| EAM/alloy | ~100 | ~5 000 |
+| SNAP `J_max=4` | ~5 000 | ~250 000 |
+| SNAP `J_max=8` | ~50 000 | ~2 500 000 |
 
-### 6.4. Implementation strategy
+Это именно та ниша, где TD даёт драматический выигрыш: `T_compute ≫ T_comm`
+absolutely, так что perfect overlap (см. perfmodel/SPEC §3.7 saturation
+tables: `N_min_saturation` для SNAP на A100 ≈ 1 000, для EAM ≈ 5 000 — SNAP
+**saturates GPU at 5× fewer atoms**).
 
-На v1 M8:
+### 6.4. Interface contract
 
-1. Port SNAP kernel из LAMMPS (credit + license preserved);
-2. Обернуть в `PotentialModel` interface;
-3. GPU kernel — direct port LAMMPS `pair_snap_kokkos.cpp`.
+```cpp
+namespace tdmd::potentials {
 
-SNAP параметры — `*.snapcoeff` + `*.snapparam` files, LAMMPS-compatible.
+// LAMMPS-compatible hyperparameters (из *.snapparam).
+struct SnapParams {
+    int     twojmax;           // 2·J_max (even integer; J_max typical 4, 6, 8)
+    double  rcutfac;           // global cutoff scaling factor
+    double  rfac0;             // inner-to-outer radial basis ratio (default 0.99363)
+    double  rmin0;             // minimum radial basis (typical 0.0)
+    bool    switchflag;        // cosine smooth turned on (Strategy D §2.4)
+    bool    bzeroflag;         // subtract B_k^{empty} reference (LAMMPS default: on)
+    bool    quadraticflag;     // linear (0) vs quadratic (1) SNAP
+    bool    chemflag;          // multi-species chem SNAP (M9+; false in v1)
+    // Additional fields: bnormflag, wselfallflag, switchinnerflag —
+    // mapped 1:1 из LAMMPS ComputeSNA constructor per §6.6.
+};
 
-### 6.5. Validation
+// LAMMPS-compatible per-species data (из *.snapcoeff).
+struct SnapSpecies {
+    std::string          name;            // "W", "Ta", ...
+    double               radius_elem;     // per-species R_j
+    double               weight_elem;     // per-species w_j (default 1.0)
+    std::vector<double>  beta;            // β_0 + k_max linear coeffs
+                                          // (+ k_max·(k_max+1)/2 quadratic coeffs если quadraticflag)
+};
 
-- **Diff vs LAMMPS:** W_snap_test benchmark (W.snapcoeff from FitSNAP repo), force match to `1e-8` (mixed precision tolerance).
-- **Performance:** SNAP throughput в atoms/second на single GPU; target — competitive с LAMMPS-KOKKOS SNAP.
-- **Scaling:** 8 GPUs, T6 benchmark — TDMD scaling efficiency ≥ 80%, должна обгонять LAMMPS scaling (ожидаемое свойство TD).
+// Full SNAP parameter set.
+struct SnapData {
+    SnapParams                params;
+    std::vector<SnapSpecies>  species;      // size == n_species
+    // Derived / cached:
+    int                       k_max;        // number of bispectrum components
+    std::vector<double>       rcut_sq_ab;   // pairwise squared cutoffs (symmetric n×n)
+    uint64_t                  checksum;     // parameter_checksum() payload
+};
+
+class SnapPotential final : public PotentialModel {
+public:
+    SnapPotential(SnapData data, const PotentialConfig& config);
+
+    std::string     name()    const override { return "snap"; }
+    PotentialKind   kind()    const override { return PotentialKind::Descriptor; }
+    double          cutoff()  const override;    // max over all species-pair rcuts
+    double          effective_skin() const override;     // recommended skin
+    bool            is_local() const override { return true; }
+
+    void            compute(const ForceRequest&, ForceResult&) override;
+
+    double          estimated_flops_per_atom() const override;    // derived from k_max
+    std::string     parameter_summary() const override;
+    uint64_t        parameter_checksum() const override;
+
+private:
+    SnapData                         data_;
+    // Canonical LAMMPS-port scratch buffers (см. §6.5):
+    //   bispectrum_components_[i][k]
+    //   beta_times_B_[i]
+    //   force_contributions_[i]  // per-atom output accumulator
+    // Concrete layout mandated by D-M8-7 byte-exactness: must be identical
+    // to LAMMPS pair_snap.cpp scratch ordering for per-atom force match.
+};
+
+}  // namespace tdmd::potentials
+```
+
+**Invariants:**
+
+1. `SnapPotential::is_local() == true` (SNAP is strictly local despite being
+   ML — cutoff bounded, no global coupling). TD applicability gated.
+2. `cutoff()` returns the species-pair-maximum effective cutoff
+   `max_{α,β} (rcutfac · (R_α + R_β))` — this feeds neighbor/SPEC §3.2 skin
+   computation.
+3. `compute()` MUST zero-out `fx/fy/fz` before accumulation per §7.2
+   force-zero-out invariant (cross-potential contract).
+4. D-M8-7 byte-exactness requires internal scratch allocation and reduction
+   order identical to LAMMPS `ComputeSNA::compute_sna_atom` / `pair_snap.cpp`
+   — see §6.5 implementation strategy.
+
+### 6.5. Force evaluation algorithm
+
+SNAP force evaluation **is ported from LAMMPS USER-SNAP** (explicit attribution
+per LICENSE + source header). Reimplementation from scratch is rejected (risk
+of subtle bispectrum basis function bugs too high; canonical reference exists
+and is well-validated).
+
+**Three-pass algorithm** (mirroring `pair_snap.cpp` + `sna.cpp` upstream):
+
+```
+Pass 1 — compute bispectrum B_k per atom:
+  for i in filter:
+      B[i] := ComputeSNA::compute_sna_atom(i, neighbors_of_i, data.params)
+            // includes:
+            //   (a) radial basis f_cut(r_ij) via switching function §2.4 Strategy D;
+            //   (b) spherical harmonics Y_{j,m1,m2}(r̂_ij);
+            //   (c) 4D array U_{j,m1,m2,iatom} accumulation;
+            //   (d) bispectrum B = Σ U × U × C (Clebsch-Gordan contraction);
+            //   (e) subtract B_k^{empty} reference if bzeroflag.
+
+Pass 2 — compute energy and per-atom β·B:
+  for i in filter:
+      E[i]       := β_0[α_i] + Σ_k β_k[α_i] · B_k[i]
+                    (+ quadratic term if quadraticflag)
+      beta_B[i]  := cached linear combination for force pass
+
+Pass 3 — compute forces (inverse chain rule through bispectrum):
+  for each pair (i, j) within r_cut:
+      dB_k/dr_j for k = 0..k_max-1    // most expensive loop
+      F_j += -Σ_k beta_B[i]_k · dB_k/dr_j
+      F_i += +(Newton third law contribution)
+```
+
+**Byte-exactness contract (D-M8-7).** TDMD CPU FP64 SNAP MUST match LAMMPS FP64
+SNAP to ≤ 1e-12 rel per-atom force on T6 fixture (see `verify/SPEC.md §4.7`).
+This dictates **scratch array layout + reduction order** be inherited from
+LAMMPS verbatim — no "cleaner" reimplementation allowed for M8. Post-M8
+micro-optimizations (kernel fusion, SoA repacking) may diverge IFF they pass
+a regenerated byte-exact gate. Auto-reject (master spec §11.4): any
+"optimization" that abandons the byte-exact chain without an explicit
+thresholds-registry entry justifying the divergence.
+
+**License chain.** LAMMPS USER-SNAP is GPLv2. TDMD integrates the port under
+the GPL compatibility clause per LICENSE; source headers include SPDX tag
+`SPDX-License-Identifier: GPL-2.0-or-later` и attribution block citing
+`src/SNAP/sna.cpp` + `src/SNAP/pair_snap.cpp` + Thompson et al. JCP 2015 +
+Wood & Thompson arXiv:1702.07042 (T6 fixture authors).
+
+### 6.6. Parameter file format (LAMMPS-compatible)
+
+TDMD consumes LAMMPS-native SNAP files unchanged. Three artefacts per potential:
+
+**`.snap` include file (entry point):**
+
+```lammps
+# DATE: 2017-02-20 CONTRIBUTOR: Mitchell Wood
+variable zblcutinner equal 4
+variable zblcutouter equal 4.8
+pair_style hybrid/overlay &
+  zbl ${zblcutinner} ${zblcutouter} &
+  snap
+pair_coeff 1 1 zbl 74 74
+pair_coeff * * snap W_2940_2017_2.snapcoeff W_2940_2017_2.snapparam W
+```
+
+TDMD's `PotentialFactory::create("snap", config)` parser extracts the two
+filename arguments of the `pair_coeff * * snap ...` line + the species map
+(trailing `W` above) and loads the two sidecar files.
+
+**`.snapcoeff` (per-species coefficient file):**
+
+```
+# comment
+<n_species> <k_max_plus_1>
+<species_name> <radius_elem> <weight_elem>
+<β_0>
+<β_1>
+...
+<β_{k_max}>
+<next species...>
+```
+
+**`.snapparam` (hyperparameters):**
+
+```
+# comment
+rcutfac        4.67637
+twojmax        6
+rfac0          0.99363
+rmin0          0.0
+switchflag     1
+bzeroflag      1
+quadraticflag  0
+```
+
+Parser: `parse_snap_files(coeff_path, param_path, species_map) → SnapData`
+— analogous to `parse_eam_alloy` / `parse_eam_fs` (§4.5). Lives in
+`src/potentials/snap_file.cpp` (T8.4 scope).
+
+### 6.7. Precision policy и MixedFastSnapOnlyBuild
+
+Per §8 (numeric precision) + §D.11 (one-precision rule + mixed policy):
+
+- **Fp64Reference / Fp64Production:** SNAP runs in FP64 throughout (bispectrum
+  accumulation, β·B inner product, force kernel). Bit-exact vs LAMMPS FP64.
+- **MixedFastBuild (default mixed):** SNAP inherits `MixedPrecision<ForceReal=float>`
+  — whole force path runs in FP32, including bispectrum. Expected deviation
+  vs Fp64Reference: ≤ 1e-5 rel force / ≤ 1e-7 rel PE per D-M6-8 dense-cutoff
+  analog (D-M8-8 in m8 exec pack). Motivation: SNAP ML coefficients are fit
+  against DFT energies with RMSE ≈ 1e-3 eV/atom >> FP32 ULP — FP32 is
+  numerically appropriate for the physics.
+- **MixedFastSnapOnlyBuild (new at M8 T8.8):** heterogeneous precision —
+  SNAP kernels в FP32, EAM / pair kernels в FP64, State в FP64 (matches
+  MixedFastBuild state policy). Only approved per-kernel precision mix (see
+  §8.7). Введение этого BuildFlavor проходит через формальную §D.17 7-step
+  procedure (T8.8 scope); до T8.8 landing этот flavor **не доступен**.
+
+Auto-reject (master spec §D.11):
+
+- SNAP в FP32 под MixedFastBuild без explicit D-M8-8 threshold registry
+  entry;
+- Any introduction of per-kernel precision dispatch (`if (potential == snap)
+  use_fp32`) that does NOT go through §D.17 BuildFlavor path.
+
+### 6.8. GPU kernel strategy (wave 1.5)
+
+Per §9.1 kernel taxonomy, SNAP decomposes into three GPU kernels:
+
+1. `snap_bispectrum_kernel` — Pass 1; dominant cost. Launch grid = one block
+   per atom или per (atom, J_max)-shard depending on `k_max`. Shared-memory
+   cache for Clebsch-Gordan coefficients (constant per-potential).
+2. `snap_energy_kernel` — Pass 2; thin kernel, per-atom β·B dot product.
+3. `snap_force_kernel` — Pass 3; dominant over Pass 1 when `J_max ≥ 6`.
+   Atom-parallel force accumulation via canonical gather-to-single-block
+   Kahan per D-M6-7 в Reference profile; atomic adds allowed в Production.
+
+D-M8-7 byte-exact extends D-M6-7 SNAP: GPU FP64 SNAP ≤ 1e-12 rel vs CPU FP64
+SNAP on T6 fixture (`W_2940_2017_2.snap`, 2048-atom BCC W). Implementation
+lands T8.6 (GPU) + T8.7 (byte-exact gate) per m8 exec pack.
+
+Per §9.4 NVTX policy, kernels are instrumented with explicit ranges:
+
+```
+SnapPotential::bispectrum_kernel
+SnapPotential::energy_kernel
+SnapPotential::force_kernel
+SnapPotential::rebuild_species_tables   // init-time, не per-step
+```
+
+Performance target: SNAP throughput (atoms/sec) ≥ LAMMPS `pair_style snap` +
+`package gpu` on the M8 reference hardware (RTX 5080). M8 acceptance gate
+(master spec §14): ≥ 20% speedup on ≥ 8 ranks vs LAMMPS — cloud-burst-gated
+per D-M8-5 (see m8 exec pack §3).
+
+### 6.9. Validation
+
+Full validation chain per m8 exec pack §4:
+
+- **T8.4 unit:** CPU FP64 SnapPotential analytic single-atom single-neighbor
+  force check + `parse_snap_files` fixture load (covers `.snapcoeff`,
+  `.snapparam`, `.snap` include wrapper).
+- **T8.5 CPU differential (D-M8-7 byte-exact):** `t6_snap_cpu_vs_lammps`
+  benchmark — 2048-atom BCC W, `W_2940_2017_2.snap` + sidecars resolved via
+  M1-landed LAMMPS submodule; per-atom force ≤ 1e-12 rel vs LAMMPS FP64
+  `pair_style snap`; total PE ≤ 1e-12 rel.
+- **T8.7 GPU byte-exact gate (D-M6-7 SNAP extension):** GPU FP64 SNAP
+  ≤ 1e-12 rel per-atom force vs CPU FP64 SNAP.
+- **T8.9 MixedFast threshold gate (D-M8-8 dense-cutoff analog for SNAP):**
+  `MixedFastBuild` / `MixedFastSnapOnlyBuild` SNAP ≤ 1e-5 rel force / ≤ 1e-7
+  rel PE vs Fp64Reference SNAP (10x margin на per-step; 1000-step global cap
+  ≤ 1e-4 rel force / ≤ 1e-6 rel PE per NVE drift budget).
+- **T8.10 T6 benchmark (`t6_snap_tungsten`):** single-rank Reference +
+  Mixed single-subdomain; 2-rank Pattern 2 K=1 Reference byte-exact chain
+  extension; 4-rank opportunistic; D-M7-10 chain (M3 ≡ M4 ≡ M5 ≡ M6 ≡ M7 ≡ M8
+  P_space=N K=1 Reference thermo byte-exact) extension point.
+- **T8.11 scaling probe (cloud-burst-gated):** TDMD vs LAMMPS на ≥ 8 ranks,
+  артефакт в `verify/benchmarks/t6_snap_scaling/results_<date>.json`. Both
+  "≥ 20% speedup achieved" and "honest documentation of why not" outcomes
+  close the M8 acceptance gate (master spec §14; m8 exec pack D-M8-6).
+- **T8.12 slow-tier VerifyLab pass:** full §D.17 7-step procedure gate for
+  `MixedFastSnapOnlyBuild` — 1000-step drift + energy conservation + T4
+  regression parity.
+
+Threshold registry entries (anchor: `verify/thresholds.yaml`):
+
+```yaml
+# D-M8-7 (byte-exact SNAP):
+snap_cpu_vs_lammps_force_per_atom_rel_max:  1.0e-12
+snap_cpu_vs_lammps_total_pe_rel:             1.0e-12
+snap_gpu_vs_cpu_fp64_force_per_atom_rel:    1.0e-12
+snap_gpu_vs_cpu_fp64_total_pe_rel:           1.0e-12
+
+# D-M8-8 (MixedFast dense-cutoff analog for SNAP):
+snap_mixedfast_vs_fp64_force_per_atom_rel_max:  1.0e-5
+snap_mixedfast_vs_fp64_total_pe_rel:             1.0e-7
+# 1000-step NVE drift cap:
+snap_mixedfast_1000step_force_rel_max:           1.0e-4
+snap_mixedfast_1000step_pe_rel:                   1.0e-6
+```
 
 ---
 
@@ -637,7 +927,7 @@ Thresholds из `verify/thresholds.yaml` (см. мастер-спец §D.13):
 
 Из §D.11: все kernels в одном BuildFlavor используют одинаковую precision policy. Нельзя делать `MorsePotential` в double, а `SnapPotential` в float **внутри одного binary**.
 
-**Исключение через explicit BuildFlavor:** `MixedFastSnapOnlyBuild` (M8+) — явный BuildFlavor где SNAP в float, EAM в double. Это единственный approved путь per-kernel precision разнообразия.
+**Исключение через explicit BuildFlavor:** `MixedFastSnapOnlyBuild` (M8 T8.8) — явный BuildFlavor где SNAP в float, EAM в double. Это единственный approved путь per-kernel precision разнообразия. Full specification — §6.7 + master spec §D.11 / §D.17. Formal 7-step §D.17 procedure lands T8.8 per m8 exec pack.
 
 ---
 

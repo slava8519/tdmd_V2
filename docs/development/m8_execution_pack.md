@@ -1316,8 +1316,15 @@ log, release notes, git tag `v1.0.0-alpha1` annotated.
   `docs/specs/verify/SPEC.md` §4.7 (new). Path-resolution Catch2 gate landed:
   `tests/potentials/test_lammps_oracle_snap_fixture` (two test cases,
   `SKIP_RETURN_CODE 77` on uninitialized submodule). Shipped 2026-04-20.
-- [ ] **T8.3** — potentials/SPEC §4 SnapPotential body authored; interface
-  contract finalized; `§4a MixedFastSnapOnly prep` placeholder landed.
+- [x] **T8.3** — potentials/SPEC **§6** (not §4 — §6 is SNAP; §4 is EAM)
+  SnapPotential body authored (2026-04-20): interface contract (`SnapParams`,
+  `SnapSpecies`, `SnapData`, `SnapPotential final`) finalized; three-pass
+  force evaluation algorithm with LAMMPS USER-SNAP attribution chain;
+  parameter file format (`.snap` + `.snapcoeff` + `.snapparam`); §6.7
+  precision policy + MixedFastSnapOnly placeholder referring to T8.8 §D.17;
+  §6.8 GPU kernel strategy; §6.9 validation matrix with D-M8-7 / D-M8-8
+  threshold registry anchors; §8.7 cross-ref back to §6.7 + §D.17. Pure
+  SPEC delta per playbook §9.1; ~270 lines of new content.
 - [ ] **T8.4** — SnapPotential CPU FP64 ported from LAMMPS USER-SNAP с attribution;
   unit tests green (bispectrum match, Newton's 3rd law, 64-atom NVE 1e-12 drift).
 - [ ] **T8.5** — CPU SNAP differential vs LAMMPS: per-atom force ≤ 1e-12 rel
