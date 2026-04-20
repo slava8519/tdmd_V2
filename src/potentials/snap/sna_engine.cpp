@@ -278,7 +278,7 @@ void SnaEngine::build_indexlist() {
     }
   }
   idxb_max_ = idxb_count;
-  idxb = new SnaBIndices[idxb_max_];
+  idxb = new SnaBIndices[static_cast<std::size_t>(idxb_max_)];
 
   idxb_count = 0;
   for (int j1 = 0; j1 <= twojmax_; ++j1) {
@@ -325,7 +325,7 @@ void SnaEngine::build_indexlist() {
     }
   }
   idxz_max_ = idxz_count;
-  idxz = new SnaZIndices[idxz_max_];
+  idxz = new SnaZIndices[static_cast<std::size_t>(idxz_max_)];
 
   create3d(idxz_block,
            static_cast<std::size_t>(jdim),
