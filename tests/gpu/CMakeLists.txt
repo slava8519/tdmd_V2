@@ -29,6 +29,20 @@ target_compile_definitions(
           TDMD_VERIFY_POTENTIALS_DIR="${CMAKE_SOURCE_DIR}/verify/third_party/potentials")
 add_test(NAME test_eam_alloy_gpu COMMAND test_eam_alloy_gpu)
 
+# T8.6a: SnapGpu + SnapGpuAdapter plumbing. Asserts the class skeleton compiles and links on all
+# flavors, rejects M8-scope flags, and throws the T8.6b sentinel from compute(). Full kernel-body
+# bit-exactness gate (D-M8-13, ≤1e-12 rel vs CPU) lands at T8.7 after T8.6b. Self-skips with exit 77
+# if the LAMMPS submodule (W_2940_2017_2.snap* fixture) is not initialized — same Option A
+# convention as test_snap_compute.
+add_executable(test_snap_gpu_plumbing test_snap_gpu_plumbing.cpp)
+target_link_libraries(test_snap_gpu_plumbing PRIVATE tdmd::gpu tdmd::potentials tdmd::state
+                                                     Catch2::Catch2WithMain)
+target_compile_definitions(
+  test_snap_gpu_plumbing
+  PRIVATE TDMD_TEST_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/potentials/fixtures")
+add_test(NAME test_snap_gpu_plumbing COMMAND test_snap_gpu_plumbing)
+set_tests_properties(test_snap_gpu_plumbing PROPERTIES SKIP_RETURN_CODE 77)
+
 # T6.6: VV NVE integrator GPU kernel — bit-exact vs CPU reference (gpu/SPEC §7.3).
 add_executable(test_integrator_vv_gpu test_integrator_vv_gpu.cpp)
 target_link_libraries(test_integrator_vv_gpu PRIVATE tdmd::gpu tdmd::integrator tdmd::state

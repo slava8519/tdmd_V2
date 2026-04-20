@@ -1,9 +1,9 @@
 # gpu/SPEC.md
 
 **Module:** `gpu/`
-**Status:** master module spec v1.0.13 (T7.8 shipped — full 2-stream split-phase compute/mem overlap pipeline + K-deep `GpuDispatchAdapter` + single-rank pipeline-functional gate; 30% production gate moves to T7.14 2-rank integration smoke)
-**Parent:** `TDMD Engineering Spec v2.5` §14 M6, §15.2, §D (precision policy)
-**Last updated:** 2026-04-19
+**Status:** master module spec v1.0.17 (T8.6a shipped — `SnapGpu` + `SnapGpuAdapter` PIMPL scaffolding on canonical `EamAlloyGpu` shape + M8-scope flag fence + sentinel-throw `compute()` path; kernel body deferred to T8.6b, bit-exact gate deferred to T8.7)
+**Parent:** `TDMD Engineering Spec v2.5` §14 M6 (closed) / §14 M7 (closed) / §14 M8 (in progress), §15.2, §D (precision policy)
+**Last updated:** 2026-04-20
 
 ---
 
@@ -454,7 +454,165 @@ table (species count ~1–10 в M6).
 
 ### 7.4. Out of scope в M6
 
-LJ, Morse, MEAM, SNAP, PACE, MLIAP, NVT, NPT, thermostats — все откладываются на M9+. Их kernel contracts добавятся в соответствующие sections gpu/SPEC v1.x когда они landed. До того их `*Potential` / `*Integrator` классы остаются CPU-only; SimulationEngine (T6.7 wiring) routes на CPU path если potential name не в {EAM/alloy, Ni-Al}.
+LJ, Morse, MEAM, PACE, MLIAP, NVT, NPT, thermostats — остаются CPU-only; M9+ window для GPU ports. Их kernel contracts добавятся в соответствующие sections gpu/SPEC v1.x когда они landed. До того их `*Potential` / `*Integrator` классы CPU-only; SimulationEngine (T6.7 wiring) routes на CPU если potential style не в {EAM/alloy, SNAP} (preflight-level enforced in `src/io/preflight.cpp::check_runtime`).
+
+**SNAP GPU moved to M8 (T8.6a scaffolding / T8.6b kernel body / T8.7 bit-exact gate).** См. §7.5 ниже — SPEC contract authored при T8.6a landing.
+
+### 7.5. SNAP GPU (T8.6a scaffolding — v1.0.17 / T8.6b kernel body — deferred / T8.7 bit-exact gate — deferred)
+
+**Scope статус.** T8.6a (2026-04-20, this row) ships **только scaffolding**: class skeletons, PIMPL firewall, CPU-only build guards, M8-scope flag fence, sentinel-throw `compute()`. NO CUDA kernel launches в `src/gpu/snap_gpu.cu` at T8.6a — `test_nvtx_audit` trivially passes (грep walker finds zero `<<<...>>>` sites inside `snap_gpu.cu`). Full kernel body + bit-exact gate are T8.6b / T8.7 respectively.
+
+**Why split T8.6 → T8.6a + T8.6b.** Mirrors T8.4a/T8.4b CPU precedent: ~1500-line LAMMPS USER-SNAP port (Ui → Yi → deidrj three-pass) deserves a separate reviewable PR for the kernel body; scaffolding landing first pins the public adapter shape and the CPU-only build guard story before any CUDA-specific code is written. Downstream M8 tasks (T8.9 MixedFast SNAP, T8.10 T6 full-scale fixture diff, T8.11 cloud-burst scaling) can start their pre-impl reports against the locked `SnapGpuAdapter::compute()` signature without blocking on T8.6b kernel landing.
+
+**Public API — T8.6a locked shape.**
+
+```cpp
+// src/gpu/include/tdmd/gpu/snap_gpu.hpp — mirrors EamAlloyGpu
+namespace tdmd::gpu {
+  struct SnapTablesHost { /* twojmax, rcutfac, rfac0, rmin0, flags,
+                             k_max, idxb_max, idxu_max, idxz_max,
+                             per-species radius_elem[n_species],
+                             weight_elem[n_species],
+                             beta[n_species * (k_max + 1)],
+                             rcut_sq_ab[n_species * n_species] — all host ptrs */ };
+  struct SnapGpuResult { double potential_energy; double virial[6]; };
+
+  class SnapGpu {
+   public:
+    SnapGpu();
+    ~SnapGpu();
+    SnapGpu(SnapGpu&&) noexcept;
+    SnapGpu& operator=(SnapGpu&&) noexcept;
+    SnapGpu(const SnapGpu&) = delete;
+    SnapGpu& operator=(const SnapGpu&) = delete;
+
+    SnapGpuResult compute(
+        std::size_t n, const std::int32_t* types,
+        const double* x, const double* y, const double* z,
+        std::size_t ncells, const std::int32_t* cell_offsets,
+        const std::int32_t* cell_atoms,
+        const BoxParams& box, const SnapTablesHost& tables,
+        double* fx_out, double* fy_out, double* fz_out,
+        DevicePool& pool, DeviceStream& stream);
+
+    std::uint64_t compute_version() const noexcept;  // monotone; bumped after successful compute()
+   private:
+    struct Impl; std::unique_ptr<Impl> impl_;
+  };
+}
+```
+
+```cpp
+// src/potentials/include/tdmd/potentials/snap_gpu_adapter.hpp — domain facade
+namespace tdmd::potentials {
+  class SnapGpuAdapter {
+   public:
+    explicit SnapGpuAdapter(const SnapData& data);  // validates + flattens per-species arrays
+    ForceResult compute(state::AtomSoA& atoms, const state::Box& box,
+                        const neighbor::CellGrid& cells,
+                        gpu::DevicePool& pool, gpu::DeviceStream& stream);
+    std::uint64_t compute_version() const noexcept;
+  };
+}
+```
+
+Signature is **identical** to `EamAlloyGpuAdapter::compute` (same parameter set + same `ForceResult` return type) — lets `SimulationEngine::recompute_forces()` branch on the adapter type without surface-level restructuring.
+
+**M8-scope flag fence (T8.6a enforced).**
+
+`SnapGpuAdapter` ctor rejects with `std::invalid_argument`:
+- `chemflag == 1` — multi-element chemistry (M8-scope out per potentials/SPEC §6; revisit M10+ когда MEAM chemistry joined lands);
+- `quadraticflag == 1` — quadratic bispectrum extension (orthogonal feature, no physics need for M8 W / In-P fixtures);
+- `switchinnerflag == 1` — inner-switch function (LAMMPS extension not used в canonical W_2940 fixture).
+
+Parity with `SnapPotential` CPU ctor (T8.4b / T8.5) — same three rejections same messages. Both CPU and GPU paths fence identically so misconfigured YAML fails at the earliest validation layer.
+
+**Build-guard story (T8.6a shipped).**
+
+Single TU `src/gpu/snap_gpu.cu` with two branches:
+
+```cpp
+#if TDMD_BUILD_CUDA
+  struct SnapGpu::Impl { /* DevicePtr<> device buffers — declared, unused T8.6a */ };
+  SnapGpuResult SnapGpu::compute(...) {
+    TDMD_NVTX_RANGE("snap.compute_stub");
+    throw std::logic_error(
+        "SnapGpu::compute: T8.6b kernel body not landed — "
+        "set runtime.backend=cpu or await T8.6b merge");
+  }
+#else
+  struct SnapGpu::Impl {};
+  SnapGpuResult SnapGpu::compute(...) {
+    throw std::runtime_error(
+        "gpu::SnapGpu::compute: CPU-only build (TDMD_BUILD_CUDA=0); CUDA not linked");
+  }
+#endif
+```
+
+Mirrors `src/gpu/eam_alloy_gpu.cu` precedent. NO separate `snap_gpu_stub.cpp` — single-TU guard keeps CMake wiring simple (same set_source_files_properties LANGUAGE=CXX trick as EAM on CPU-only builds). `compute_version()` stays at 0 on both branches because `compute()` throws before any increment.
+
+**T8.6b — planned kernel architecture (NOT shipped at T8.6a).**
+
+Port of LAMMPS `compute_snap_common.cpp` + `sna.cpp` (~1500 lines total). Three-pass algorithm:
+
+1. **`snap_ui_kernel`** — per (atom i, neighbor j) pair: compute bispectrum basis `Ui_{l,m_1,m_2}` via Wigner-U expansion + rotational symmetry reduction. Thread = atom-neighbor pair; shared-memory bispectrum cache ~32 atoms per block.
+2. **`snap_yi_kernel`** — per-atom contraction `Yi_{l,m_1,m_2} = Σ_j β_l · Ui_{l,m_1,m_2}(i,j) · switch(r_{ij})`. Thread = atom; per-atom linear reduction, no atomics.
+3. **`snap_deidrj_kernel`** — per (atom i, neighbor j) pair: force derivative `dE/dr_{ij} = ...` + per-pair Newton-3 force scatter. Thread = atom-neighbor pair; FP64 atomic add on neighbor's force slot (forced по D-M8-13 ≤1e-12 rel gate).
+
+`__restrict__` на all pointer params per master spec §D.16. NVTX range per kernel launch per gpu/SPEC §9 (T6.11 audit discipline — `test_nvtx_audit` enforces). Index-table flatten (T** → T*) shipped at T8.6b entry — `Impl` allocates `d_idxcg_block`, `d_idxu_block`, `d_idxz_block`, `d_cg_coefficients`, `d_rootpq` as flat contiguous buffers filled once at adapter ctor (analogous to EAM spline coefficient flatten at T6.5). Host marshalling in `src/potentials/snap_gpu_adapter.cpp` (already flattens `radius_elem_flat_`, `weight_elem_flat_`, `beta_flat_` at T8.6a).
+
+**Acceptance gate at T8.7 (NOT at T8.6 / T8.6a / T8.6b).**
+
+- Per-atom forces + total PE + virial Voigt tensor agree **≤ 1e-12 rel** CPU FP64 ↔ GPU FP64 on W 2000-atom fixture (`W_2940_2017_2.snapcoeff` + `.snapparam`). Same shape as D-M6-7 EAM gate; D-M8-13 anchor.
+- Gate is relative, not byte-equal — absorbs FP64 reduction-order drift между host Kahan reduction и device atomic-add scatter. Math kernels themselves use identical FP sequences, so any divergence above 1e-12 indicates a real bug.
+- `tests/gpu/test_snap_gpu_bit_exact.cpp` ships at T8.7 (runtime gate — local pre-push only per D-M6-6 Option A CI).
+
+**T8.6a test coverage (shipped).**
+
+`tests/gpu/test_snap_gpu_plumbing.cpp` — 4 Catch2 cases:
+1. `SnapGpuAdapter constructs cleanly on canonical W_2940 fixture` — flatten succeeds; `compute_version() == 0`.
+2. `SnapGpuAdapter rejects M8-scope flag violations` — chemflag/quadraticflag/switchinnerflag each REQUIRE_THROWS_AS `std::invalid_argument`.
+3. `SnapGpu::compute — T8.6a sentinel error path is reachable` — structural; asserts error chain intact on both CUDA and CPU-only builds.
+4. `SnapGpuAdapter::compute_version — stays at 0 before T8.6b` — regression guard (catches accidental success-return).
+
+Self-skips с exit 77 if LAMMPS submodule not initialized (Option A / public CI convention — matches `test_snap_compute`).
+
+**NVTX:** no kernel launches at T8.6a → nothing to wrap. `test_nvtx_audit` walks `src/gpu/*.cu` and trivially passes since the grep walker finds zero `<<<...>>>` sites inside `snap_gpu.cu` at T8.6a. When T8.6b lands its three kernel launches, each will be wrapped in `TDMD_NVTX_RANGE("snap.{ui,yi,deidrj}_kernel")` per the audit rules.
+
+**Data lifecycle.**
+
+- T8.6a: adapter compute() marshals AtomSoA/Box/CellGrid → BoxParams + SnapTablesHost → calls `SnapGpu::compute()` which throws the T8.6b sentinel before touching device memory. Flattened host buffers (`radius_elem_flat_`, `weight_elem_flat_`, `beta_flat_`) are allocated once at adapter ctor.
+- T8.6b: adapter stays unchanged; `Impl::compute()` body implements H2D(atoms+cells+tables once cached) → three-kernel launch → D2H(forces+per-atom PE+virial) → host Kahan reduction of PE + virial (D-M6-15). Per-step kernel timing ~100μs per 2000-atom W fixture expected на RTX 5080 (measured в T8.10 / T8.11).
+- T8.7: bit-exact gate adds a second adapter call via CPU path, compares per-atom force/pe/virial arrays at ≤ 1e-12 rel.
+
+**Adapter registration (T8.6a shipped).**
+
+`SimulationEngine::init()` now switches on CPU potential type:
+
+```cpp
+if (auto* eam_cpu = dynamic_cast<EamAlloyPotential*>(potential_.get()); eam_cpu) {
+  gpu_potential_ = std::make_unique<potentials::EamAlloyGpuAdapter>(eam_cpu->data());
+} else if (auto* snap_cpu = dynamic_cast<SnapPotential*>(potential_.get()); snap_cpu) {
+  gpu_snap_potential_ = std::make_unique<potentials::SnapGpuAdapter>(snap_cpu->data());
+} else {
+  throw std::invalid_argument("runtime.backend=gpu requires EAM/alloy or SNAP potential");
+}
+```
+
+Parallel fields (`gpu_potential_`, `gpu_snap_potential_`) rather than abstract `GpuPotentialAdapter` base — minimum-scope for T8.6a; abstract-base refactor (if ever needed for M9+ potentials) can land at T8.6b or later once 2+ GPU potentials actually coexist на dispatch path.
+
+`src/io/preflight.cpp::check_runtime` relaxed — `runtime.backend=gpu` now accepts `potential.style ∈ {eam/alloy, snap}`. Morse стainavljjs CPU-only за ошибка.
+
+**Roadmap после T8.6a.**
+
+| Task | Scope | Gate |
+|------|-------|------|
+| T8.6b | Full CUDA kernel port of SnaEngine (~1500 lines); three kernels Ui/Yi/deidrj; __restrict__ + NVTX + Kahan reduction | Functional pass on W 64-atom smoke test; `compute_version()` monotonic |
+| T8.7  | Bit-exact gate CPU FP64 ≡ GPU FP64 ≤ 1e-12 rel on W 2000-atom fixture | D-M8-13 closure |
+| T8.9  | MixedFast SNAP kernel — FP32 math + FP64 accum (Philosophy B) | D-M8-8 ≤ 1e-5 rel force / ≤ 1e-7 rel PE |
+| T8.10 | T6 medium/large variants (1024/8192 atoms) — performance baseline vs LAMMPS CPU SNAP | TDMD GPU > LAMMPS CPU ≥ 2× |
+| T8.11 | Cloud-burst scaling (≥ 2 GPU nodes, P=2, K=4) | D-M8-7 overlap ≥ 30% |
+| T8.13 | M8 acceptance gate | Milestone close |
 
 ---
 
@@ -903,6 +1061,8 @@ tdmd run cfg.yaml --gpu-device=1 --gpu-streams=2 --gpu-memory-pool-mib=512 --no-
 | 2026-04-19 | v1.0.11 | **T6.13 landed — M6 integration smoke + D-M6-7 chain closure + M6 milestone declared closed.** New fixture tree `tests/integration/m6_smoke/` (README.md, smoke_config.yaml.template, telemetry_expected.txt, run_m6_smoke.sh, thermo_golden.txt) — 2-rank K=1 `runtime.backend: gpu` Ni-Al EAM/alloy NVE 864-atom 10-step harness; thermo gate is **byte-for-byte equality to the M5 golden** (copied verbatim; step 1/6 pre-flight asserts `diff -q` parity so editing one golden without the other fails CI). `.github/workflows/ci.yml` extended with an `M6 smoke` step inside `build-cpu` right after the M5 step — self-skips on public CI via `nvidia-smi -L` probe (exit 0) per D-M6-6, still runs infrastructure checks (golden parity, template substitution, LFS asset presence) so rot surfaces loudly. §11.3 rewritten from the pre-impl placeholder (10 steps, 864 atoms, M5-golden parity — not the M1-derived 10⁴-atom sketch). **D-M6-7 chain now green on an automated harness end-to-end: M3 ≡ M4 ≡ M5 ≡ M6 thermo golden.** Local pre-push gate: ≤5 s on commodity GPU; mandatory for any merge touching `src/gpu/`, `src/potentials/eam_alloy_gpu_*`, `src/integrator/*_gpu*`, `src/comm/mpi_host_staging*`, or `src/runtime/gpu_context*`. MixedFast coverage deliberately out-of-scope (D-M6-7/D-M6-8 are different gates; mixing them dilutes failure signal). T3-gpu efficiency curve (T6.10b), 2-stream overlap gate (T6.9b), multi-GPU-per-rank (M7+) explicitly not covered. **M6 milestone closed** per master spec §14 acceptance gate; remaining M6 open items (T6.8b FP32-table redesign, T6.9b full overlap pipeline, T6.10b efficiency curve, T6.11b ±20% calibration) carry forward as M7-window tasks per execution pack §6. |
 | 2026-04-19 | v1.0.13 | **T7.8 landed (ex-T6.9b) — full 2-stream split-phase compute/mem overlap pipeline + K-deep `GpuDispatchAdapter`.** §3.2b authored. `EamAlloyGpu` экспортирует split-phase async API: `compute_async()` queues H2D на mem_stream + kernels на compute_stream (event-chained per §3.2 sync primitives) + records `kernels_done_event` (no D2H); `finalize_async()` queues D2H на mem_stream waiting `kernels_done_event` + Kahan-reduces. Split required potому что single-phase pipelines self-serialize: cross-stream `cudaStreamWaitEvent(mem, kernels_done)` blocks subsequent H2D'ов до завершения D2H'а на том же stream'е → overlap window = 0. Pinned host buffers (D2H destinations + test-side input mirrors) теперь обязательны — pageable degrades `cudaMemcpyAsync` к internal staging + host block silently. `EamAlloyAsyncHandle::Impl` carries `DevicePtr<std::byte> h_pe_embed/h_pe_pair/h_virial` allocated через `DevicePool::allocate_pinned_host()`. `tdmd::scheduler::GpuDispatchAdapter` (`src/scheduler/include/tdmd/scheduler/gpu_dispatch_adapter.hpp` + `.cpp`) rotates через K internal slots, каждый own `EamAlloyGpu` + pending `EamAlloyAsyncHandle`. `enqueue_eam(...)` / `drain_eam(slot)` — FIFO contract; throws на double-enqueue without intervening drain. **Single-rank EAM-only acceptance gate (5%, не 30%)**: `tests/gpu/test_overlap_budget.cpp` measures `(t_serial - t_pipelined) / t_pipelined` на K=4, 14×14×14 Al FCC (10976 atoms, Al_small.eam.alloy). На RTX 5080: t_serial ≈ 7.48 ms, t_pipelined ≈ 6.85 ms → overlap ≈ 9.3% (gate ≥ 5%, comfortably above noise + functional pipeline check). PE + virial slot 0 vs serial oracle — bit-exact ≤ 1e-12 rel (D-M6-7 preserved через event chain). **Почему 5% а не 30%:** EAM на RTX 5080 на 10k atoms — kernel-bound (T_kernel ≈ 1.5 ms, T_mem ≈ 0.36 ms, ratio 0.24); asymptotic max overlap (K→∞) ≈ 24%, K=4 ≈ 17% — physically below 30% bar. **30% production gate** сохраняется per exec pack §T7.8 spec ("**2-rank** K=4 10k-atom") и переносится в T7.14 (M7 integration smoke), где Pattern 2 dispatch (T7.9) + halo D2H/MPI/H2D traffic (T7.6 OuterSdCoordinator) удвоит per-step memory work, давая T_mem/T_k ~0.55 → 30% achievable. Scheduler library теперь PUBLIC depends on `tdmd::gpu` (was added in `src/scheduler/CMakeLists.txt`). Все три CI flavors зелёные (compile-only); local pre-push runs `test_overlap_budget` ≤ 0.4 s on RTX 5080. |
 | 2026-04-19 | v1.0.7  | §3.2a authored + §9.5 scope-limit updated — T6.9a infrastructure landed (dual-stream `GpuContext` + spline H2D caching). `runtime::GpuContext` теперь owns оба non-blocking stream'а: `compute_stream()` (D-M6-13 primary, kernel dispatch) + `mem_stream()` (D-M6-13 secondary, H⇄D copies). Оба создаются через `make_stream()` (non-blocking flag). Adapter'ы пока берут только `compute_stream()`; полная `cudaEventRecord`/`cudaStreamWaitEvent` orchestration (§3.2 pipeline) + 30% overlap gate на 2-rank K=4 отложены в T6.9b (depends on Pattern 2 GPU dispatch — M7). **Spline H2D caching** (§7.2 adapter side): `EamAlloyGpu::Impl` + `EamAlloyGpuMixed::Impl` содержат три host-pointer cache fields (`splines_{F,rho,z2r}_coeffs_host`) + `splines_upload_count` counter. `compute()` re-uploads F/rho/z2r tables **только** когда incoming `tables.*_coeffs` host pointers отличаются от cached. Invariant: после N back-to-back compute() calls одного `EamAlloyGpuAdapter` instance — `splines_upload_count() == 1`. Adapter surface (`EamAlloyGpuAdapter::splines_upload_count()`) forwards от active backend; test coverage в `tests/gpu/test_eam_alloy_gpu.cpp "EamAlloyGpu — splines cached across compute() calls (T6.9a)"`. Rationale: на steady-state MD hot loop (~1000 compute() calls между NL rebuilds) re-upload ~MB-scale spline tables доминировал H2D bandwidth на MixedFast fixture'ах; caching снижает per-step H2D к `n_atoms × 40 bytes`. Works ortho both flavors — тот же pattern в Reference и Mixed Impl. Все три CI flavors зелёные (Reference+CUDA, MixedFast+CUDA, CPU-only-strict). |
+| 2026-04-20 | v1.0.17 | **T8.6a landed — `SnapGpu` + `SnapGpuAdapter` PIMPL scaffolding.** §7.4 rewritten: LJ/Morse/MEAM/PACE/MLIAP remain CPU-only; SNAP moved to M8 window (T8.6a scaffolding → T8.6b kernel body → T8.7 bit-exact gate). §7.5 **new** — full SNAP GPU contract authored at T8.6a landing: locked `SnapGpu` / `SnapGpuAdapter` API, M8-scope flag fence (chemflag/quadraticflag/switchinnerflag rejected with `std::invalid_argument`, parity с CPU `SnapPotential`), single-TU `src/gpu/snap_gpu.cu` build-guard story (`#if TDMD_BUILD_CUDA` branches via `logic_error` sentinel on CUDA / `runtime_error` on CPU-only — mirrors `eam_alloy_gpu.cu`, NO separate stub.cpp), planned T8.6b three-pass algorithm (Ui / Yi / deidrj), T8.7 bit-exact gate D-M8-13 ≤ 1e-12 rel CPU↔GPU FP64. `SimulationEngine::init()` switches на `dynamic_cast<SnapPotential*>` → `gpu_snap_potential_` field parallel к `gpu_potential_` (no abstract base — minimum-scope for T8.6a). `src/io/preflight.cpp::check_runtime` relaxed — `runtime.backend=gpu` accepts `potential.style ∈ {eam/alloy, snap}`. `tests/gpu/test_snap_gpu_plumbing.cpp` ships (4 Catch2 cases: constructs cleanly on W_2940; rejects all three M8-scope flags; sentinel error path reachable; `compute_version()` stays at 0 before T8.6b). Self-skips с exit 77 если LAMMPS submodule не initialized (Option A / public CI convention). `test_nvtx_audit` trivially passes — zero `<<<...>>>` sites в `snap_gpu.cu` at T8.6a. Все три CI flavors зелёные (Fp64Reference+CUDA 48/48; MixedFast+CUDA 48/48; CPU-only-strict 40/40); `test_t6_differential` (T8.5 D-M8-7 CPU byte-exact oracle) без регрессии. **T8.6b — remaining work:** full CUDA kernel port (~1500 lines LAMMPS USER-SNAP), index-table flatten (T** → T*), NVTX wrap на каждый kernel launch, __restrict__ compliance. **T8.7 — follow-on:** bit-exact differential gate. |
+| 2026-04-20 | v1.0.16 | **T8.0 — M8 entry: 2-rank overlap gate infrastructure (T7.8b carry-forward).** §3.2c authored: 2-rank overlap gate hardware prerequisite (≥ 2 physical CUDA devices; `cudaSetDevice(rank % device_count)` per-rank pinning) + dev SKIP semantics (`cudaGetDeviceCount() >= 2` probe, Catch2 exit 4 SKIP otherwise, CMake `SKIP_RETURN_CODE 4`). `tests/gpu/test_overlap_budget_2rank.cpp` + `tests/gpu/main_mpi.cpp` + `tests/gpu/CMakeLists.txt` (MPI-gated 2-rank target). Synthetic halo `MPI_Sendrecv` (1024 doubles pinned ≈ 8 KB, modelling P_space=2 halo slab ~50 Å×50 Å contact face) interleaved with GPU compute per slot. Serial baseline vs K=4 pipelined `GpuDispatchAdapter`; `REQUIRE(overlap_ratio >= 0.30)` + bit-exact slot 0 vs serial oracle at ≤ 1e-12 rel (D-M6-7 preserved). Runtime 30% measurement cloud-burst-gated (ties into T8.11). Dev workstations (1-GPU — this repo: 1× RTX 5080) SKIP by design per Option A CI policy. |
 | 2026-04-20 | v1.0.15 | **T7.14 landed — M7 integration smoke + acceptance gate + M7 milestone closed.** `tests/integration/m7_smoke/` shipped as the M7 analog of `m6_smoke/`: 7-step harness (golden parity pre-flight → `nvidia-smi -L` probe → single-rank Pattern 2 preflight → `mpirun -np 2 tdmd validate` → `tdmd run` → thermo byte-diff → telemetry invariants). The M7 `thermo_golden.txt` is a byte-for-byte copy of M6's (= M5 = M4 = M3); step 1/7 asserts `diff -q` parity, so golden drift fails CI before paying GPU time. `.github/workflows/ci.yml` extended with `M7 smoke` inside `build-cpu` after `M6 smoke` — self-skips on public CI via the GPU probe per D-M6-6 (Option A). **D-M7-10 byte-exact chain green end-to-end** on an automated harness: with `runtime.backend: gpu`, `zoning.subdomains: [2,1,1]`, `pipeline_depth_cap: 1`, `comm.backend: mpi_host_staging`, 2 ranks × 2 subdomains, Pattern 2 degenerates to Pattern 1 spatial decomposition and thermo bits match M6 exactly. Local pre-push ≤3 s on commodity GPU (2 s measured on RTX 5080). Harness guards against a `set -euo pipefail` × empty-`grep` shell pitfall that would otherwise spuriously fail step 7 when a forward-compat telemetry key is absent (`\|\| true` guards around the field-extraction pipeline; fallback treats absent `boundary_stalls_total` as `0`). **M6 + M7 GPU surface locked** — byte-exact Reference path on Pattern 1 (M6) + Pattern 2 K=1 (M7), with MixedFast thresholded gates (D-M6-8) and Pattern 2 ≥30% overlap / D-M7-9 ±25% calibration deliberately orthogonal. |
 | 2026-04-19 | v1.0.14 | **T7.12 landed (ex-T6.10b partial) — T3-gpu gate (3) reopened as Pattern 2 EAM-substitute strong-scaling probe.** §11.4 rewritten: T6.10b deferred-block replaced by T7.12 active block; Morse-vs-dissertation comparison stays deferred to M9+. Fixture: `verify/benchmarks/t3_al_fcc_large_anchor_gpu/checks.yaml` `efficiency_curve.status: deferred` → `active_eam_substitute`; new fields `morse_fidelity_blocker` (provenance), `efficiency_floor_pct: 80.0` (D-M7-8 / T7.11 parity), `notes` (EAM-substitute disclaimer). Harness (`verify/harness/anchor_test_runner/runner.py`): `_write_augmented_config()` accepts `subdomains_xyz: list[int] \| None = None` kwarg → injects `zoning.subdomains: [Nx,Ny,Nz]`; `_launch_tdmd_with_backend()` forwards the kwarg; `_run_gpu_two_level()` branches on `efficiency_curve.status` — `active_eam_substitute` calls new `_run_gpu_efficiency_probe()` which iterates `ranks_to_probe` (must include 1), launches per rank with `subdomains_xyz=[N,1,1]`, computes `100 * sps(N) * anchor_n / (sps_anchor * N)`, grades vs `efficiency_floor_pct`, emits one `GpuGateResult` per rank with `gate_name = "efficiency_curve_N{NN}"`. `GpuLaunchFn` typing widened to `Callable[..., dict]`. `GpuGateResult` extended with optional `n_procs / measured_steps_per_sec / measured_efficiency_pct / floor_pct` (default-None for gates 1/2 — backward compat). `AnchorTestReport.failure_mode` adds `EFFICIENCY_BELOW_FLOOR` classification. Mocked pytest: 8 new `GpuEfficiencyProbeTest` cases (perfect-scaling green, below-floor RED, provenance string, anchor-only single-rank, ranks-must-include-anchor invariant, partial-launch-failure RED, deferred-status backward compat, JSON roundtrip new fields) + 3 new `WriteAugmentedConfigSubdomainsTest` cases (subdomain injection, omitted-when-None, wrong-length raises). 29/29 unittests green; 13/13 scaling_runner tests still green (zero regression). `acceptance_criteria.md` rewritten: §"Gate (3) — efficiency curve (T7.12)" replaces §"Deferred gates (T6.10b scope)"; failure-mode taxonomy adds entry 6 `EFFICIENCY_BELOW_FLOOR`; ship-criteria split into T6.10a (shipped) + T7.12 (shipped). Roadmap row T6.10b updated to "EAM-substitute partial closure — Morse/dissertation deferred to M9+". |
 
@@ -922,4 +1082,8 @@ Roadmap extensions (authored by future tasks):
 - **T6.11** → §12 telemetry finalization (NVTX macro + instrumentation of all `<<<...>>>` sites + `device_pool.cpp` allocations) + PerfModel GPU cost tables (`gpu_cost_tables.hpp/cpp`, `predict_step_gpu_sec`) + grep-based NVTX audit test (**done — v1.0.9; ±20% calibration gate deferred to T6.11b pending Nsight run on target GPU**);
 - **T6.11b** → ±20% accuracy gate: calibrate `GpuKernelCost{a_sec, b_sec_per_atom}` per stage from Nsight-measured micro-bench, load coefficients via JSON fixture, compare `PerfModel::predict_step_gpu_sec` to measured step time (blocked on target-GPU Nsight run — cannot run in public-repo CI without self-hosted runner);
 - **T6.12** → `.github/workflows/ci.yml` `build-gpu` matrix (Fp64Reference + MixedFast) compile-only on `ubuntu-latest` + stock apt CUDA toolkit; required status check (**done — v1.0.10; runtime-CUDA tests remain local pre-push**);
-- **T6.13** → §11.3 M6 integration smoke + D-M6-7 chain closure + CI wiring (**done — v1.0.11; M6 milestone closed**).
+- **T6.13** → §11.3 M6 integration smoke + D-M6-7 chain closure + CI wiring (**done — v1.0.11; M6 milestone closed**);
+- **T8.0** → §3.2c 2-rank overlap gate hardware prerequisite + dev SKIP semantics (**done — v1.0.16; runtime 30% measurement cloud-burst-gated, ties into T8.11**);
+- **T8.6a** → §7.4 rewritten (SNAP moved to M8) + §7.5 new SNAP GPU contract + `SnapGpu` / `SnapGpuAdapter` PIMPL scaffolding + M8-scope flag fence + sentinel-throw `compute()` + `SimulationEngine` dispatch wiring + `preflight::check_runtime` relaxation + `tests/gpu/test_snap_gpu_plumbing.cpp` (**done — v1.0.17; kernel body T8.6b, bit-exact gate T8.7**);
+- **T8.6b** → full CUDA kernel port of LAMMPS USER-SNAP three-pass (~1500 lines; Ui → Yi → deidrj); `Impl::compute()` body implements H2D→kernels→D2H→Kahan reduction; index-table flatten (T** → T*); NVTX wrap each launch; __restrict__ compliance;
+- **T8.7**  → bit-exact gate `test_snap_gpu_bit_exact.cpp` — GPU FP64 ≡ CPU FP64 ≤ 1e-12 rel on W 2000-atom fixture (D-M8-13).

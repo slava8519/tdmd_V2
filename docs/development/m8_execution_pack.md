@@ -643,18 +643,19 @@ SnapPotential CPU FP64 vs LAMMPS `pair_style snap` FP64; compares per-atom force
 
 ---
 
-### T8.6 — SnapPotential GPU FP64 implementation
+### T8.6 — SnapPotential GPU FP64 implementation (split into T8.6a [landed] + T8.6b [pending])
+
+**Status 2026-04-20.** T8.6a landed (scaffolding only — class skeletons + PIMPL firewall + CPU-only build guards + M8-scope flag fence + sentinel-throw `compute()` path + `SimulationEngine` dispatch wiring + `preflight::check_runtime` relaxation + `test_snap_gpu_plumbing`); see master spec Приложение C + `docs/specs/gpu/SPEC.md` v1.0.17 §7.5. T8.6b (full CUDA kernel body port) remains pending — this task box is kept here for T8.6b planning / review.
 
 ```
-# TDMD Task: SnapPotential GPU FP64 — CUDA port
+# TDMD Task: SnapPotential GPU FP64 — CUDA port (T8.6b kernel body — T8.6a scaffolding already shipped)
 
 ## Context
 - Master spec: §14 M8 (SnapPotential GPU)
-- Module SPEC: `docs/specs/potentials/SPEC.md` §4 (CPU ref landed); gpu/SPEC §7
-  (GPU potential pattern)
+- Module SPEC: `docs/specs/potentials/SPEC.md` §4 (CPU ref landed); gpu/SPEC §7.5 (SNAP GPU contract — T8.6a authored)
 - D-M8-8 GPU FP64 ≤ 1e-12 rel vs CPU FP64 (D-M6-7 chain extension)
 - Role: GPU / Performance Engineer + Physics Engineer (joint)
-- Depends: T8.5 (CPU FP64 oracle locked)
+- Depends: T8.5 (CPU FP64 oracle locked), T8.6a (scaffolding landed)
 
 ## Goal
 Port SnapPotential CPU FP64 к CUDA. Strategy: follow M6 EAM/alloy GPU pattern —
@@ -1380,8 +1381,35 @@ log, release notes, git tag `v1.0.0-alpha1` annotated.
   T1/T4 precedent budget 2e-6), Press max_rel 3.2e-11 (budget 1e-10); forces
   max_rel = **8.795e-13** под budget 1e-12 — D-M8-7 closed с decade headroom.
   ctest 39/39 green. Depends: T8.4b [x].
-- [ ] **T8.6** — SnapPotential GPU FP64 functional; NVTX-wrapped; functional
-  tests green (64-atom W functional correctness).
+- [x] **T8.6a** — SnapPotential GPU FP64 **scaffolding** landed 2026-04-20:
+  `src/gpu/include/tdmd/gpu/snap_gpu.hpp` (PIMPL mirror `EamAlloyGpu` shape) +
+  `src/gpu/snap_gpu.cu` (single-TU `#if TDMD_BUILD_CUDA` branches: CUDA →
+  `std::logic_error("T8.6b kernel body not landed")` wrapped в
+  `TDMD_NVTX_RANGE("snap.compute_stub")`; CPU-only → `std::runtime_error`; NO
+  separate stub.cpp; zero `<<<...>>>` launches — `test_nvtx_audit` trivially
+  passes) + `src/potentials/include/tdmd/potentials/snap_gpu_adapter.hpp` +
+  `src/potentials/snap_gpu_adapter.cpp` (domain facade, ctor validates
+  n_species>0 / rcutfac>0 / M8-scope flag fence chemflag/quadraticflag/
+  switchinnerflag parity с CPU `SnapPotential`, flattens radius_elem /
+  weight_elem / β coefficients) + `src/runtime/*simulation_engine.*` (new
+  parallel field `gpu_snap_potential_`, `init()` switches via `dynamic_cast`,
+  `recompute_forces()` branches accordingly) + `src/io/preflight.cpp::check_runtime`
+  relaxed (`runtime.backend=gpu` accepts `potential.style ∈ {eam/alloy, snap}`),
+  CMake wiring, `tests/gpu/test_snap_gpu_plumbing.cpp` (4 Catch2 cases:
+  constructs cleanly on W_2940 fixture, rejects all three M8-scope flags,
+  sentinel error path reachable, `compute_version()` stays at 0 before T8.6b;
+  self-skips exit 77 on uninitialized LAMMPS submodule). SPEC: `gpu/SPEC.md`
+  v1.0.17 §7.5 new + §7.4 rewritten. Master spec Приложение C T8.6a addendum.
+  All three CI flavors зелёные (Fp64Reference+CUDA 48/48, MixedFast+CUDA
+  48/48, CPU-only-strict 40/40); T8.5 D-M8-7 CPU byte-exact gate без
+  регрессии.
+- [ ] **T8.6b** — SnapPotential GPU FP64 **kernel body**: full CUDA port
+  of LAMMPS USER-SNAP three-pass (Ui / Yi / deidrj; ~1500 lines; Wigner-U
+  expansion + bispectrum basis cache + Clebsch-Gordan contraction);
+  `__restrict__` per master spec §D.16; `TDMD_NVTX_RANGE("snap.{ui,yi,deidrj}_kernel")`
+  per gpu/SPEC §9 audit rules (T6.11); Kahan host-side reduction per D-M6-15;
+  LAMMPS GPLv2 attribution block в каждом новом `.cu`/`.cuh`;
+  `test_snap_gpu_functional` on W 64-atom fixture. Depends: T8.6a [x].
 - [ ] **T8.7** — GPU FP64 bit-exact gate (D-M6-7 chain extension): SNAP GPU ≡
   SNAP CPU @ Fp64Reference+Reference на T6 fixture; per-atom 1e-12 rel + virial
   byte-exact.

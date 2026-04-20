@@ -214,8 +214,10 @@ void check_run(const RunBlock& run, std::vector<PreflightError>& out) {
   }
 }
 
-// T6.7 — GPU backend potential compatibility. M6 wires EAM/alloy on GPU only
-// (Morse stays CPU-only per exec pack). Build-time CUDA availability and
+// T6.7 / T8.6a — GPU backend potential compatibility. M6 landed EAM/alloy on
+// GPU; T8.6a opens the door for SNAP (scaffolding only — the SnapGpu kernel
+// body lands at T8.6b, after which D-M8-13 ≤ 1e-12 rel is gated at T8.7).
+// Morse remains CPU-only per exec pack. Build-time CUDA availability and
 // runtime device probing are checked at SimulationEngine::init() — preflight
 // only enforces the YAML-schema-level invariants and does not pull a CUDA dep.
 void check_runtime(const RuntimeBlock& rt,
@@ -224,11 +226,12 @@ void check_runtime(const RuntimeBlock& rt,
   if (rt.backend != RuntimeBackendKind::Gpu) {
     return;
   }
-  if (pot.style != PotentialStyle::EamAlloy) {
+  if (pot.style != PotentialStyle::EamAlloy && pot.style != PotentialStyle::Snap) {
     push(out,
          PreflightSeverity::Error,
          "runtime.backend",
-         "runtime.backend='gpu' currently only supports potential.style=eam/alloy (M6 scope)");
+         "runtime.backend='gpu' currently only supports potential.style in "
+         "{eam/alloy, snap} (M6 / T8.6 scope)");
   }
 }
 

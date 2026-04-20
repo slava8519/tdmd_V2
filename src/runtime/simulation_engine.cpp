@@ -10,6 +10,7 @@
 #include "tdmd/potentials/morse.hpp"
 #include "tdmd/potentials/snap.hpp"
 #include "tdmd/potentials/snap_file.hpp"
+#include "tdmd/potentials/snap_gpu_adapter.hpp"
 #include "tdmd/runtime/gpu_context.hpp"
 #include "tdmd/runtime/physical_constants.hpp"
 #include "tdmd/runtime/unit_converter.hpp"
@@ -270,20 +271,26 @@ void SimulationEngine::init(const io::YamlConfig& config, const std::string& con
   displacement_tracker_.set_threshold(0.5 * skin_);
   displacement_tracker_.init(atoms_);
 
-  // --- T6.7: GPU backend wiring (opt-in via runtime.backend=gpu). Build
-  // the GpuContext + adapters BEFORE the initial force snapshot so
+  // --- T6.7 / T8.6a: GPU backend wiring (opt-in via runtime.backend=gpu).
+  // Build the GpuContext + adapters BEFORE the initial force snapshot so
   // `recompute_forces()` dispatches through GPU from step 0. Preflight has
-  // already guaranteed potential.style == eam/alloy when gpu is selected.
+  // already guaranteed potential.style ∈ {eam/alloy, snap} when gpu is
+  // selected. EAM wires into gpu_potential_; SNAP into gpu_snap_potential_;
+  // exactly one of the two is non-null post-init when gpu_backend_=true.
   gpu_backend_ = (config.runtime.backend == io::RuntimeBackendKind::Gpu);
   if (gpu_backend_) {
     tdmd::gpu::GpuConfig gpu_cfg{};  // defaults: device 0, 256 MiB warm-up
     gpu_context_ = std::make_unique<runtime::GpuContext>(gpu_cfg);
-    auto* eam_cpu = dynamic_cast<EamAlloyPotential*>(potential_.get());
-    if (eam_cpu == nullptr) {
+    if (auto* eam_cpu = dynamic_cast<EamAlloyPotential*>(potential_.get()); eam_cpu != nullptr) {
+      gpu_potential_ = std::make_unique<potentials::EamAlloyGpuAdapter>(eam_cpu->data());
+    } else if (auto* snap_cpu = dynamic_cast<SnapPotential*>(potential_.get());
+               snap_cpu != nullptr) {
+      gpu_snap_potential_ = std::make_unique<potentials::SnapGpuAdapter>(snap_cpu->data());
+    } else {
       throw std::invalid_argument(
-          "SimulationEngine: runtime.backend=gpu requires EAM/alloy potential (T6.7 scope)");
+          "SimulationEngine: runtime.backend=gpu requires EAM/alloy or SNAP potential "
+          "(M6 / T8.6 scope)");
     }
-    gpu_potential_ = std::make_unique<potentials::EamAlloyGpuAdapter>(eam_cpu->data());
     gpu_integrator_ = std::make_unique<GpuVelocityVerletIntegrator>(species_);
   }
 
@@ -514,15 +521,26 @@ void SimulationEngine::recompute_forces() {
   zero_forces();
   ForceResult result{};
   if (gpu_backend_) {
-    // GPU EAM adapter walks its own per-thread cell stencil — cell_grid_
-    // must be freshly binned (rebuild_neighbors() keeps it so). The CPU
-    // `neighbor_list_` is not consulted, but is kept current so thermo /
-    // skin / restart bookkeeping remains identical to the CPU path.
-    result = gpu_potential_->compute(atoms_,
-                                     box_,
-                                     cell_grid_,
-                                     gpu_context_->pool(),
-                                     gpu_context_->compute_stream());
+    // GPU EAM / SNAP adapter walks its own per-thread cell stencil —
+    // cell_grid_ must be freshly binned (rebuild_neighbors() keeps it so).
+    // The CPU `neighbor_list_` is not consulted, but is kept current so
+    // thermo / skin / restart bookkeeping remains identical to the CPU path.
+    if (gpu_potential_ != nullptr) {
+      result = gpu_potential_->compute(atoms_,
+                                       box_,
+                                       cell_grid_,
+                                       gpu_context_->pool(),
+                                       gpu_context_->compute_stream());
+    } else if (gpu_snap_potential_ != nullptr) {
+      result = gpu_snap_potential_->compute(atoms_,
+                                            box_,
+                                            cell_grid_,
+                                            gpu_context_->pool(),
+                                            gpu_context_->compute_stream());
+    } else {
+      throw std::logic_error(
+          "SimulationEngine::recompute_forces: gpu_backend_=true but no GPU adapter wired");
+    }
   } else {
     result = potential_->compute(atoms_, neighbor_list_, box_);
   }

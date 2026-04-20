@@ -78,6 +78,7 @@ class GpuVelocityVerletIntegrator;
 
 namespace tdmd::potentials {
 class EamAlloyGpuAdapter;
+class SnapGpuAdapter;
 }  // namespace tdmd::potentials
 
 namespace tdmd {
@@ -260,7 +261,13 @@ private:
   // `recompute_forces()` and `run()` loops branch on `gpu_backend_`.
   bool gpu_backend_ = false;
   std::unique_ptr<runtime::GpuContext> gpu_context_;
+  // EAM/alloy GPU adapter (T6.7). Null unless potential.style=eam/alloy and
+  // runtime.backend=gpu.
   std::unique_ptr<potentials::EamAlloyGpuAdapter> gpu_potential_;
+  // SNAP GPU adapter (T8.6a scaffolding, T8.6b kernel body). Null unless
+  // potential.style=snap and runtime.backend=gpu. Exactly one of
+  // gpu_potential_ / gpu_snap_potential_ is non-null when gpu_backend_=true.
+  std::unique_ptr<potentials::SnapGpuAdapter> gpu_snap_potential_;
   std::unique_ptr<GpuVelocityVerletIntegrator> gpu_integrator_;
 
   State state_ = State::Constructed;
