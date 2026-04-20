@@ -2,8 +2,16 @@
 # SPEC: docs/specs/potentials/SPEC.md
 # Exec pack: docs/development/m6_execution_pack.md T6.5 (EamAlloyGpuAdapter)
 
-add_library(tdmd_potentials STATIC morse.cpp tabulated.cpp eam_file.cpp eam_alloy.cpp eam_fs.cpp
-                                   eam_alloy_gpu_adapter.cpp)
+add_library(
+  tdmd_potentials STATIC
+  morse.cpp
+  tabulated.cpp
+  eam_file.cpp
+  eam_alloy.cpp
+  eam_fs.cpp
+  eam_alloy_gpu_adapter.cpp
+  snap_file.cpp
+  snap.cpp)
 add_library(tdmd::potentials ALIAS tdmd_potentials)
 
 target_include_directories(

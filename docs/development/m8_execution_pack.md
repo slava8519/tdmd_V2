@@ -1325,8 +1325,29 @@ log, release notes, git tag `v1.0.0-alpha1` annotated.
   §6.8 GPU kernel strategy; §6.9 validation matrix with D-M8-7 / D-M8-8
   threshold registry anchors; §8.7 cross-ref back to §6.7 + §D.17. Pure
   SPEC delta per playbook §9.1; ~270 lines of new content.
-- [ ] **T8.4** — SnapPotential CPU FP64 ported from LAMMPS USER-SNAP с attribution;
-  unit tests green (bispectrum match, Newton's 3rd law, 64-atom NVE 1e-12 drift).
+- [x] **T8.4a** — SNAP types + LAMMPS-format parser + SnapPotential skeleton
+  (2026-04-20): `SnapParams` (11 hyperparameters), `SnapSpecies`, `SnapData`
+  (with derived `k_max`, symmetric `rcut_sq_ab` n×n, FNV-1a checksum) +
+  `parse_snap_coeff` / `parse_snap_param` / `parse_snap_files` (path:line:
+  diagnostics, `chemflag=1` + `switchinnerflag=1` rejected с M9+ message),
+  `snap_k_max(twojmax)` matching LAMMPS `SNA::compute_ncoeff` (verified 1 / 5 /
+  14 / 30 / 55 / 91 / 140 for twojmax = 0 / 2 / 4 / 6 / 8 / 10 / 12; k_max = 55
+  cross-checks с W_2940_2017_2 fixture header declaration of 56 coefficients).
+  `SnapPotential final : Potential` constructor validates data consistency +
+  throws `std::invalid_argument` on mismatch; `compute()` throws
+  `std::logic_error` deferring force body port to T8.4b. 13-case / 51-assertion
+  Catch2 suite (`test_snap_file`) green, auto-skip 77 on uninitialized
+  submodule. Full ctest bank (45/45 passed) clean — no regressions.
+- [ ] **T8.4b** — SnapPotential force body port: three-pass bispectrum → energy
+  → force evaluator (Pass 1 compute_sna_atom с U-matrix + Clebsch-Gordan
+  contraction + bzero subtract; Pass 2 E_i = β_k·B_{k,i} + β·B cache; Pass 3
+  F_ij via −Σ_k β_k·dB_k/dr) ported verbatim от LAMMPS USER-SNAP `sna.cpp`
+  (1597 lines) + `pair_snap.cpp` (808 lines) preserving FP summation ordering
+  (prerequisite для D-M8-7 byte-exact at T8.5 и MixedFastSnapOnly policy swap
+  at T8.8). GPLv2 attribution block in new `src/potentials/snap/` subtree.
+  Unit tests (bispectrum hash match, Newton's 3rd law, 64-atom NVE 1e-12
+  drift). Depends: T8.4a [x]. Carry-forward scope: dedicated Physics
+  Engineer PR, ~1600 lines, sized for 3-5 day focused session.
 - [ ] **T8.5** — CPU SNAP differential vs LAMMPS: per-atom force ≤ 1e-12 rel
   and total PE ≤ 1e-12 rel на T6 tungsten 2048-atom. Locks SNAP CPU FP64 oracle.
 - [ ] **T8.6** — SnapPotential GPU FP64 functional; NVTX-wrapped; functional
