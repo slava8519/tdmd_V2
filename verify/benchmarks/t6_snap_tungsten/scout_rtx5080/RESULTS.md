@@ -1,6 +1,6 @@
 # T8.10 scout — TDMD GPU SNAP vs LAMMPS CPU + KOKKOS-GPU SNAP on RTX 5080
 
-**Date:** 2026-04-20 (revised 2026-04-21 with T8.6c-v5 Stages 1-3 per-bond dispatch landed)
+**Date:** 2026-04-20 (revised 2026-04-21 with T8.6c-v5 Stages 1-3 per-bond dispatch landed; re-revised 2026-04-21 with T-opt-3b paired-bond reverse index + T-opt-2 yi Phase B parallel-over-jju)
 **Hardware:** NVIDIA GeForce RTX 5080 (sm_120, 16 GB GDDR7, 32 °C idle, driver 590.48.01)
 **Build:** CUDA 13.1, per-flavor: `build/` (Fp64Reference), `build-mixed/` (MixedFast), `build-mixed-snap-only/` (MixedFastSnapOnly)
 **LAMMPS (CPU/legacy GPU pkg):** `verify/third_party/lammps/build_tdmd/lmp` — ML-SNAP + GPU + MANYBODY + KSPACE. This build has no `snap/gpu`/`snap/kk` pair style; `-sf gpu` on `pair_style snap` is a silent CPU fallthrough.
@@ -21,9 +21,15 @@
 | TDMD `Fp64ReferenceBuild` (GPU, post-T8.6c-v4)     | + warp-parallel compute_uarray/duarray recurrence | 109.63 |   109.6 | 25.5×   | 0.616× |
 | TDMD `MixedFastBuild` (GPU, post-T8.6c-v4)         | + warp-parallel compute_uarray/duarray recurrence |  91.95 |   92.0  | 21.4×   | 0.517× |
 | TDMD `MixedFastSnapOnlyBuild` (GPU, post-T8.6c-v4) | + warp-parallel compute_uarray/duarray recurrence | 115.96 |   116.0 | 27.0×   | 0.652× |
-| **TDMD `Fp64ReferenceBuild` (GPU, post-T8.6c-v5 Stage 3)** | + per-bond ui/deidrj dispatch + per-atom gather |  5.96 |   **59.6** | **13.9×**   | **0.335×** |
-| **TDMD `MixedFastBuild` (GPU, post-T8.6c-v5 Stage 3)**    | + per-bond ui/deidrj dispatch + per-atom gather |  4.79 |   **47.9**  | **11.1×**   | **0.269×** |
-| **TDMD `MixedFastSnapOnlyBuild` (GPU, post-T8.6c-v5 Stage 3)** | + per-bond ui/deidrj dispatch + per-atom gather |  4.80 |   **48.0**  | **11.2×**   | **0.270×** |
+| TDMD `Fp64ReferenceBuild` (GPU, post-T8.6c-v5 Stage 3) | + per-bond ui/deidrj dispatch + per-atom gather |  5.96 |   59.6 | 13.9×   | 0.335× |
+| TDMD `MixedFastBuild` (GPU, post-T8.6c-v5 Stage 3)    | + per-bond ui/deidrj dispatch + per-atom gather |  4.79 |   47.9  | 11.1×   | 0.269× |
+| TDMD `MixedFastSnapOnlyBuild` (GPU, post-T8.6c-v5 Stage 3) | + per-bond ui/deidrj dispatch + per-atom gather |  4.80 |   48.0  | 11.2×   | 0.270× |
+| TDMD `Fp64ReferenceBuild` (GPU, post-T-opt-3b)        | + paired-bond reverse index (halves deidrj_bond work) |  — |   40.8 | 9.49×   | 0.230× |
+| TDMD `MixedFastBuild` (GPU, post-T-opt-3b)            | + paired-bond reverse index (halves deidrj_bond work) |  — |   34.4 | 8.00×   | 0.194× |
+| TDMD `MixedFastSnapOnlyBuild` (GPU, post-T-opt-3b)    | + paired-bond reverse index (halves deidrj_bond work) |  — |   33.8 | 7.86×   | 0.190× |
+| **TDMD `Fp64ReferenceBuild` (GPU, post-T-opt-2)**       | + yi_kernel Phase B parallel-over-jju via CSR buckets |  3.70 |   **37.0** | **8.60×**   | **0.208×** |
+| **TDMD `MixedFastBuild` (GPU, post-T-opt-2)**           | + yi_kernel Phase B parallel-over-jju via CSR buckets |  2.95 |   **29.5**  | **6.86×**   | **0.166×** (**2.81× faster than LAMMPS CPU 1-rank**) |
+| **TDMD `MixedFastSnapOnlyBuild` (GPU, post-T-opt-2)**   | + yi_kernel Phase B parallel-over-jju via CSR buckets |  2.97 |   **29.7**  | **6.91×**   | **0.167×** |
 | LAMMPS SNAP 1-rank (`-sf gpu` → CPU fallback) | FP64 + FMA   |   17.87 |   178.7 |              41.5×  |                    ≡ 1-rank CPU |
 | LAMMPS SNAP CPU 1-rank              | FP64 + FMA             |   17.79 |   177.9 |              41.4×  |                   1.00×|
 | **LAMMPS SNAP KOKKOS snap/kk (GPU)** | CUDA FP64, newton on + neigh half | 0.4305 |   **4.30** | **1.00×**     |                   **0.0242×** (41.4× faster than LAMMPS CPU) |
@@ -41,7 +47,7 @@ faster than LAMMPS CPU 1-rank** on a single RTX 5080 (up from 1.94×
 post-v4). The gap to LAMMPS KOKKOS `snap/kk` 4.30 ms/step is now
 **11.1×** — 48 % of the post-v4 gap closed in a single milestone.
 
-**T8.6c speedup summary (seven commits across v1-v5):**
+**T8.6c + T-opt speedup summary (nine commits across v1-v5 + two T-opt):**
 
 | Kernel commit   | Scope                          | Fp64Ref       | MixedFast     | MixedSnapOnly |
 |-----------------|--------------------------------|--------------:|--------------:|--------------:|
@@ -52,8 +58,10 @@ post-v4). The gap to LAMMPS KOKKOS `snap/kk` 4.30 ms/step is now
 | T8.6c-v4 uarray-par | compute_uarray + compute_duarray intra-layer parallel | 109.6 ms/step | 92.0 ms/step | 116.0 ms/step |
 | T8.6c-v5 Stage 1 | Device-resident bond list (CSR + SoA), byte-identical emission order | (unchanged — infra only) | (unchanged) | (unchanged) |
 | T8.6c-v5 Stage 2 | `snap_ui_bond_kernel` + `snap_ui_gather_kernel` replace `snap_ui_kernel` | 69.4 ms/step | 57.1 ms/step | — |
-| **T8.6c-v5 Stage 3** | **`snap_deidrj_bond_kernel` + `snap_force_gather_kernel` replace `snap_deidrj_kernel`** | **59.6 ms/step** | **47.9 ms/step** | **48.0 ms/step** |
-| cumulative T8.6c | —                              | **7.52×**     | **6.60×**     | **6.79×**     |
+| T8.6c-v5 Stage 3 | `snap_deidrj_bond_kernel` + `snap_force_gather_kernel` replace `snap_deidrj_kernel` | 59.6 ms/step | 47.9 ms/step | 48.0 ms/step |
+| T-opt-3b | Paired-bond reverse index: halves deidrj_bond work via dedr_peer[b] ≡ dedr_own[reverse(b)] pure-function identity | 40.8 ms/step | 34.4 ms/step | 33.8 ms/step |
+| **T-opt-2** | **yi_kernel Phase B parallel-over-jju via CSR buckets (no atomics — disjoint writes)** | **37.0 ms/step** | **29.5 ms/step** | **29.7 ms/step** |
+| cumulative T8.6c+T-opt | —                         | **12.11×**    | **10.71×**    | **10.98×**    |
 
 **T8.6c-v4 alone delivers 2.67× (Fp64Ref), 2.27× (MixedFast), 1.80×
 (MixedSnapOnly) on top of v3.** This was the largest single-commit lever of
@@ -73,14 +81,31 @@ byte-exact oracle). On 2000-atom BCC W the per-bond dispatch turned out to
 be **1.92× faster** than the per-atom dispatch (MixedFast 92.0 → 47.9
 ms/step), more than halving the remaining gap to LAMMPS KOKKOS.
 
-The M8 ≥ 20 % gate still requires ≤ 3.44 ms/step (i.e. further ~14×
-speedup on top of v5 Stage 3). On a single RTX 5080 closing that remaining
-gap is expected to require either (a) kernel-level improvements targeting
-the MixedFast ylist/Clebsch-Gordan contraction (yi_kernel is now the
-dominant cost per NVTX breakdown — see perf roadmap below) or (b) the
-structurally-different multi-rank TD path where each rank owns ≤ 1/Nₖ of
-the atom count. Option (b) is the scenario M7 was designed for; option (a)
-is T-opt-2 (yi contraction pattern study) — deferred.
+**T-opt-3b** (paired-bond reverse index) and **T-opt-2** (yi Phase B
+parallel-over-jju via CSR buckets) added another **1.62× cumulative**
+(MixedFast 47.9 → 29.5 ms/step) in two single-commit refactors, both
+atomic-free and byte-exact by construction. T-opt-3b exploits the
+pure-function nature of `compute_deidrj(Δr, weight, ylist_slab)`: the full
+bond list emits both (i→j) and (j→i) bonds, and for any bond b with its
+reverse b', `dedr_peer[b] ≡ dedr_own[reverse(b)]` holds bit-for-bit. This
+lets `snap_deidrj_bond_kernel` drop the PEER-side branch entirely,
+halving its arithmetic — the gather reads `d_dedr_own[reverse(b)]` in
+place of a separately computed `d_dedr_peer[b]`. T-opt-2 eliminates the
+last tid==0-gated serial loop in the hot path: `snap_yi_kernel`'s Phase B
+(ybuf → ylist accumulation) now tid-strides over `idxu_max` jju slots
+backed by a pre-built CSR bucket of jjz values ordered ascending per jju
+(matching legacy sweep bit-for-bit).
+
+The M8 ≥ 20 % gate still requires ≤ 3.44 ms/step (i.e. further ~8.6×
+speedup on top of T-opt-2). On a single RTX 5080 closing that remaining
+gap is expected to require either (a) the structurally-different
+multi-rank TD path where each rank owns ≤ 1/Nₖ of the atom count, or
+(b) algorithmic wins from TDMD's multi-step scheduling (zones on coarser
+dt cost proportionally less per wall-second — Andreev's native lever).
+Option (a) is M7; option (b) is anchor-test territory (M5). The
+single-GPU kernel-tuning ladder has now flattened: further per-bond
+kernel work (shared-mem blocking, persistent kernel, sub-step
+amortisation) is expected to deliver < 2× on its own.
 
 ### T8.6c-v4 regression anomaly — MixedSnapOnly < MixedFast post-refactor
 
@@ -111,12 +136,16 @@ LAMMPS KOKKOS numbers are median-of-3 after 1 warmup discard; 4 total runs with 
    warp-parallel refactors** (ui add_uarraytot, yi Phase-A parallelism,
    deidrj dedr-reduction), the gap narrowed to 48.5× slower (208.6 ms/step
    MixedFast). **After T8.6c-v4 compute_uarray/duarray intra-layer
-   parallelism**, the gap further narrows to **21.4× slower** (92.0 ms/step
-   MixedFast). Cumulative T8.6c wins: Fp64Ref 4.09×, MixedFast 3.43×,
-   MixedSnapOnly 2.81×. MixedFast now runs **1.94× faster than LAMMPS CPU
-   1-rank** (was 1.77× slower pre-T8.6c). Relative to LAMMPS CPU 1-rank
-   (178 ms/step), LAMMPS GPU is 41.4× faster, so the GPU baseline remains
-   the only honest reference for the M8 ≥ 20 % gate.
+   parallelism**, the gap further narrowed to 21.4× (92.0 ms/step MixedFast).
+   **After T8.6c-v5 per-bond dispatch**, the gap narrowed to 11.1×
+   (47.9 ms/step MixedFast). **After T-opt-3b paired-bond reverse
+   index and T-opt-2 yi Phase B parallel-over-jju**, the gap now stands at
+   **6.86× slower** (29.5 ms/step MixedFast). Cumulative T8.6c+T-opt wins:
+   Fp64Ref 12.11×, MixedFast 10.71×, MixedSnapOnly 10.98×. MixedFast now
+   runs **2.81× faster than LAMMPS CPU 1-rank** (was 1.77× slower
+   pre-T8.6c). Relative to LAMMPS CPU 1-rank (178 ms/step), LAMMPS GPU
+   is 41.4× faster, so the GPU baseline remains the only honest reference
+   for the M8 ≥ 20 % gate.
 
 2. **LAMMPS `-sf gpu -pk gpu 1` on `pair_style snap` is a silent CPU
    fallthrough on the original `build_tdmd` binary.** The GPU package is
