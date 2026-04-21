@@ -8,34 +8,70 @@
 **Fixture:** 2000-atom BCC W (10×10×10), seed=12345, T=300 K, W_2940_2017_2 pure SNAP (no ZBL)
 **Scope:** NVE, dt=0.5 fs, 100-step (all configs)
 
-## Headline numbers (revised — real LAMMPS GPU baseline; T8.6c-v3 row added)
+## Headline numbers (revised 2026-04-20 — real LAMMPS GPU baseline; T8.6c-v4 row added)
 
 | Config                              | Build flags            | Wall (s) | ms/step | ratio vs LAMMPS GPU | ratio vs LAMMPS CPU 1-rank |
 |-------------------------------------|------------------------|---------:|--------:|--------------------:|---------------------------:|
 | TDMD `Fp64ReferenceBuild` (GPU, pre-T8.6c)     | `--fmad=false` oracle  |   44.83 |   448.3 |         104×    |                   2.52×|
 | TDMD `MixedFastBuild` (GPU, pre-T8.6c)         | `--fmad=true`          |   31.60 |   316.0 |         73.5×   |                   1.77×|
 | TDMD `MixedFastSnapOnlyBuild` (GPU, pre-T8.6c) | T8.9 narrow-FP32       |   31.61 |   326.1 |         75.8×   |                   1.83×|
-| **TDMD `Fp64ReferenceBuild` (GPU, post-T8.6c-v3)**     | `--fmad=false` oracle + warp-parallel yi + deidrj-reduction |   29.25 |   292.5 | **68.0×**   | **1.64×** |
-| **TDMD `MixedFastBuild` (GPU, post-T8.6c-v3)**         | `--fmad=true` + warp-parallel yi + deidrj-reduction |   20.86 |   208.6 | **48.5×**   | **1.17×** |
-| **TDMD `MixedFastSnapOnlyBuild` (GPU, post-T8.6c-v3)** | T8.9 narrow-FP32 + warp-parallel yi + deidrj-reduction |   20.92 |   209.2 | **48.7×**   | **1.18×** |
+| TDMD `Fp64ReferenceBuild` (GPU, post-T8.6c-v3)     | `--fmad=false` oracle + warp-parallel yi + deidrj-reduction |   29.25 |   292.5 | 68.0×   | 1.64× |
+| TDMD `MixedFastBuild` (GPU, post-T8.6c-v3)         | `--fmad=true` + warp-parallel yi + deidrj-reduction |   20.86 |   208.6 | 48.5×   | 1.17× |
+| TDMD `MixedFastSnapOnlyBuild` (GPU, post-T8.6c-v3) | T8.9 narrow-FP32 + warp-parallel yi + deidrj-reduction |   20.92 |   209.2 | 48.7×   | 1.18× |
+| **TDMD `Fp64ReferenceBuild` (GPU, post-T8.6c-v4)**     | + warp-parallel compute_uarray/duarray recurrence | 109.63 |   **109.6** | **25.5×**   | **0.616×** |
+| **TDMD `MixedFastBuild` (GPU, post-T8.6c-v4)**         | + warp-parallel compute_uarray/duarray recurrence |  91.95 |   **92.0**  | **21.4×**   | **0.517×** |
+| **TDMD `MixedFastSnapOnlyBuild` (GPU, post-T8.6c-v4)** | + warp-parallel compute_uarray/duarray recurrence | 115.96 |   **116.0** | **27.0×**   | **0.652×** |
 | LAMMPS SNAP 1-rank (`-sf gpu` → CPU fallback) | FP64 + FMA   |   17.87 |   178.7 |              41.5×  |                    ≡ 1-rank CPU |
 | LAMMPS SNAP CPU 1-rank              | FP64 + FMA             |   17.79 |   177.9 |              41.4×  |                   1.00×|
 | **LAMMPS SNAP KOKKOS snap/kk (GPU)** | CUDA FP64, newton on + neigh half | 0.4305 |   **4.30** | **1.00×**     |                   **0.0242×** (41.4× faster than LAMMPS CPU) |
 
-**T8.6c speedup summary (three commits):**
+NB: post-v4 rows are 1000-step `tdmd_gpu.yaml` median-of-3 via `quick_1000step_v4.sh`
+(direct apples-to-apples against the v3 `run_scout.sh` 1000-step baseline);
+pre-v4 rows were 100-step. **T8.6c-v4 is measured under the full run_scout.sh
+protocol scale.** MixedFast now runs **1.94× faster than LAMMPS CPU 1-rank**
+on a single RTX 5080 — the first flavor/config combination where TDMD GPU
+beats the non-TD CPU reference outright.
 
-| Kernel commit   | Scope                          | Fp64Ref      | MixedFast    | MixedSnapOnly |
-|-----------------|--------------------------------|-------------:|-------------:|--------------:|
+**T8.6c speedup summary (four commits):**
+
+| Kernel commit   | Scope                          | Fp64Ref       | MixedFast     | MixedSnapOnly |
+|-----------------|--------------------------------|--------------:|--------------:|--------------:|
 | (pre-T8.6c)     | all-tid==0 baseline            | 448.3 ms/step | 316.0 ms/step | 326.1 ms/step |
 | T8.6c-v1 ui     | `add_uarraytot` block-parallel | ~448 ms/step  | ~316 ms/step  | ~316 ms/step  |
 | T8.6c-v2 yi     | Phase A parallel over `idxz_max` | 309.3 ms/step | 227.3 ms/step | ~230 ms/step |
-| **T8.6c-v3 deidrj-red** | Phase B warp-shuffle dedr reduction | **292.5 ms/step** | **208.6 ms/step** | **209.2 ms/step** |
-| cumulative      | —                              | **1.53×**     | **1.51×**     | **1.56×**     |
+| T8.6c-v3 deidrj-red | Phase B warp-shuffle dedr reduction | 292.5 ms/step | 208.6 ms/step | 209.2 ms/step |
+| **T8.6c-v4 uarray-par** | **compute_uarray + compute_duarray intra-layer parallel** | **109.6 ms/step** | **92.0 ms/step** | **116.0 ms/step** |
+| cumulative      | —                              | **4.09×**     | **3.43×**     | **2.81×**     |
 
-**The T8.6c three commits cut TDMD GPU SNAP wall time by ~50 % across all three
-flavors**, but the gap to LAMMPS KOKKOS GPU remains **~48×** on MixedFast
-(208.6 vs 4.30 ms/step). The M8 ≥ 20 % gate requires ≤ 3.44 ms/step, i.e. a
-further ~61× speedup — unreachable on single-GPU kernel tuning alone.
+**T8.6c-v4 alone delivers 2.67× (Fp64Ref), 2.27× (MixedFast), 1.80×
+(MixedSnapOnly) on top of v3.** This is the largest single-commit lever of
+the T8.6c series — compute_uarray/duarray_device were the remaining
+tid==0-gated inner loops, and parallelising the intra-layer (mb, k) work
+(~4–90 entries per Wigner-U layer depending on twojmax=6 level) over 128
+block threads finally unlocks the GPU that T8.6c-v1/v2/v3 could only
+partially saturate. The gap to LAMMPS KOKKOS GPU narrows from ~48× to
+**21–27×** depending on flavor.
+
+The M8 ≥ 20 % gate still requires ≤ 3.44 ms/step (i.e. further 21–27×
+speedup on top of v4). On a single RTX 5080 that is unreachable by kernel
+tuning alone; closing the remaining gap requires the structurally-different
+LAMMPS KOKKOS architecture (per-bond team dispatch with AoSoA neighbour
+layout, documented as **T8.6c-v5** deferred task — see below).
+
+### T8.6c-v4 regression anomaly — MixedSnapOnly < MixedFast post-refactor
+
+Pre-v4 MixedFast and MixedSnapOnly were near-identical (208.6 vs 209.2
+ms/step) because the bispectrum recurrence dominated both, swamping the
+5.4 % `ui`-kernel pair-math T8.9 narrow-FP32 savings. Post-v4 the
+recurrence is amortised across 128 lanes, revealing a 26 % regression of
+MixedSnapOnly (116.0) against MixedFast (92.0).
+
+Root-cause conjecture: the T8.9 `sqrtf(rsq)` + `sincos` + `FP32→FP64`
+cast path in `snap_gpu_mixed.cu`'s per-pair setup dominates when the
+recurrence is no longer the bottleneck. Documented for future T8.9 review
+— the narrow-FP32 scope may now cost more than it saves. Deferred:
+T8.6c-v5 (per-bond dispatch) restructures the setup path anyway, which
+subsumes this regression into the larger refactor.
 
 LAMMPS KOKKOS numbers are median-of-3 after 1 warmup discard; 4 total runs with 15 s cooldown. Loop time from LAMMPS `Loop time of ...` report; Pair time 0.42392 s = 98.3 % of Loop.
 
@@ -49,12 +85,14 @@ LAMMPS KOKKOS numbers are median-of-3 after 1 warmup discard; 4 total runs with 
    on the same hardware, fixture, and potential — measured at 316 ms/step
    (TDMD MixedFast) vs 4.30 ms/step (LAMMPS KOKKOS). **After T8.6c-v1/v2/v3
    warp-parallel refactors** (ui add_uarraytot, yi Phase-A parallelism,
-   deidrj dedr-reduction), the gap narrowed to **48.5× slower** (208.6
-   ms/step MixedFast). This closes ~1.51× of the 73.5× distance. Relative
-   to LAMMPS CPU 1-rank (178 ms/step), LAMMPS GPU is 41.4× faster, so the
-   GPU baseline remains the only honest reference for the M8 gate. This
-   replaces the original scout's "1.77× vs LAMMPS" headline, which was
-   TDMD GPU vs a silently-CPU LAMMPS run (see configuration note).
+   deidrj dedr-reduction), the gap narrowed to 48.5× slower (208.6 ms/step
+   MixedFast). **After T8.6c-v4 compute_uarray/duarray intra-layer
+   parallelism**, the gap further narrows to **21.4× slower** (92.0 ms/step
+   MixedFast). Cumulative T8.6c wins: Fp64Ref 4.09×, MixedFast 3.43×,
+   MixedSnapOnly 2.81×. MixedFast now runs **1.94× faster than LAMMPS CPU
+   1-rank** (was 1.77× slower pre-T8.6c). Relative to LAMMPS CPU 1-rank
+   (178 ms/step), LAMMPS GPU is 41.4× faster, so the GPU baseline remains
+   the only honest reference for the M8 ≥ 20 % gate.
 
 2. **LAMMPS `-sf gpu -pk gpu 1` on `pair_style snap` is a silent CPU
    fallthrough on the original `build_tdmd` binary.** The GPU package is

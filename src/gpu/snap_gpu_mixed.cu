@@ -384,6 +384,12 @@ __global__ void snap_ui_kernel(std::uint32_t n,
             continue;
           }
 
+          // T8.6c-v4: scalar setup on tid==0, stashed to shared memory so the
+          // block-parallel compute_uarray sees the same (r, z0) inputs.
+          __shared__ double ui_r_sh;
+          __shared__ double ui_z0_sh;
+          __shared__ double ui_rcut_sh;
+          __shared__ double ui_wj_sh;
           if (tid == 0) {
             // T8.9 Phase A: FP32 only for `sqrtf(rsq)`. The SFU sincosf
             // was too imprecise — its ~1 ULP error amplifies through the
@@ -413,19 +419,29 @@ __global__ void snap_ui_kernel(std::uint32_t n,
             double cs_d, sn_d;
             sincos(theta0, &sn_d, &cs_d);
             const double z0 = r * cs_d / sn_d;
-            snap_detail::compute_uarray_device(ddx,
-                                               ddy,
-                                               ddz,
-                                               z0,
-                                               r,
-                                               rootpq,
-                                               p.jdimpq,
-                                               idxu_block,
-                                               p.twojmax,
-                                               ulist_r,
-                                               ulist_i);
-            const double sfac = snap_detail::compute_sfac_device(r, rcut, p.rmin0, p.switch_flag);
-            sfacwj_shared = sfac * wj;
+            ui_r_sh = r;
+            ui_z0_sh = z0;
+            ui_rcut_sh = rcut;
+            ui_wj_sh = wj;
+          }
+          __syncthreads();
+          snap_detail::compute_uarray_parallel_device(static_cast<unsigned>(tid),
+                                                      static_cast<unsigned>(block_threads),
+                                                      ddx,
+                                                      ddy,
+                                                      ddz,
+                                                      ui_z0_sh,
+                                                      ui_r_sh,
+                                                      rootpq,
+                                                      p.jdimpq,
+                                                      idxu_block,
+                                                      p.twojmax,
+                                                      ulist_r,
+                                                      ulist_i);
+          if (tid == 0) {
+            const double sfac =
+                snap_detail::compute_sfac_device(ui_r_sh, ui_rcut_sh, p.rmin0, p.switch_flag);
+            sfacwj_shared = sfac * ui_wj_sh;
           }
           __syncthreads();
           // Port of add_uarraytot (sna.cpp 806-830) with jelem=0. The CPU
@@ -781,6 +797,7 @@ __global__ void snap_deidrj_kernel(std::uint32_t n,
           __shared__ double z0_sh;
           __shared__ double dz0dr_sh;
           __shared__ double rcut_sh;
+          __shared__ double wj_sh;
 
           if (tid == 0) {
             // T8.9 Phase A: FP32 only for `sqrtf(rsq)`. See snap_ui_kernel
@@ -803,39 +820,45 @@ __global__ void snap_deidrj_kernel(std::uint32_t n,
             z0_sh = z0;
             dz0dr_sh = dz0dr;
             rcut_sh = rcut;
-
-            // --- OWN side: build ulist + dulist (single-lane recurrence).
-            snap_detail::compute_uarray_device(ddx,
-                                               ddy,
-                                               ddz,
-                                               z0,
-                                               r,
-                                               rootpq,
-                                               p.jdimpq,
-                                               idxu_block,
-                                               p.twojmax,
-                                               ulist_r,
-                                               ulist_i);
-            snap_detail::compute_duarray_device(ddx,
-                                                ddy,
-                                                ddz,
-                                                z0,
-                                                r,
-                                                dz0dr,
-                                                wj,
-                                                rcut,
-                                                p.rmin0,
-                                                p.switch_flag,
-                                                rootpq,
-                                                p.jdimpq,
-                                                idxu_block,
-                                                p.twojmax,
-                                                ulist_r,
-                                                ulist_i,
-                                                dulist_r,
-                                                dulist_i);
+            wj_sh = wj;
           }
           __syncthreads();
+
+          // --- OWN side: block-parallel compute_uarray + compute_duarray
+          // (T8.6c-v4).
+          snap_detail::compute_uarray_parallel_device(static_cast<unsigned>(tid),
+                                                      static_cast<unsigned>(block_threads),
+                                                      ddx,
+                                                      ddy,
+                                                      ddz,
+                                                      z0_sh,
+                                                      r_sh,
+                                                      rootpq,
+                                                      p.jdimpq,
+                                                      idxu_block,
+                                                      p.twojmax,
+                                                      ulist_r,
+                                                      ulist_i);
+          snap_detail::compute_duarray_parallel_device(static_cast<unsigned>(tid),
+                                                       static_cast<unsigned>(block_threads),
+                                                       ddx,
+                                                       ddy,
+                                                       ddz,
+                                                       z0_sh,
+                                                       r_sh,
+                                                       dz0dr_sh,
+                                                       wj_sh,
+                                                       rcut_sh,
+                                                       p.rmin0,
+                                                       p.switch_flag,
+                                                       rootpq,
+                                                       p.jdimpq,
+                                                       idxu_block,
+                                                       p.twojmax,
+                                                       ulist_r,
+                                                       ulist_i,
+                                                       dulist_r,
+                                                       dulist_i);
 
           // --- OWN side: block-parallel dedr reduction (T8.6c).
           double dedr_own[3];
@@ -864,39 +887,41 @@ __global__ void snap_deidrj_kernel(std::uint32_t n,
           }
           __syncthreads();
 
-          // --- PEER side: rebuild ulist + dulist with flipped sign and wi.
-          if (tid == 0) {
-            snap_detail::compute_uarray_device(-ddx,
-                                               -ddy,
-                                               -ddz,
-                                               z0_sh,
-                                               r_sh,
-                                               rootpq,
-                                               p.jdimpq,
-                                               idxu_block,
-                                               p.twojmax,
-                                               ulist_r,
-                                               ulist_i);
-            snap_detail::compute_duarray_device(-ddx,
-                                                -ddy,
-                                                -ddz,
-                                                z0_sh,
-                                                r_sh,
-                                                dz0dr_sh,
-                                                wi,
-                                                rcut_sh,
-                                                p.rmin0,
-                                                p.switch_flag,
-                                                rootpq,
-                                                p.jdimpq,
-                                                idxu_block,
-                                                p.twojmax,
-                                                ulist_r,
-                                                ulist_i,
-                                                dulist_r,
-                                                dulist_i);
-          }
-          __syncthreads();
+          // --- PEER side: rebuild ulist + dulist with flipped sign and wi
+          // (T8.6c-v4 block-parallel).
+          snap_detail::compute_uarray_parallel_device(static_cast<unsigned>(tid),
+                                                      static_cast<unsigned>(block_threads),
+                                                      -ddx,
+                                                      -ddy,
+                                                      -ddz,
+                                                      z0_sh,
+                                                      r_sh,
+                                                      rootpq,
+                                                      p.jdimpq,
+                                                      idxu_block,
+                                                      p.twojmax,
+                                                      ulist_r,
+                                                      ulist_i);
+          snap_detail::compute_duarray_parallel_device(static_cast<unsigned>(tid),
+                                                       static_cast<unsigned>(block_threads),
+                                                       -ddx,
+                                                       -ddy,
+                                                       -ddz,
+                                                       z0_sh,
+                                                       r_sh,
+                                                       dz0dr_sh,
+                                                       wi,
+                                                       rcut_sh,
+                                                       p.rmin0,
+                                                       p.switch_flag,
+                                                       rootpq,
+                                                       p.jdimpq,
+                                                       idxu_block,
+                                                       p.twojmax,
+                                                       ulist_r,
+                                                       ulist_i,
+                                                       dulist_r,
+                                                       dulist_i);
 
           const std::size_t jbase =
               static_cast<std::size_t>(j) * static_cast<std::size_t>(p.idxu_max);
