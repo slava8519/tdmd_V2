@@ -1,15 +1,18 @@
 # T6 — SNAP tungsten differential (`t6_snap_tungsten`)
 
-**Status:** **D-M8-7 byte-exact gate GREEN** — landed M8 **T8.5 (2026-04-20)**.
-CPU FP64 TDMD SnapPotential ≡ LAMMPS FP64 `pair_style snap` to per-atom-force
-max_rel ≈ 8.8e-13 under 1e-12 budget on 250-atom BCC W, 100 NVE steps. Thermo
-PE/KE/Etotal match to FP64 bytes, Temperature/Pressure within T1/T4 precedent
-budgets. Pure SNAP path only (no ZBL — deferred M9+); the canonical production
-fixture `lammps_script.in` retains `hybrid/overlay zbl+snap` for physics
-realism, but the byte-exact gate (`lammps_script_metal.in` + `config_metal.yaml`)
-scopes to the SNAP bispectrum path standalone. Scaling to 1024/8192-atom
-variants deferred to T8.10. See §14 M8 acceptance gate in `TDMD_Engineering_Spec.md`
-and `docs/development/m8_execution_pack.md` T8.5 / T8.10.
+**Status:** **M8 T8.10 shipped (2026-04-21)** — canonical 1024-atom
+`config.yaml.template` + 8192-atom `config_8192.yaml.template` scaling
+variant + `tests/integration/m8_smoke_t6/` integration-smoke gate. Builds
+on **T8.5** (D-M8-7 CPU FP64 byte-exact gate **GREEN** 2026-04-20 —
+max_rel ≈ 8.8e-13 under 1e-12 budget on 250-atom BCC W, 100 NVE steps,
+thermo PE/KE/Etotal match to FP64 bytes) and **T8.7** (D-M6-7 byte-exact
+extension to GPU FP64 SNAP). Pure SNAP path only (no ZBL — deferred M9+);
+the canonical production fixture `lammps_script.in` retains
+`hybrid/overlay zbl+snap` for physics realism, but the byte-exact gate
+(`lammps_script_metal.in` + `config_metal.yaml`) scopes to the SNAP
+bispectrum path standalone. See §14 M8 acceptance gate in
+`TDMD_Engineering_Spec.md` and `docs/development/m8_execution_pack.md`
+T8.5 / T8.10.
 
 ## Purpose
 
@@ -44,11 +47,18 @@ The TDMD repo does **not** track these files (D-M8-3 repo-size preservation); th
 
 T6 ships **three size variants** per m8 exec pack §4 T8.10:
 
-| Variant | Box | N | Run length | Purpose |
-|---|---|---|---|---|
-| `small` (landed T8.5) | **5×5×5** BCC W — see note below | **250** | 100 steps | Smoke, CI, single-rank Fp64Reference byte-exact oracle |
-| `medium` | 8×8×8 BCC W | 1024 | 500 steps | Scaling probe input (T8.10) |
-| `large` | 16×16×16 BCC W | 8192 | 1000 steps | Scaling probe (cloud-burst T8.11) |
+| Variant | Box | N | Run length | Config file | Purpose |
+|---|---|---|---|---|---|
+| `small` (T8.5) | **5×5×5** BCC W — see note below | **250** | 100 steps | `config_metal.yaml` + `setup.data` | Single-rank Fp64Reference byte-exact oracle gate (D-M8-7) |
+| `canonical` (T8.10) | 8×8×8 BCC W | **1024** | 10 steps | `config.yaml.template` + `setup_1024.data` | Integration smoke (`tests/integration/m8_smoke_t6/`), D-M8-8 NVE-drift gate |
+| `scaling` (T8.10) | 16×16×16 BCC W | **8192** | 100 steps | `config_8192.yaml.template` + `setup_8192.data` | Strong-scaling base (cloud-burst T8.11) |
+
+**Arithmetic note:** BCC has 2 atoms per conventional cubic unit cell, so
+8×8×8 → 2·8³ = 1024 atoms and 16×16×16 → 2·16³ = 8192 atoms.
+`docs/development/m8_execution_pack.md` prose labels these "2048-atom" and
+"16384-atom" respectively — that is a count-cells-as-atoms slip. This
+README and `generate_setup.py` are authoritative; a session-report SPEC
+delta corrects the exec pack prose.
 
 **Why 5×5×5 not 4×4×4 for the `small` variant:** TDMD's CellGrid halo stencil
 requires `L_axis ≥ 3·(cutoff + skin)`. For SNAP W (cutoff 4.73442 Å + skin 0.3 Å)
@@ -124,12 +134,12 @@ byte-exact gate):
     -in verify/benchmarks/t6_snap_tungsten/lammps_script.in
 ```
 
-## Status checklist (M8 T8.5 / T8.10)
+## Status checklist (M8 T8.5 / T8.10 / T8.11)
 
 - [x] **T8.10a** — Scaffold landed 2026-04-20: `README.md`, `checks.yaml`, `lammps_script.in`, threshold-registry entries `benchmarks.t6_snap_tungsten.*` in `verify/thresholds/thresholds.yaml`.
 - [x] **T8.5** — D-M8-7 byte-exact gate landed 2026-04-20: `generate_setup.py` (5×5×5 BCC W, 250 atoms), `setup.data` (committed), `lammps_script_metal.in` (pure SNAP, no ZBL), `config_metal.yaml` (TDMD style:snap), `verify/t6/run_differential.py` driver, `verify/t6/test_t6_differential.cpp` Catch2 wrapper. Forces max_rel ≈ 8.8e-13 under 1e-12 budget. ctest 39/39 green.
-- [ ] **T8.10** — Medium/large variants (1024, 8192 atoms) + extended run lengths.
-- [ ] **T8.11** — Scaling probe driver (8-rank baseline + cloud-burst scaling). Feeds `verify/benchmarks/t6_snap_scaling/results_<date>.json` artefact for M8 acceptance gate close.
+- [x] **T8.10** — Canonical 1024-atom + scaling 8192-atom variants landed 2026-04-21: `config.yaml.template` + `setup_1024.data`, `config_8192.yaml.template` + `setup_8192.data`, `tests/integration/m8_smoke_t6/run_m8_smoke_t6.sh` (D-M8-8 NVE-drift gate: 1e-7 per 10 steps; bring-up measurement `|ΔE|/|E₀| = 2.5e-9`, ~40× headroom). Self-skips on submodule-absent / no-GPU.
+- [ ] **T8.11** — Scaling probe driver (8-rank baseline + cloud-burst scaling). Feeds `verify/benchmarks/t6_snap_scaling/results_<date>.json` artefact for M8 acceptance gate close. Consumes `config_8192.yaml.template` + `setup_8192.data`.
 
 ## Cross-references
 

@@ -1,0 +1,47 @@
+# T6 scaling-variant fixture — 8192-atom W BCC, pure SNAP.
+#
+# Shipped at M8 T8.10 as the strong-scaling base fixture for the T8.11 cloud
+# burst (1 → 2 → 4 → 8 rank strong scaling on T6 tungsten). Not exercised on
+# single-GPU dev hardware (one rank is already ~8× the scout 1024-atom size —
+# fits RTX 5080 memory but single-rank run time makes the 1024 variant the
+# better ergonomic baseline).
+#
+# Atoms: generate_setup.py --nrep 16 (BCC, a0 = 3.1803 Å, 4096 unit cells ×
+# 2 atoms/cell = 8192; T₀ = 300 K, seed = 12345 → deterministic).
+# Note: M8 exec pack lines 97/1043/1061/1128/1129 say "16384 atoms 16×16×16 BCC" —
+# off by 2× (BCC arithmetic). 8192 is the actual atom count; generator
+# docstring is authoritative. SPEC delta at T8.10 session-report time.
+#
+# The harness substitutes {{ATOMS_PATH}}, {{SNAP_COEFF}}, {{SNAP_PARAM}} at
+# launch. Unsubstituted, this file is NOT directly runnable — invoke via
+# the T8.11 scaling driver (to land with that task).
+
+simulation:
+  units: metal
+  seed: 12345
+
+atoms:
+  source: lammps_data
+  path: "{{ATOMS_PATH}}"    # setup_8192.data (LFS)
+
+potential:
+  style: snap
+  params:
+    coeff_file: "{{SNAP_COEFF}}"
+    param_file: "{{SNAP_PARAM}}"
+
+integrator:
+  style: velocity_verlet
+  dt: 0.0005                # ps — Wood 2017 timestep.
+
+neighbor:
+  skin: 0.3                 # Å — T6 canonical skin.
+
+thermo:
+  every: 10                 # scaling-run default (matches config_metal.yaml).
+
+run:
+  n_steps: 100              # T8.11 default; overridable via driver.
+
+runtime:
+  backend: gpu

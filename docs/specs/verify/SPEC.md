@@ -695,12 +695,19 @@ in every CI flavor — covers efficiency formula, gate dispatch, augmented
 config injection, Pattern 1 byte-exact gate, launch-failure handling, and
 report serialisation. 13 cases, ~25 ms wall.
 
-### 4.7. T6 (`t6_snap_tungsten`) — canonical fixture choice landed M8 T8.2
+### 4.7. T6 (`t6_snap_tungsten`) — canonical fixture **shipped M8 T8.10**
 
-**Status:** fixture choice and oracle subset gate landed at M8 T8.2 (document
-ships in this PR). Full T6 benchmark body (directory layout, `config.yaml`,
-`checks.yaml`, differential thresholds, scaling probe) lands at M8 T8.10 per
-`docs/development/m8_execution_pack.md`.
+**Status:** fully shipped at M8 T8.10 (2026-04-21). Fixture choice and oracle
+subset gate landed at M8 T8.2; scaffold (`README.md`, `checks.yaml`,
+`lammps_script.in`, threshold entries) landed at T8.10a (2026-04-20);
+D-M8-7 CPU FP64 byte-exact gate landed at T8.5 (2026-04-20 — 250-atom
+differential at max_rel ≈ 8.8e-13 < 1e-12 budget); D-M6-7 extension to GPU
+FP64 landed at T8.7 (2026-04-20); T8.10 proper adds the canonical
+1024-atom `config.yaml.template`, 8192-atom `config_8192.yaml.template`
+scaling variant, and the `tests/integration/m8_smoke_t6/` integration
+smoke (D-M8-8 NVE-drift gate). T8.11 cloud-burst strong-scaling campaign
+consumes the 8192-atom variant; T8.12 slow-tier exercises
+MixedFastSnapOnly differential on all T6 variants.
 
 **Canonical fixture (D-M8-3):**
 
@@ -722,8 +729,13 @@ ships in this PR). Full T6 benchmark body (directory layout, `config.yaml`,
 
 **Why this fixture:** Pure W single-species is simpler для first-pass ML-niche
 proof-of-value than W-Be alloy (`WBe_Wood_PRB2019`, reserved for M9+ SNAP
-alloy gate). 128 atoms fit single-GPU profiling workflow; 8×8×8 BCC (2048-atom)
-and 16×16×16 (16384-atom) variants register at T8.10 for scaling probes.
+alloy gate). 128 atoms fit single-GPU profiling workflow; 8×8×8 BCC (1024-atom
+— two atoms per conventional BCC cell × 512 cells) and 16×16×16 (8192-atom)
+variants register at T8.10 for scaling probes. Note: the M8 exec pack prose
+labels these "2048-atom" and "16384-atom" respectively; that is a
+per-unit-cell-counting arithmetic slip (BCC has 2 atoms/cell) — this SPEC
+section and `verify/benchmarks/t6_snap_tungsten/generate_setup.py` are
+authoritative.
 
 **Oracle subset verification (landed T8.2):**
 

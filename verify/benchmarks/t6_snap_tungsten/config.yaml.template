@@ -1,0 +1,57 @@
+# T6 canonical fixture — 1024-atom W BCC, pure SNAP, single-rank NVE.
+#
+# Shipped at M8 T8.10 as the canonical T6 regression target. Complements:
+#   - config_metal.yaml       (250-atom, byte-exact D-M8-7 differential; T8.5)
+#   - config_8192.yaml.template (8192-atom scaling variant; exercised at T8.11)
+#
+# Purpose: exercise the full SNAP path (CPU + GPU Fp64Reference) at a size
+# comparable to real ML-IAP workloads while staying single-rank-fittable on
+# commodity development hardware. Intended audience: the m8 integration smoke
+# (tests/integration/m8_smoke_t6/) and the T8.11 cloud-burst strong-scaling
+# baseline.
+#
+# Pure SNAP, no ZBL — the canonical D-M8-7 byte-exact gate scopes the
+# bispectrum path standalone. ZBL composition lands at M9+.
+#
+# Atoms: generate_setup.py --nrep 8 (BCC, a0 = 3.1803 Å, 512 unit cells ×
+# 2 atoms/cell = 1024; T₀ = 300 K, seed = 12345 → deterministic across runs).
+# Note: M8 exec pack lines 34/97/725/1049/1061 say "2048 atoms 8×8×8 BCC" —
+# that prose is off by 2× (BCC has two atoms per unit cell, not one). The
+# generator docstring and this config are authoritative; a SPEC delta fixes
+# the exec pack prose at T8.10 session-report time.
+#
+# The harness (tests/integration/m8_smoke_t6/run_m8_smoke_t6.sh) substitutes
+# {{ATOMS_PATH}}, {{SNAP_COEFF}}, {{SNAP_PARAM}} at smoke-run time; the
+# differential driver (verify/t6/run_differential.py) rewrites them the same
+# way. Unsubstituted, this file is NOT directly runnable — use the template
+# through one of the two drivers above.
+
+simulation:
+  units: metal
+  seed: 12345               # unused at ingest (atoms read verbatim from setup).
+
+atoms:
+  source: lammps_data
+  path: "{{ATOMS_PATH}}"    # setup_1024.data (LFS)
+
+potential:
+  style: snap
+  params:
+    coeff_file: "{{SNAP_COEFF}}"  # W_2940_2017_2.snapcoeff (submodule)
+    param_file: "{{SNAP_PARAM}}"  # W_2940_2017_2.snapparam (submodule)
+
+integrator:
+  style: velocity_verlet
+  dt: 0.0005                # ps — Wood 2017 timestep (matches config_metal.yaml).
+
+neighbor:
+  skin: 0.3                 # Å — T6 canonical skin (matches config_metal.yaml).
+
+thermo:
+  every: 1                  # full-trace thermo for energy-conservation gate.
+
+run:
+  n_steps: 10
+
+runtime:
+  backend: gpu
