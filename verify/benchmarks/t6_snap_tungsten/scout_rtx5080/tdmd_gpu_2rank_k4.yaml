@@ -1,0 +1,49 @@
+# Multi-rank TD scout config — SNAP W BCC 2000-atom, 2-rank K=4 P_space=2.
+# K-batching perf probe (Andreev formula 51: T_comm_per_step = T_p / K).
+#
+# Single-GPU oversubscription caveat: both ranks share the same RTX 5080, so
+# the K=4 amortization may be invisible (compute + comm on the same device).
+# This config measures the TD-machinery end-to-end correctness on SNAP; the
+# honest perf number for multi-rank SNAP requires ≥2 physical GPUs (T8.11).
+
+simulation:
+  units: metal
+  seed: 12345
+
+atoms:
+  source: lammps_data
+  path: setup_2000.data
+
+potential:
+  style: snap
+  params:
+    coeff_file: ../../../third_party/lammps/examples/snap/W_2940_2017_2.snapcoeff
+    param_file: ../../../third_party/lammps/examples/snap/W_2940_2017_2.snapparam
+
+integrator:
+  style: velocity_verlet
+  dt: 0.0005
+
+neighbor:
+  skin: 1.0
+
+thermo:
+  every: 10
+
+run:
+  n_steps: 100
+
+scheduler:
+  td_mode: true
+  pipeline_depth_cap: 4
+
+comm:
+  backend: mpi_host_staging
+  topology: mesh
+
+zoning:
+  scheme: linear_1d
+  subdomains: [2, 1, 1]
+
+runtime:
+  backend: gpu

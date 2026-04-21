@@ -1,0 +1,53 @@
+# Multi-rank TD scout config — SNAP W BCC 2000-atom, 2-rank K=1 P_space=2.
+# Correctness baseline for T-opt follow-on scout (single-RTX 5080, oversubscribed).
+#
+# D-M7-10 chain extension from EAM (M7 smoke) to SNAP: Pattern 2 K=1 P=2 Reference
+# thermo MUST equal single-rank K=1 P=1 thermo byte-for-byte on Fp64ReferenceBuild.
+# No golden file here (this is a scout, not a CI gate) — diff is done manually
+# in quick_2rank_scout.sh.
+#
+# NOT a final perf gate — both MPI ranks share one GPU (CUDA context switches
+# dominate absolute ms/step). Real multi-rank perf measurement requires ≥2
+# physical GPUs (T8.11 cloud-burst, gpu/SPEC §3.2c).
+
+simulation:
+  units: metal
+  seed: 12345
+
+atoms:
+  source: lammps_data
+  path: setup_2000.data
+
+potential:
+  style: snap
+  params:
+    coeff_file: ../../../third_party/lammps/examples/snap/W_2940_2017_2.snapcoeff
+    param_file: ../../../third_party/lammps/examples/snap/W_2940_2017_2.snapparam
+
+integrator:
+  style: velocity_verlet
+  dt: 0.0005
+
+neighbor:
+  skin: 1.0
+
+thermo:
+  every: 10
+
+run:
+  n_steps: 100
+
+scheduler:
+  td_mode: true
+  pipeline_depth_cap: 1
+
+comm:
+  backend: mpi_host_staging
+  topology: mesh
+
+zoning:
+  scheme: linear_1d
+  subdomains: [2, 1, 1]
+
+runtime:
+  backend: gpu

@@ -538,3 +538,100 @@ Single-run spot checks (what this scout used):
 ../../../../verify/third_party/lammps/build_kokkos_cuda/lmp -h | grep -E "snap[/ ]"
 #   → "snap   snap/kk   ..." — snap/kk present, CUDA device dispatch.
 ```
+
+---
+
+## Multi-rank TD scout — `mpirun -np 2` on single RTX 5080 (oversubscribed) — 2026-04-21
+
+**Context.** After T-opt-2 the single-GPU kernel-tuning ladder flattened at
+**29.5 ms/step MixedFast** (6.86× slower than LAMMPS KOKKOS GPU 4.30 ms/step).
+Next structural wins come from multi-rank TD (M7) or Andreev K-batching
+(Formula 51: `T_comm_per_step_TD(K) = T_p / K`). User authorised a single-GPU
+oversubscribed scout as a baseline for future multi-physical-GPU work
+(T8.11 cloud-burst); both MPI ranks share the same RTX 5080, so absolute
+wall-time is NOT representative of multi-GPU, but the TD machinery itself
+(two-phase commit, safety-certificate chain, Pattern 2 halo exchange,
+K-batching dispatch) gets end-to-end exercised on SNAP.
+
+**Configs.** Two new YAMLs under `scout_rtx5080/`:
+
+- `tdmd_gpu_2rank_k1.yaml` — correctness baseline (K=1 P_space=2, D-M7-10
+  analogue for SNAP).
+- `tdmd_gpu_2rank_k4.yaml` — K-batching probe (K=4 P_space=2).
+
+Both use `zoning.scheme: linear_1d`, `zoning.subdomains: [2, 1, 1]`,
+`comm.backend: mpi_host_staging`, `scheduler.td_mode: true`. No changes to
+`src/gpu/**`, `src/scheduler/**`, or `src/potentials/**`.
+
+### Correctness gate — D-M7-10 chain extended from EAM to SNAP
+
+**PASS.** `Fp64ReferenceBuild` 1-rank K=1 P=1 thermo ≡ 2-rank K=1 P_space=2
+thermo **byte-for-byte** on 100-step NVE W BCC 2000-atom. This extends the
+D-M7-10 / D-M6-7 / D-M5-12 / D-M4-9 / D-M3-6 chain from EAM (M7 smoke) to
+SNAP, proving the Pattern 2 two-phase commit + OuterSdCoordinator halo
+ordering + Kahan-ring reduction order all work correctly on SNAP GPU path.
+
+### Perf measurements (3-run median-of-3, 100 steps each)
+
+| Config                                | Fp64Ref   | MixedFast | MixedSnapOnly |
+|---------------------------------------|----------:|----------:|--------------:|
+| 1-rank K=1 P=1 (single-GPU baseline)  | 36.8 ms   | **29.1 ms** | 29.2 ms     |
+| 2-rank K=1 P_space=2 (shared GPU)     | 71.4 ms   | 55.7 ms   | 55.5 ms       |
+| 2-rank K=4 P_space=2 (shared GPU)     | 71.5 ms   | 55.8 ms   | 55.7 ms       |
+| Ratio 2-rank K=1 / 1-rank             | 1.94×     | 1.91×     | 1.90×         |
+| Ratio K=4 / K=1 (2-rank)              | **1.00×** | **1.00×** | **1.00×**     |
+
+### Interpretation
+
+1. **2-rank/1-rank ratio ≈ 1.91×** on oversubscribed single GPU. Expected:
+   (a) CUDA context switches between the two ranks sharing sm_120,
+   (b) fixed per-kernel launch overhead paid per rank,
+   (c) halo D2H + MPI Sendrecv + H2D per step per rank (sequentialised on
+   the same device). If the GPU were fully partitionable across ranks, this
+   ratio would approach 1.0× (each rank does half the work → half the wall).
+   Real multi-GPU (≥2 physical) removes (a) and partially (c); absolute
+   per-rank time would drop toward 1-rank baseline minus MPI overhead.
+
+2. **K=4/K=1 ratio ≈ 1.00×** (no amortisation on oversubscribed single GPU).
+   **This is the expected single-GPU limit**, not a regression. Andreev's
+   `T_p / K` amortisation requires compute and communication to proceed on
+   separate hardware so that later pipeline slots' compute overlaps with
+   earlier slots' halo transfer. When both ranks share a GPU, compute and
+   comm serialise on the same device — there is nothing to amortise. K=4
+   wins materialise only on ≥2 physical GPUs (T8.11 cloud-burst).
+
+3. **MixedFast 2-rank K=1 55.7 ms/step** is a reference number for future
+   multi-GPU extrapolation, not a speed milestone. If (and only if) a
+   ≥2-physical-GPU run of this same config lands at ≤ single-rank baseline
+   (29.1 ms/step), we'd have direct evidence that TD+K-batching recovers the
+   overhead — at which point the K=4 gains become the interesting question.
+
+### Hard limits this scout could NOT resolve (cloud-burst-gated)
+
+- **Absolute K=4 speedup vs K=1.** Requires ≥2 physical GPUs so the
+  `T_p / K` amortisation has separate hardware to overlap on. Current
+  scout hardware has 1 GPU.
+- **Weak-scaling efficiency η(P_time)** (Andreev's dissertation headline
+  figure). Needs ≥4 ranks / ≥4 GPUs; single-node DGX-class or multi-node
+  HPC. Framed as T8.11 cloud-burst.
+- **Halo bandwidth vs compute overlap ratio.** The 2-rank synthetic overlap
+  model (`tests/gpu/test_overlap_budget_2rank.cpp`, T8.0 30% gate) skips on
+  single-GPU hosts per gpu/SPEC §3.2c — this scout reproduces that limit
+  for end-to-end SNAP runs.
+
+### Conclusion
+
+Multi-rank TD machinery is **functionally green on SNAP** (Pattern 2 K=1
+P_space=2 byte-exact; K=4 crashes nowhere). Single-GPU oversubscription
+adds ~1.91× overhead; K-batching shows no gain (expected). The M8 ≥20%
+gate (TDMD ≤ 3.44 ms/step vs LAMMPS KOKKOS 4.30) remains blocked by the
+6.86× single-GPU gap + multi-GPU compute density — resolution requires
+T8.11 cloud-burst on rented ≥2-physical-GPU hardware. This scout's role
+is to prove the TD path exists and is correct before paying the cloud
+bill for the real measurement.
+
+**Artefacts.**
+
+- `tdmd_gpu_2rank_k1.yaml`, `tdmd_gpu_2rank_k4.yaml` — configs.
+- `quick_2rank_scout.sh` — 18-run harness (3 flavors × {K=1, K=4, 1-rank}
+  × 3 repeats) with inline correctness diff.
