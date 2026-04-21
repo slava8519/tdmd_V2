@@ -1161,17 +1161,22 @@ __global__ void snap_deidrj_kernel(std::uint32_t n,
 
 #if !TDMD_SNAP_LEGACY_PERATOM
 // ---------------------------------------------------------------------------
-// T8.6c-v5 Stage 3 (MixedFast): KERNEL 3a — snap_deidrj_bond_kernel
+// T8.6c-v5 Stage 3 + T-opt-3b (MixedFast): KERNEL 3a — snap_deidrj_bond_kernel
 //
-// Per-bond dispatch mirror of the FP64 kernel. Only narrowing site in this TU
-// is `sqrtf(rsq)` — identical to mixed_ui_bond_kernel above (T8.9 Phase A
-// D-M8-8 1e-5/1e-7 force budget). All downstream math (theta0, sincos, z0,
-// dz0dr, rcut, wj_sh, sfac, compute_uarray/duarray/deidrj) runs FP64.
+// Own-only per-bond dispatch. Peer side is harvested from dedr_own[reverse(b)]
+// in the gather (see FP64 kernel header for the exact byte-identity argument).
+//
+// Only narrowing site in this TU is `sqrtf(rsq)` — identical to
+// mixed_ui_bond_kernel above (T8.9 Phase A D-M8-8 1e-5/1e-7 force budget). All
+// downstream math (theta0, sincos, z0, dz0dr, rcut, wj_sh, sfac,
+// compute_uarray/duarray/deidrj) runs FP64.
 //
 // Byte-exactness note: "byte-exact" in MixedFast means "matches the legacy
 // mixed_fast snap_deidrj_kernel" (not FP64 reference). The FP32 sqrtf site is
-// the only entropy source; since the new path mirrors it bit-for-bit, the
-// D-M8-8 1e-5/1e-7 rel budget is preserved against the legacy mixed baseline.
+// the only entropy source; the T-opt-3b own-only path matches it bit-for-bit
+// (the reverse bond's own-side sqrtf(rsq) produces the same float because
+// rsq_{reverse(b)} is the same FP64 value as rsq_b), so the D-M8-8 1e-5/1e-7
+// rel budget is preserved against the legacy mixed baseline.
 // ---------------------------------------------------------------------------
 __global__ void snap_deidrj_bond_kernel(std::uint32_t n_bonds,
                                         const std::uint32_t* __restrict__ bond_i,
@@ -1189,8 +1194,7 @@ __global__ void snap_deidrj_bond_kernel(std::uint32_t n_bonds,
                                         const double* __restrict__ d_ylist_r,
                                         const double* __restrict__ d_ylist_i,
                                         DeviceSnapParams p,
-                                        double* __restrict__ d_dedr_own,
-                                        double* __restrict__ d_dedr_peer) {
+                                        double* __restrict__ d_dedr_own) {
   const std::uint32_t b = blockIdx.x;
   if (b >= n_bonds) {
     return;
@@ -1311,85 +1315,27 @@ __global__ void snap_deidrj_bond_kernel(std::uint32_t n_bonds,
     d_dedr_own[b * 3 + 1] = dedr_own_local[1];
     d_dedr_own[b * 3 + 2] = dedr_own_local[2];
   }
-  __syncthreads();
-
-  // PEER side.
-  const std::size_t jjbase = static_cast<std::size_t>(jj) * static_cast<std::size_t>(p.idxu_max);
-  for (int k = tid; k < p.idxu_max; k += block_threads) {
-    ylist_slab_r[k] = d_ylist_r[jjbase + k];
-    ylist_slab_i[k] = d_ylist_i[jjbase + k];
-  }
-  __syncthreads();
-
-  snap_detail::compute_uarray_parallel_device(static_cast<unsigned>(tid),
-                                              static_cast<unsigned>(block_threads),
-                                              -ddx,
-                                              -ddy,
-                                              -ddz,
-                                              z0_sh,
-                                              r_sh,
-                                              rootpq,
-                                              p.jdimpq,
-                                              idxu_block,
-                                              p.twojmax,
-                                              ulist_r,
-                                              ulist_i);
-  snap_detail::compute_duarray_parallel_device(static_cast<unsigned>(tid),
-                                               static_cast<unsigned>(block_threads),
-                                               -ddx,
-                                               -ddy,
-                                               -ddz,
-                                               z0_sh,
-                                               r_sh,
-                                               dz0dr_sh,
-                                               wi,
-                                               rcut_sh,
-                                               p.rmin0,
-                                               p.switch_flag,
-                                               rootpq,
-                                               p.jdimpq,
-                                               idxu_block,
-                                               p.twojmax,
-                                               ulist_r,
-                                               ulist_i,
-                                               dulist_r,
-                                               dulist_i);
-
-  double dedr_peer_local[3];
-  compute_deidrj_parallel_device(p.twojmax,
-                                 tid,
-                                 block_threads,
-                                 warp_id,
-                                 lane_id,
-                                 idxu_block,
-                                 dulist_r,
-                                 dulist_i,
-                                 ylist_slab_r,
-                                 ylist_slab_i,
-                                 dedr_warp_sums,
-                                 dedr_peer_local);
-  if (tid == 0) {
-    d_dedr_peer[b * 3 + 0] = dedr_peer_local[0];
-    d_dedr_peer[b * 3 + 1] = dedr_peer_local[1];
-    d_dedr_peer[b * 3 + 2] = dedr_peer_local[2];
-  }
+  // T-opt-3b: peer harvested from dedr_own[reverse(b)] in gather kernel.
+  (void) jj;
+  (void) wi;
 }
 
 // ---------------------------------------------------------------------------
-// T8.6c-v5 Stage 3 (MixedFast): KERNEL 3b — snap_force_gather_kernel
+// T8.6c-v5 Stage 3 + T-opt-3b (MixedFast): KERNEL 3b — snap_force_gather_kernel
 //
-// Per-atom gather. All-FP64 arithmetic (d_dedr_own/peer are doubles, virial
+// Per-atom gather. All-FP64 arithmetic (d_dedr_own is doubles, virial
 // multiplies are doubles). No narrowing here. Semantically identical to the
-// FP64 snap_gpu.cu force-gather — both consume the same per-bond dedr slabs
-// in CSR order.
+// FP64 snap_gpu.cu force-gather — both consume the same per-bond dedr_own
+// slab in CSR order, and both use d_dedr_own[reverse_bond_index[b]] as the
+// peer-side value (T-opt-3b identity).
 // ---------------------------------------------------------------------------
 __global__ void snap_force_gather_kernel(std::uint32_t n_atoms,
                                          const std::uint32_t* __restrict__ atom_bond_start,
+                                         const std::uint32_t* __restrict__ reverse_bond_index,
                                          const double* __restrict__ bond_dx,
                                          const double* __restrict__ bond_dy,
                                          const double* __restrict__ bond_dz,
                                          const double* __restrict__ d_dedr_own,
-                                         const double* __restrict__ d_dedr_peer,
                                          double* __restrict__ d_fx,
                                          double* __restrict__ d_fy,
                                          double* __restrict__ d_fz,
@@ -1430,9 +1376,10 @@ __global__ void snap_force_gather_kernel(std::uint32_t n_atoms,
     v_xz += own_x * ddz;
     v_yz += own_y * ddz;
 
-    fx_acc -= d_dedr_peer[b3 + 0];
-    fy_acc -= d_dedr_peer[b3 + 1];
-    fz_acc -= d_dedr_peer[b3 + 2];
+    const std::size_t rev3 = static_cast<std::size_t>(reverse_bond_index[b]) * 3u;
+    fx_acc -= d_dedr_own[rev3 + 0];
+    fy_acc -= d_dedr_own[rev3 + 1];
+    fz_acc -= d_dedr_own[rev3 + 2];
   }
 
   d_fx[i] += fx_acc;
@@ -1490,12 +1437,12 @@ struct SnapGpuMixed::Impl {
   DevicePtr<std::byte> d_pe_per_atom_bytes;
   DevicePtr<std::byte> d_virial_per_atom_bytes;
 
-  // T8.6c-v5 Stage 2 + Stage 3 (mixed mirror): per-bond scratch.
+  // T8.6c-v5 Stage 2 + Stage 3 + T-opt-3b (mixed mirror): per-bond scratch.
+  // Peer allocation dropped — gather uses dedr_own[reverse(b)] instead.
   SnapBondListGpu bond_list;
   DevicePtr<std::byte> d_ulist_bond_r_bytes;
   DevicePtr<std::byte> d_ulist_bond_i_bytes;
   DevicePtr<std::byte> d_dedr_own_bytes;
-  DevicePtr<std::byte> d_dedr_peer_bytes;
 
   // SNAP parameter tables — uploaded once, reused across compute() calls.
   DevicePtr<std::byte> d_radius_elem_bytes;
@@ -2017,16 +1964,14 @@ SnapGpuResult SnapGpuMixed::compute(std::size_t n,
     check_cuda("launch snap_deidrj_kernel", cudaGetLastError());
   }
 #else
-  // T8.6c-v5 Stage 3 (mixed mirror): per-bond deidrj + per-atom force gather.
+  // T8.6c-v5 Stage 3 + T-opt-3b (mixed mirror): per-bond deidrj (own only) +
+  // per-atom force gather (peer via dedr_own[reverse(b)]).
   const std::size_t dedr_bond_bytes = (n_bonds == 0) ? 0u : (n_bonds * 3u * sizeof(double));
   if (dedr_bond_bytes > 0) {
     impl_->d_dedr_own_bytes = pool.allocate_device(dedr_bond_bytes, stream);
-    impl_->d_dedr_peer_bytes = pool.allocate_device(dedr_bond_bytes, stream);
   }
   auto* d_dedr_own =
       (n_bonds > 0) ? reinterpret_cast<double*>(impl_->d_dedr_own_bytes.get()) : nullptr;
-  auto* d_dedr_peer =
-      (n_bonds > 0) ? reinterpret_cast<double*>(impl_->d_dedr_peer_bytes.get()) : nullptr;
 
   if (n_bonds > 0) {
     TDMD_NVTX_RANGE("snap.deidrj_bond_kernel");
@@ -2048,8 +1993,7 @@ SnapGpuResult SnapGpuMixed::compute(std::size_t n,
         d_ylist_r,
         d_ylist_i,
         dp,
-        d_dedr_own,
-        d_dedr_peer);
+        d_dedr_own);
     check_cuda("launch snap_deidrj_bond_kernel", cudaGetLastError());
   }
 
@@ -2058,11 +2002,11 @@ SnapGpuResult SnapGpuMixed::compute(std::size_t n,
     const unsigned grid = (n32 + kThreadsPerBlock - 1u) / kThreadsPerBlock;
     snap_force_gather_kernel<<<grid, kThreadsPerBlock, 0, s>>>(n32,
                                                                bond_view.d_atom_bond_start,
+                                                               bond_view.d_reverse_bond_index,
                                                                bond_view.d_bond_dx,
                                                                bond_view.d_bond_dy,
                                                                bond_view.d_bond_dz,
                                                                d_dedr_own,
-                                                               d_dedr_peer,
                                                                d_fx,
                                                                d_fy,
                                                                d_fz,

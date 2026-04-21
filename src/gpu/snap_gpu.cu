@@ -1180,18 +1180,27 @@ __global__ void snap_deidrj_kernel(std::uint32_t n,
 
 #if !TDMD_SNAP_LEGACY_PERATOM
 // ---------------------------------------------------------------------------
-// T8.6c-v5 Stage 3: KERNEL 3a — snap_deidrj_bond_kernel (per-bond dispatch)
+// T8.6c-v5 Stage 3 + T-opt-3b: KERNEL 3a — snap_deidrj_bond_kernel (own-only)
 //
 // Launch shape: <<<n_bonds, 128>>>. One block per bond. Each block computes
-// BOTH sides of the SNAP Newton-3 force evaluation for its single (i, j) pair:
+// ONLY the OWN side of the SNAP Newton-3 force evaluation for its (i, j) pair:
 //   - OWN side:  uarray/duarray with +Δr, weight = w_j; dedr via ylist[bond_i]
-//   - PEER side: uarray/duarray with -Δr, weight = w_i; dedr via ylist[bond_j]
-// and writes exclusive per-bond results:
+// and writes an exclusive per-bond result:
 //     d_dedr_own[b * 3 + k]   (k ∈ {0,1,2})
-//     d_dedr_peer[b * 3 + k]
-// The gather kernel below sums these into per-atom fx/fy/fz + virial in CSR
-// (= CPU stencil walk) order — preserving the legacy's per-atom accumulation
-// sequence at single-bond granularity.
+//
+// T-opt-3b identity: the PEER-side computation of bond b reduces to the OWN
+// side of the reverse bond. For undirected pair (i,j) the full bond list
+// emits both (i→j) as bond b and (j→i) as bond b' = reverse(b). Every scalar
+// operand of compute_deidrj is equal under the swap:
+//   - (−ddx, −ddy, −ddz) at b  ≡  (+ddx, +ddy, +ddz) at b' (Δr_{b'} = −Δr_b).
+//   - rsq, r, rcut, z0, dz0dr are invariant under (i ↔ j, Δr → −Δr).
+//   - w used on peer side of b = weight_elem[itype_b] = weight_elem[jtype_{b'}]
+//     = wj_sh of b'.
+//   - ylist slab source on peer side of b is atom j = bond_i[b'] = own-side
+//     slab source of b'.
+// So dedr_peer[b] ≡ dedr_own[reverse(b)] bit-for-bit, and the gather kernel
+// does the subtraction via a paired-bond index lookup — halving the per-bond
+// kernel work with zero change to T8.7 ≤ 1e-12 rel byte-exactness.
 //
 // This is the atomic-free alternative the gpu/SPEC §6.1 permits for FP64
 // reductions (no atomicAdd(double*, double); reduce-then-scatter instead).
@@ -1201,11 +1210,13 @@ __global__ void snap_deidrj_kernel(std::uint32_t n,
 //     compute_duarray_parallel_device, compute_deidrj_parallel_device.
 //   - Same theta0 / z0 / dz0dr / rcut / sfac derivation (sincos + tan form).
 //   - Same ylist source (global d_ylist_r/i[ii·idxu_max + k] for own side,
-//     ... [jj·idxu_max + k] for peer side).
+//     with the peer side's operand reused at bond reverse(b) — same FP bits).
 //   - Legacy's `fx_acc += dedr_own[0]` then `fx_acc -= dedr_peer[0]` order is
-//     replicated exactly by the gather kernel's per-bond two-step update.
+//     replicated by the gather kernel's per-bond two-step update using
+//     dedr_own[reverse(b)] as the peer value.
 //
-// Shared memory: 10·idxu_max·8 B ≈ 26.7 KB @ twojmax=8 (matches legacy).
+// Shared memory: unchanged at 10·idxu_max·8 B (the peer pass re-used the same
+// slabs as own; removing the peer code path saves compute, not SMEM).
 // Layout: ylist_slab_r|ylist_slab_i|ulist_r|ulist_i|dulist_r[3*]|dulist_i[3*].
 // ---------------------------------------------------------------------------
 __global__ void snap_deidrj_bond_kernel(std::uint32_t n_bonds,
@@ -1224,8 +1235,7 @@ __global__ void snap_deidrj_bond_kernel(std::uint32_t n_bonds,
                                         const double* __restrict__ d_ylist_r,
                                         const double* __restrict__ d_ylist_i,
                                         DeviceSnapParams p,
-                                        double* __restrict__ d_dedr_own,
-                                        double* __restrict__ d_dedr_peer) {
+                                        double* __restrict__ d_dedr_own) {
   const std::uint32_t b = blockIdx.x;
   if (b >= n_bonds) {
     return;
@@ -1344,92 +1354,39 @@ __global__ void snap_deidrj_bond_kernel(std::uint32_t n_bonds,
     d_dedr_own[b * 3 + 1] = dedr_own_local[1];
     d_dedr_own[b * 3 + 2] = dedr_own_local[2];
   }
-  __syncthreads();
-
-  // --- PEER side: reload ylist slab with atom jj's data, rebuild ulist/dulist
-  // with flipped Δr signs and wi weight. Matches legacy's re-entry into
-  // compute_uarray + compute_duarray for the peer side.
-  const std::size_t jjbase = static_cast<std::size_t>(jj) * static_cast<std::size_t>(p.idxu_max);
-  for (int k = tid; k < p.idxu_max; k += block_threads) {
-    ylist_slab_r[k] = d_ylist_r[jjbase + k];
-    ylist_slab_i[k] = d_ylist_i[jjbase + k];
-  }
-  __syncthreads();
-
-  snap_detail::compute_uarray_parallel_device(static_cast<unsigned>(tid),
-                                              static_cast<unsigned>(block_threads),
-                                              -ddx,
-                                              -ddy,
-                                              -ddz,
-                                              z0_sh,
-                                              r_sh,
-                                              rootpq,
-                                              p.jdimpq,
-                                              idxu_block,
-                                              p.twojmax,
-                                              ulist_r,
-                                              ulist_i);
-  snap_detail::compute_duarray_parallel_device(static_cast<unsigned>(tid),
-                                               static_cast<unsigned>(block_threads),
-                                               -ddx,
-                                               -ddy,
-                                               -ddz,
-                                               z0_sh,
-                                               r_sh,
-                                               dz0dr_sh,
-                                               wi,
-                                               rcut_sh,
-                                               p.rmin0,
-                                               p.switch_flag,
-                                               rootpq,
-                                               p.jdimpq,
-                                               idxu_block,
-                                               p.twojmax,
-                                               ulist_r,
-                                               ulist_i,
-                                               dulist_r,
-                                               dulist_i);
-
-  double dedr_peer_local[3];
-  compute_deidrj_parallel_device(p.twojmax,
-                                 tid,
-                                 block_threads,
-                                 warp_id,
-                                 lane_id,
-                                 idxu_block,
-                                 dulist_r,
-                                 dulist_i,
-                                 ylist_slab_r,
-                                 ylist_slab_i,
-                                 dedr_warp_sums,
-                                 dedr_peer_local);
-  if (tid == 0) {
-    d_dedr_peer[b * 3 + 0] = dedr_peer_local[0];
-    d_dedr_peer[b * 3 + 1] = dedr_peer_local[1];
-    d_dedr_peer[b * 3 + 2] = dedr_peer_local[2];
-  }
+  // T-opt-3b: the legacy peer side is now harvested from dedr_own[reverse(b)]
+  // in snap_force_gather_kernel. Unused locals (jj, wi) remain declared above
+  // for field-parity with the mixed-fast kernel; the compiler elides them.
+  (void) jj;
+  (void) wi;
 }
 
 // ---------------------------------------------------------------------------
-// T8.6c-v5 Stage 3: KERNEL 3b — snap_force_gather_kernel (per-atom gather)
+// T8.6c-v5 Stage 3 + T-opt-3b: KERNEL 3b — snap_force_gather_kernel
 //
 // Launch shape: <<<(n_atoms+127)/128, 128>>>. One thread per atom. Each thread
 // walks its bond range [atom_bond_start[i], atom_bond_start[i+1]) in CSR (=
 // CPU stencil walk) order, accumulating:
-//     fx_acc  += d_dedr_own[b,0]             (own side, first)
+//     fx_acc  += d_dedr_own[b,0]                          (own side, first)
 //     v_xx    += d_dedr_own[b,0] * bond_dx[b]
 //     v_yy    += d_dedr_own[b,1] * bond_dy[b]
 //     v_zz    += d_dedr_own[b,2] * bond_dz[b]
 //     v_xy    += d_dedr_own[b,0] * bond_dy[b]
 //     v_xz    += d_dedr_own[b,0] * bond_dz[b]
 //     v_yz    += d_dedr_own[b,1] * bond_dz[b]
-//     fx_acc  -= d_dedr_peer[b,0]            (peer side, second)
+//     fx_acc  -= d_dedr_own[reverse_bond_index[b], 0]     (peer side, second)
 // and writes the same output slots the legacy kernel writes:
 //     d_fx[i] += fx_acc;   d_virial_per_atom[i*6 + k] = v_k;
 //
+// T-opt-3b: the peer-side dedr for bond b = own-side dedr of its reverse bond
+// reverse_bond_index[b]. The same kernel produces both with identical FP
+// operands (see snap_deidrj_bond_kernel comment above). Reading the reverse
+// bond's own value in place of a separate peer array preserves byte-exactness.
+//
 // Byte-exactness vs legacy snap_deidrj_kernel:
-//   - Same per-bond FP operands (own = legacy's tid==0 dedr_own, peer =
-//     legacy's tid==0 dedr_peer — produced by identical kernels).
+//   - Same per-bond FP operands for "own" (same compute path as legacy).
+//   - Same per-bond FP operands for the subtraction term — identity:
+//       legacy_dedr_peer[b] ≡ dedr_own[reverse(b)].
 //   - Same accumulation order: per bond, own first (all 3 fx components +
 //     6 virial components), then peer. This matches the legacy's two tid==0
 //     blocks inside its cell-stencil walk.
@@ -1442,11 +1399,11 @@ __global__ void snap_deidrj_bond_kernel(std::uint32_t n_bonds,
 // ---------------------------------------------------------------------------
 __global__ void snap_force_gather_kernel(std::uint32_t n_atoms,
                                          const std::uint32_t* __restrict__ atom_bond_start,
+                                         const std::uint32_t* __restrict__ reverse_bond_index,
                                          const double* __restrict__ bond_dx,
                                          const double* __restrict__ bond_dy,
                                          const double* __restrict__ bond_dz,
                                          const double* __restrict__ d_dedr_own,
-                                         const double* __restrict__ d_dedr_peer,
                                          double* __restrict__ d_fx,
                                          double* __restrict__ d_fy,
                                          double* __restrict__ d_fz,
@@ -1488,11 +1445,12 @@ __global__ void snap_force_gather_kernel(std::uint32_t n_atoms,
     v_xz += own_x * ddz;
     v_yz += own_y * ddz;
 
-    // Peer side — identical order to legacy's tid==0 peer-side block
-    // (no virial contribution; see legacy comment at snap_deidrj_kernel).
-    fx_acc -= d_dedr_peer[b3 + 0];
-    fy_acc -= d_dedr_peer[b3 + 1];
-    fz_acc -= d_dedr_peer[b3 + 2];
+    // Peer side — legacy peer dedr = own dedr of the reverse bond (T-opt-3b
+    // identity). No virial contribution (legacy convention, see comment).
+    const std::size_t rev3 = static_cast<std::size_t>(reverse_bond_index[b]) * 3u;
+    fx_acc -= d_dedr_own[rev3 + 0];
+    fy_acc -= d_dedr_own[rev3 + 1];
+    fz_acc -= d_dedr_own[rev3 + 2];
   }
 
   // Additive write per SnapGpu::compute() caller contract (d_fx/y/z are primed
@@ -1552,17 +1510,17 @@ struct SnapGpu::Impl {
   DevicePtr<std::byte> d_pe_per_atom_bytes;
   DevicePtr<std::byte> d_virial_per_atom_bytes;
 
-  // T8.6c-v5 Stage 2 + Stage 3: per-bond scratch.
+  // T8.6c-v5 Stage 2 + Stage 3 + T-opt-3b: per-bond scratch.
   // Bond list (built each compute() from the already-resident device cells
   // arrays). d_ulist_bond_{r,i} size = n_bonds * idxu_max * 8 B — grown on
   // demand through the DevicePool (cudaMallocAsync-backed, D-M6-12).
-  // d_dedr_own_bytes / d_dedr_peer_bytes size = n_bonds * 3 * 8 B (Stage 3 —
-  // per-bond Newton-3 dE/dr results summed in snap_force_gather_kernel).
+  // d_dedr_own_bytes size = n_bonds * 3 * 8 B (Stage 3 — per-bond Newton-3
+  // dE/dr results summed in snap_force_gather_kernel). Peer allocation is
+  // dropped in T-opt-3b: the gather reads dedr_own[reverse(b)] instead.
   SnapBondListGpu bond_list;
   DevicePtr<std::byte> d_ulist_bond_r_bytes;
   DevicePtr<std::byte> d_ulist_bond_i_bytes;
   DevicePtr<std::byte> d_dedr_own_bytes;
-  DevicePtr<std::byte> d_dedr_peer_bytes;
 
   // SNAP parameter tables — uploaded once, reused across compute() calls.
   DevicePtr<std::byte> d_radius_elem_bytes;
@@ -2097,22 +2055,20 @@ SnapGpuResult SnapGpu::compute(std::size_t n,
     check_cuda("launch snap_deidrj_kernel", cudaGetLastError());
   }
 #else
-  // T8.6c-v5 Stage 3: per-bond deidrj dispatch + per-atom force gather.
-  // (a) Allocate per-bond dedr scratch. Sizes are 3 doubles per bond × n_bonds.
+  // T8.6c-v5 Stage 3 + T-opt-3b: per-bond deidrj dispatch (own only) +
+  // per-atom force gather (peer side via dedr_own[reverse(b)]).
+  // (a) Allocate per-bond dedr scratch. Size is 3 doubles per bond × n_bonds.
   //     Zero-bond edge case: gather still dispatches for the seeds-only write
   //     of virial zeros — cheap, bit-exact with legacy's empty inner loop.
   const std::size_t dedr_bond_bytes = (n_bonds == 0) ? 0u : (n_bonds * 3u * sizeof(double));
   if (dedr_bond_bytes > 0) {
     impl_->d_dedr_own_bytes = pool.allocate_device(dedr_bond_bytes, stream);
-    impl_->d_dedr_peer_bytes = pool.allocate_device(dedr_bond_bytes, stream);
   }
   auto* d_dedr_own =
       (n_bonds > 0) ? reinterpret_cast<double*>(impl_->d_dedr_own_bytes.get()) : nullptr;
-  auto* d_dedr_peer =
-      (n_bonds > 0) ? reinterpret_cast<double*>(impl_->d_dedr_peer_bytes.get()) : nullptr;
 
-  // (b) Per-bond deidrj kernel. Shared memory layout matches legacy
-  //     snap_deidrj_kernel (10·idxu_max·8 B ≈ 26.7 KB @ twojmax=8).
+  // (b) Per-bond deidrj kernel (own only). Shared memory layout unchanged
+  //     from Stage 3 (10·idxu_max·8 B — peer reused the same slabs).
   if (n_bonds > 0) {
     TDMD_NVTX_RANGE("snap.deidrj_bond_kernel");
     const std::uint32_t n_bonds_u32 = static_cast<std::uint32_t>(n_bonds);
@@ -2133,8 +2089,7 @@ SnapGpuResult SnapGpu::compute(std::size_t n,
         d_ylist_r,
         d_ylist_i,
         dp,
-        d_dedr_own,
-        d_dedr_peer);
+        d_dedr_own);
     check_cuda("launch snap_deidrj_bond_kernel", cudaGetLastError());
   }
 
@@ -2145,11 +2100,11 @@ SnapGpuResult SnapGpu::compute(std::size_t n,
     const unsigned grid = (n32 + kThreadsPerBlock - 1u) / kThreadsPerBlock;
     snap_force_gather_kernel<<<grid, kThreadsPerBlock, 0, s>>>(n32,
                                                                bond_view.d_atom_bond_start,
+                                                               bond_view.d_reverse_bond_index,
                                                                bond_view.d_bond_dx,
                                                                bond_view.d_bond_dy,
                                                                bond_view.d_bond_dz,
                                                                d_dedr_own,
-                                                               d_dedr_peer,
                                                                d_fx,
                                                                d_fy,
                                                                d_fz,
