@@ -85,6 +85,17 @@ target_compile_definitions(
 add_test(NAME test_snap_mixed_fast_within_threshold COMMAND test_snap_mixed_fast_within_threshold)
 set_tests_properties(test_snap_mixed_fast_within_threshold PROPERTIES SKIP_RETURN_CODE 77)
 
+# T8.6c-v5 Stage 1: SnapBondListGpu — bond list pre-pass matches CPU cell-stencil order byte-exact
+# (uint32 CSR + indices) on 5×5×5 BCC W fixture. Foundation of the downstream T8.7 ≤ 1e-12 rel gate:
+# snap_ui_gather + snap_force_gather (Stages 2+3) sum over the bond range in emission order, so
+# CPU-identical order preserves the FP64 reduction. Self-skips on no-CUDA hosts.
+add_executable(test_bond_list_matches_cpu_stencil_order
+               test_bond_list_matches_cpu_stencil_order.cpp)
+target_link_libraries(test_bond_list_matches_cpu_stencil_order
+                      PRIVATE tdmd::gpu tdmd::neighbor tdmd::state Catch2::Catch2WithMain)
+add_test(NAME test_bond_list_matches_cpu_stencil_order
+         COMMAND test_bond_list_matches_cpu_stencil_order)
+
 # T6.6: VV NVE integrator GPU kernel — bit-exact vs CPU reference (gpu/SPEC §7.3).
 add_executable(test_integrator_vv_gpu test_integrator_vv_gpu.cpp)
 target_link_libraries(test_integrator_vv_gpu PRIVATE tdmd::gpu tdmd::integrator tdmd::state

@@ -18,7 +18,8 @@ set(tdmd_gpu_sources
     integrator_vv_gpu.cu
     snap_gpu.cu
     snap_gpu_mixed.cu
-    snap_gpu_tables.cu)
+    snap_gpu_tables.cu
+    snap_bond_list_gpu.cu)
 
 # T6.4 / T6.5 / T6.6 / T6.8 / T8.6a / T8.6b: the .cu TUs carry both CUDA kernels (TDMD_BUILD_CUDA=1
 # branch) and a pure-C++ throwing stub (TDMD_BUILD_CUDA=0 branch). Under CPU-only builds we retag
@@ -37,6 +38,7 @@ if(NOT TDMD_BUILD_CUDA)
     snap_gpu.cu
     snap_gpu_mixed.cu
     snap_gpu_tables.cu
+    snap_bond_list_gpu.cu
     PROPERTIES LANGUAGE CXX)
 endif()
 
