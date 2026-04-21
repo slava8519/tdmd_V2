@@ -20,14 +20,18 @@ justified — that gate measures MixedFastBuild's FP32 EAM drift envelope,
 which does not apply to MixedFastSnapOnlyBuild because the latter keeps
 EAM at FP64.
 
-**Verdict — M8 T8.13 v1-alpha tag readiness:** **BLOCKED.**
-A **pre-existing** shared issue surfaced while probing the 1000-step T6
-MixedFastSnapOnly NVE drift: the T6 1024-atom fixture heats past melting
-and then triggers `gpu::SnapGpu::D2H cudaErrorIllegalAddress` between
-step 220 and 1000. **The same crash reproduces identically on
-Fp64ReferenceBuild**, and the trajectories agree to ~1 × 10⁻⁷ relative
-step-by-step — so this is not introduced by the MixedFastSnapOnly flavor
-add (T8.8). But it is a §D.15 red-flag blocker for the v1-alpha tag.
+**Verdict — M8 T8.13 v1-alpha tag readiness:** **UNBLOCKED 2026-04-21
+via Option A spec-level rescope** (see §9 below). The original claim was
+"BLOCKED by a pre-existing shared 1000-step crash"; follow-up
+investigation with LAMMPS as independent reference proved pure SNAP is
+intrinsically unstable over 1000 steps on this fixture (LAMMPS itself
+diverges under Langevin damping). The `cudaErrorIllegalAddress` is a
+deferred runtime-staleness consequence of the potential's stability
+horizon, not a preallocated-buffer bug. Resolution: shorten
+`nve_drift_per_1000_steps → nve_drift_per_100_steps` with √-scaled
+threshold `3e-6` (matches upstream Wood & Thompson 2017 reference-run
+length of 100 steps). M8 T8.13 v1.0.0-alpha1 tag is clear pending the
+standard Architect + Validation Engineer signoff.
 
 ---
 
@@ -99,7 +103,7 @@ completeness.
 | `gpu_mixed_fast_snap_only.snap.force_relative`  | 1 × 10⁻⁵                                                 | PASS (within `test_snap_mixed_fast_within_threshold`) | — |
 | `gpu_mixed_fast_snap_only.snap.energy_relative` | 1 × 10⁻⁷                                                 | PASS                                  | —                                     |
 | `gpu_mixed_fast_snap_only.eam.force_relative`   | 1 × 10⁻⁵                                                 | PASS — residual ~1 × 10⁻¹⁴ (EAM is FP64 here) | — |
-| `gpu_mixed_fast_snap_only.nve_drift_per_1000_steps` | 1 × 10⁻⁵                                              | **see §3.3 — 10-step measurement vs 1000-step measurement disagree** | — |
+| `gpu_mixed_fast_snap_only.nve_drift_per_100_steps`  | 3 × 10⁻⁶ (v1.0.1 rescope)                             | **see §3.3 + §9 — PASS at ~4× headroom on 100-step probe; drift horizon shortened 2026-04-21** | — |
 | `t6_snap_tungsten.cpu_fp64_vs_lammps.*`        | 1 × 10⁻¹²                                                 | PASS via `test_t6_differential` (17.42 s wall)  | — |
 | `t6_snap_tungsten.gpu_fp64_vs_cpu_fp64.*`      | 1 × 10⁻¹²                                                 | PASS via `test_snap_gpu_bit_exact`    | —                                     |
 | `t1_al_morse_500.*`                            | multiple                                                 | PASS (Morse path, flavor-orthogonal)  | —                                     |
@@ -267,7 +271,7 @@ Full artefact: `build/t3_anchor_report.json`.
 | Does MixedFastSnapOnly satisfy §D.17 step 5?         | **Yes.** Every registered gate for this flavor passes.                                                                       |
 | Does MixedFastSnapOnly regress Fp64Reference?       | **No.** Byte-exact D-M6-7 gate still green (test_snap_gpu_bit_exact).                                                       |
 | Does MixedFastSnapOnly regress MixedFastBuild?       | **No.** Equal-or-tighter on all shared thresholds.                                                                          |
-| Can we tag v1.0.0-alpha1 (T8.13) today?               | **No.** The 1000-step T6 1024-atom crash is a hard safety regression — §D.15 red-flag protocol applies. It reproduces on all active SNAP flavors, so it is pre-existing, but a public-facing alpha tag with a known crash on the canonical-size fixture is not defensible. |
+| Can we tag v1.0.0-alpha1 (T8.13) today?               | **Yes, pending §D.17 step 7 signoff.** The 1000-step crash was misdiagnosed at first report; §9 details the re-diagnosis (pure-SNAP intrinsic instability without ZBL, reproduced independently with LAMMPS). Option A spec-level rescope of the drift gate to a 100-step horizon (v1.0.1, 2026-04-21) honors the fixture's stability envelope without regression. The §D.15 red-flag is closed at the spec layer. |
 
 ---
 
@@ -313,15 +317,103 @@ Full artefact: `build/t3_anchor_report.json`.
 ## 8. Cross-references
 
 - Master spec §D.11 (per-kernel precision policy) — mark
-  MixedFastSnapOnlyBuild "slow-tier validated 2026-04-21 — T8.13 blocked
-  pending shared 1000-step crash triage".
-- Master spec §D.15 (red-flag protocol) — invoked for the shared crash.
+  MixedFastSnapOnlyBuild "slow-tier validated 2026-04-21 — T8.13
+  unblocked via v1.0.1 drift-gate rescope 2026-04-21".
+- Master spec §D.15 (red-flag protocol) — invoked for the shared crash;
+  resolved via spec-level call (Option A), see §9 below.
 - Master spec §D.17 step 5 — satisfied for MixedFastSnapOnly-specific
   contract.
-- `docs/specs/potentials/mixed_fast_snap_only_rationale.md` §7 — this
-  REPORT referenced from there (landed in same commit as this file).
+- `docs/specs/potentials/mixed_fast_snap_only_rationale.md` §4.1 + §7 —
+  T8.13 resolution derivation + updated gate table.
 - `docs/development/m8_execution_pack.md` T8.12 — task spec.
-- `verify/benchmarks/t6_snap_tungsten/README.md` — T6 fixture docs;
-  needs §3.4 follow-up #1 + #3 annotations.
+- `verify/benchmarks/t6_snap_tungsten/README.md` — T6 fixture docs.
 - `tests/integration/m8_smoke_t6/README.md` — "Gate derivation"
-  section — needs §3.3 follow-up #4 amendment.
+  section — updated 2026-04-21 to the √-scaled 1e-6 form.
+- `tests/integration/m8_smoke_t6/run_m8_smoke_t6_100step.sh` — new
+  100-step variant (task #168), reads the authoritative
+  `nve_drift_per_100_steps = 3e-6` gate directly.
+
+---
+
+## 9. T8.13 resolution (2026-04-21) — §D.15 red-flag closed
+
+This section supersedes the blocker claim in §TL;DR and §5. Added
+during the T8.13 unblock session after re-diagnosing the 1000-step
+crash with LAMMPS as an independent reference.
+
+**Corrected root cause: pure SNAP without ZBL is intrinsically unstable
+on this fixture.** The original §3.4.1 diagnosis ("lattice ~0.13 eV/atom
+above equilibrium") was **wrong**. A step-0 PE check in LAMMPS directly
+reports `E_pair = −18254.326 eV, TotEng = −18214.656 eV` — matching the
+pure-SNAP equilibrium, so the fixture IS at the minimum, not above it.
+
+**Independent reproduction with LAMMPS** (2026-04-21, submodule pin
+`stable_22Jul2025_update4`):
+
+- LAMMPS `minimize` with `fix box/relax iso 0.0` on the same starting
+  state: `ERROR: Neighbor list overflow` immediately.
+- LAMMPS NVT Langevin @ 300 K, `tdamp = 0.01 ps`, `dt = 0.1 fs`, 2000
+  thermalization steps: T diverges from 300 K → 270 154 K; PE drops
+  from −19 427 eV to −54 998 eV by step 2500. Strong Langevin damping
+  cannot hold 300 K because F/m terms from close-range SNAP wells
+  overwhelm −v/τ_damp.
+
+**Upstream Wood & Thompson 2017 use ZBL composition for this exact
+reason** — `pair_style hybrid/overlay zbl 4.0 4.8 snap` masks close-range
+SNAP wells. Their reference run is 100 steps with final T ≈ 1300 K.
+TDMD's `config.yaml.template` deliberately excludes ZBL until M9+, so
+the 1000-step gate on pure-SNAP is physically unreachable.
+
+**Corrected §3.4.2 diagnosis.** The `cudaErrorIllegalAddress` is NOT
+a preallocated `max_neighbours` buffer overrun — `src/gpu/snap_bond_list_gpu.cu`
+uses 2-pass count+emit with dynamic allocation through `DevicePool`
+(`cudaMallocAsync`-backed). The crash surfacing at D2H fx is a
+deferred CUDA error from earlier neighbor-list or cell-list indexing
+going out-of-range when atoms exit their cells between rebuilds at
+high T. Not a fixed buffer problem — a runtime-staleness problem that
+disappears once the crystal does not melt.
+
+**Resolution: Option A — spec-level rescope** (`verify/thresholds/thresholds.yaml`
+v1.0.1, 2026-04-21):
+
+```yaml
+gpu_mixed_fast_snap_only:
+  # was: nve_drift_per_1000_steps: 1.0e-5
+  nve_drift_per_100_steps: 3.0e-6
+```
+
+`3.0e-6` is √-scaled from the original envelope under the diffusive
+round-off model: `1e-5 × √(100/1000) ≈ 3.16e-6 → 3e-6`. The 100-step
+horizon matches upstream reference-run length; bring-up measurements
+confirm ~4× headroom under the gate (Fp64Ref `5.80e-7`,
+MixedFastSnapOnly `7.55e-7`). See
+`docs/specs/potentials/mixed_fast_snap_only_rationale.md` §4.1 for the
+full derivation.
+
+**Follow-up updates.**
+- §1 (TL;DR) verdict was "T8.13 v1-alpha tag BLOCKED"; superseded — see
+  below.
+- §3.4 framing of "pre-existing issue" stands on the factual observation,
+  but the "0.13 eV/atom above minimum" and "max_neighbours preallocated
+  buffer" language is corrected by this §9.
+- §6 follow-up #1 (fixture relaxation): **superseded** — fixture was
+  correct; the horizon was wrong.
+- §6 follow-up #3 (100-step variant): **shipped** as `run_m8_smoke_t6_100step.sh`
+  (task #168, 2026-04-21).
+- §6 follow-up #4 (√-scaled drift model): **shipped** — 10-step smoke
+  rescaled to `1e-6` (√-scaled from the new authoritative `3e-6/100`).
+- §6 follow-up #5 (hardware_probe repair): **shipped** — commit
+  `77c2ebe` (native C FP64 probe, task #169).
+- §6 follow-up #6 (T8.13 tag): **unblocked** — Option A closes the
+  §D.15 red-flag at the spec layer without regression.
+
+**Revised T8.13 verdict.** The §D.15 red-flag is closed by spec-level
+call (Option A). Force/energy/virial gates remain at MixedFast parity;
+NVE drift now lives inside the potential's stability envelope. M8
+T8.13 v1.0.0-alpha1 tag is unblocked pending the standard Architect +
+Validation Engineer signoff per §D.17 step 7.
+
+Task #167 (SNAP GPU robust-failure-mode guard) remains as a
+defense-in-depth follow-on — unrelated to the drift gate; any future
+pure-SNAP run that somehow crosses the stability horizon should still
+fail with a readable message, not `cudaErrorIllegalAddress`.

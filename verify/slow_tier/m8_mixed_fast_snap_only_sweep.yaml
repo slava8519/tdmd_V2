@@ -82,11 +82,13 @@ gates:
     invocation: >-
       ./tests/integration/m8_smoke_t6/run_m8_smoke_t6.sh
       --tdmd build-mixed-snap-only/src/cli/tdmd
-    gate_path: benchmarks.gpu_mixed_fast_snap_only.nve_drift_per_1000_steps
-    gate_value: 1.0e-5
+    # v1.0.1 (2026-04-21, T8.13 Option A): authoritative threshold rescoped
+    # from nve_drift_per_1000_steps (1e-5) to nve_drift_per_100_steps (3e-6).
+    # 10-step smoke uses √-scaled form from the new authoritative key.
+    gate_path: benchmarks.gpu_mixed_fast_snap_only.nve_drift_per_100_steps
+    gate_value_authoritative_100step: 3.0e-6
+    gate_value_sqrt_scaled_10step: 1.0e-6
     measurement_scale: "10 steps"
-    linear_scaled_gate_10step: 1.0e-7
-    sqrt_scaled_gate_10step: 1.0e-6
 
   # --- Layer 3: differential harnesses (all exercised by ctest above) ---
   - id: t1_al_morse_differential

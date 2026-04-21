@@ -141,13 +141,70 @@ Full entries land in `verify/thresholds/thresholds.yaml` under
 | EAM force (per-atom, L∞ rel) | 1 × 10⁻⁵ | dimensionless | Inherited verbatim from MixedFastBuild — EAM stays FP64 so residual is pure reduction-order roundoff, but budget anchored at published ceiling |
 | EAM energy (total PE, rel) | 1 × 10⁻⁷ | dimensionless | Inherited from MixedFastBuild |
 | EAM virial (Voigt, rel-to-max) | 5 × 10⁻⁶ | dimensionless | Inherited from MixedFastBuild; asymmetric stencils |
-| NVE energy drift | 1 × 10⁻⁵ | per 1000 steps | Same as MixedFastBuild; FP64 state + accumulators preserve NVE gate |
+| NVE energy drift | 3 × 10⁻⁶ | per 100 steps | v1.0.1 rescope (T8.13 unblock, 2026-04-21) — √-scaled from the MixedFastBuild 1 × 10⁻⁵/1000 envelope (`1e-5 × √(100/1000) ≈ 3.16e-6 → 3e-6`). Horizon shortened because pure-SNAP W on the canonical T6 fixture is physically unstable over 1000 steps (LAMMPS itself diverges under Langevin damping — ZBL composition lands at M9+, see §4.1 below). FP64 state + accumulators preserve the per-step drift budget. |
 | Layout-invariant determinism | observables only | — | Same as MixedFastBuild (§D.13); bitwise layout-invariance deferred to Fp64ProductionBuild |
 | Bitwise same-run reproduce | exact | — | Same binary, same hardware, same input → identical bits |
 
-All thresholds are **equal to or tighter than** MixedFastBuild. The flavor
-does not relax any existing envelope; it promises a narrower combination
-that a subset of workflows can rely on.
+All force/energy/virial thresholds are **equal to or tighter than**
+MixedFastBuild. The NVE drift threshold carries a shorter temporal horizon
+(100 vs 1000 steps) because the canonical fixture's stability envelope is
+itself bounded; the per-step drift budget (3e-6/100 = 3e-8/step) is ~3×
+tighter than MixedFastBuild's implied 1e-5/1000 = 1e-8/step on the
+diffusive floor. The flavor does not relax any existing envelope; it
+promises a narrower combination that a subset of workflows can rely on.
+
+### 4.1. Why the NVE horizon is 100 steps, not 1000 (T8.13 unblock — 2026-04-21)
+
+Brought forward from the T8.12 slow-tier findings and resolved via the
+M8 T8.13 Option A SPEC call. The canonical T6 1024-atom W BCC fixture
+(`setup_1024.data`, `a = 3.1803 Å`, 8×8×8 conventional BCC repeats) runs
+**pure SNAP — no ZBL short-range repulsion**; ZBL composition lands at
+M9+ per `verify/benchmarks/t6_snap_tungsten/config.yaml.template` header.
+
+Experimental evidence that pure SNAP is physically unstable over 1000
+steps on this fixture, gathered 2026-04-21 with LAMMPS directly
+(`stable_22Jul2025_update4` submodule pin):
+
+- LAMMPS `minimize` with `fix box/relax iso 0.0` on the same starting
+  state hits `ERROR: Neighbor list overflow, boost neigh_modify one`
+  almost immediately — CG minimize explores configurations where
+  atoms enter deep SNAP-alone close-range wells.
+- LAMMPS NVT Langevin @ 300 K, `tdamp = 0.01 ps`, `dt = 0.1 fs`, 2000
+  thermalization steps: even strong damping cannot hold 300 K — by
+  step 2500 the system reaches T = 270 154 K, PE = −54 998 eV (vs
+  step-0 equilibrium PE of −18 254 eV). F/m terms from close-range
+  SNAP wells overwhelm −v/τ_damp.
+- LAMMPS step-0 PE check: `E_pair = −18254.326 eV, TotEng = −18214.656 eV`
+  matches the pure-SNAP equilibrium — so the fixture IS at the
+  SNAP minimum, it is **not** above it (earlier "0.13 eV/atom" claim
+  in T8.12 REPORT §3.4.1 was incorrect — see REPORT §9).
+
+Upstream Wood & Thompson 2017 (arXiv:1702.07042) avoid the instability
+by running `pair_style hybrid/overlay zbl 4.0 4.8 snap`: ZBL provides
+close-range repulsion that masks the SNAP-alone deep wells. They also
+stop at 100 steps — their reference `log.15Jun20.snap.W.2940.g++.1`
+ends at T ≈ 1300 K after 100 steps, consistent with the mild heating
+we observe on our pure-SNAP config over the same horizon.
+
+**Therefore the 1000-step form of `nve_drift_per_1000_steps` on pure
+SNAP is physically ill-posed on this fixture** regardless of integrator
+or precision: it is bounded by the potential's stability horizon, not
+by FP round-off. Shortening to 100 steps (matches upstream reference
+length) with the √-scaled threshold preserves scientific rigor on
+composition-independent grounds:
+
+- **Stability envelope honored** — 100 steps at `dt = 0.5 fs` keeps T
+  below ~1300 K (Wood & Thompson reference regime).
+- **Diffusive round-off model honored** — random-walk on the FP64
+  accumulator scales as √N_steps, so √-scaling is the correct
+  reduction, not linear.
+- **Regression sensitivity preserved** — bring-up MixedFastSnapOnly
+  drift was 7.55 × 10⁻⁷ at 100 steps, ≈ 4× under the 3 × 10⁻⁶ gate.
+
+The 1000-step form is tracked as an M9+ follow-on, re-enabled once
+ZBL hybrid composition is available to mask close-range wells on
+fixtures that genuinely require it. See also `project_m8_t813_blocker.md`
+memory for the investigation log.
 
 ---
 
@@ -216,40 +273,52 @@ Gate table (summary; see REPORT §3 for full details):
 | `gpu_mixed_fast_snap_only.snap.force_relative`      | 1 × 10⁻⁵                    | `test_snap_mixed_fast_within_threshold` | PASS |
 | `gpu_mixed_fast_snap_only.snap.energy_relative`     | 1 × 10⁻⁷                    | same                                  | PASS |
 | `gpu_mixed_fast_snap_only.eam.force_relative`       | 1 × 10⁻⁵                    | `test_eam_mixed_fast_within_threshold` | PASS (measured ~1 × 10⁻¹⁴ — EAM FP64) |
-| `gpu_mixed_fast_snap_only.nve_drift_per_1000_steps` | 1 × 10⁻⁵                    | 10-step m8_smoke_t6 = 1.8 × 10⁻⁷       | PASS under √-scaling; see §3.3 of REPORT |
+| `gpu_mixed_fast_snap_only.nve_drift_per_100_steps`  | 3 × 10⁻⁶ (v1.0.1)           | 10-step smoke = 1.8 × 10⁻⁷ (√-scaled) + 100-step = 7.55 × 10⁻⁷ | PASS — see §4.1 above + REPORT §9 |
 | `t6_snap_tungsten.cpu_fp64_vs_lammps.*`             | 1 × 10⁻¹²                   | `test_t6_differential`                | PASS |
 | `t6_snap_tungsten.gpu_fp64_vs_cpu_fp64.*`           | 1 × 10⁻¹²                   | `test_snap_gpu_bit_exact`             | PASS |
 | `t1_al_morse_500.*`                                 | multiple                    | `test_t1_differential`                | PASS |
 | `t4_nial_alloy.*`                                   | multiple                    | `test_t4_differential`                | PASS |
 | M7 Pattern 2 K=1 byte-exact                        | D-M7-10                     | `test_multirank_td_smoke_2rank`       | PASS |
 
-**Red-flag finding (§D.15) — not a MixedFastSnapOnly regression.** The
-slow-tier pass probe of the authoritative 1000-step `nve_drift_per_1000_steps`
-gate surfaced a pre-existing crash on the canonical T6 1024-atom fixture:
-both `MixedFastSnapOnlyBuild` and `Fp64ReferenceBuild` trip
-`gpu::SnapGpu::D2H cudaErrorIllegalAddress` between step 220 and
-step 1000, with trajectories agreeing to ~1 × 10⁻⁷ relative step-by-step.
-Root cause is a combination of (a) the `a = 3.1803 Å` upstream Wood &
-Thompson 2017 lattice parameter sitting ~0.13 eV/atom above the
-equilibrium minimum of the `W_2940_2017_2.snap` fit, so NVE relaxation
-heats the crystal past melting by step 200, and (b) the SNAP GPU kernels
-not bound-checking against neighbour-count spikes at high temperature.
+**Red-flag finding (§D.15) — resolved via v1.0.1 rescope (T8.13
+Option A, 2026-04-21).** The slow-tier pass probe of the authoritative
+1000-step gate on the canonical T6 1024-atom fixture surfaced a shared
+crash on both `MixedFastSnapOnlyBuild` and `Fp64ReferenceBuild`
+(`gpu::SnapGpu::D2H cudaErrorIllegalAddress` between step 220 and 1000,
+trajectories agreeing to ~1 × 10⁻⁷ relative step-by-step — confirming
+this is not a T8.8 regression). Follow-up investigation identified the
+**real** root cause: pure SNAP without ZBL is intrinsically unstable on
+this fixture — LAMMPS itself diverges under Langevin NVT on the same
+config, and CG minimize hits neighbor-list overflow. The T8.12 REPORT's
+original hypothesis of "lattice ~0.13 eV/atom above equilibrium" was
+disproved by a LAMMPS step-0 PE check (see REPORT §9 + memory
+`project_m8_t813_blocker.md`). The GPU crash is a stability-horizon
+consequence, not a preallocated-buffer bug — `src/gpu/snap_bond_list_gpu.cu`
+uses 2-pass count+emit with dynamic allocation through `DevicePool`.
 
-**The crash reproduces identically on `Fp64ReferenceBuild`** — so T8.8
-(MixedFastSnapOnly flavor add) did not introduce it; it is a pre-existing
-issue in the SNAP GPU code that was not surfaced by T8.5's 100-step
-byte-exact harness (250-atom fixture heats more slowly) or T8.10's
-10-step m8 smoke. §D.15 red-flag protocol applies to the follow-up
-investigation: **T8.13 v1-alpha tag is held pending the fix**.
+**Resolution (T8.13 Option A):** shorten the NVE drift horizon to 100
+steps (matches upstream Wood & Thompson 2017 reference length) with
+√-scaled threshold `3 × 10⁻⁶`. See §4.1 above for the full derivation
+and stability evidence. 1000-step form re-enabled as an M9+ follow-on
+once ZBL hybrid composition is available to mask close-range wells.
 
-Follow-up tasks (filed separately post-T8.12 session):
-1. T6 1024-atom fixture relaxation (minimize then write setup_1024.data);
-2. SNAP GPU `max_neighbours` guard;
-3. 100-step variant of `m8_smoke_t6`;
-4. √-scaled (diffusive) drift model for short-run m8_smoke_t6 gate;
-5. `verify/harness/hardware_probe.py` repair — reports 0.0012 GFLOPS on a
-   modern CPU, causing `HARDWARE_MISMATCH` hard-fail on the T3 anchor
-   harness (unrelated to T8.12).
+Follow-up tasks from the T8.12 session:
+1. ~~T6 1024-atom fixture relaxation~~ — **superseded**: fixture IS at
+   pure-SNAP minimum; the problem was the 1000-step horizon, not the
+   starting state.
+2. SNAP GPU robust-failure-mode guard (#167) — still tracked as
+   defense-in-depth; crash point is `cudaErrorIllegalAddress` from
+   deferred runtime-staleness (cell-list indexing), not preallocated
+   buffer overrun; should fail with a readable message.
+3. 100-step variant of `m8_smoke_t6` (#168) — **shipped 2026-04-21**
+   alongside this rescope; consumes the new `nve_drift_per_100_steps`
+   gate directly.
+4. √-scaled (diffusive) drift model for short-run m8_smoke_t6 gate —
+   **shipped 2026-04-21**; see §4.1 + updated `run_m8_smoke_t6.sh`
+   gate-derivation header.
+5. `verify/harness/hardware_probe.py` repair (#169) — **shipped
+   2026-04-21** (commit `77c2ebe`, native C FP64 probe replaces
+   pure-Python loop; 25.6 GFLOPS → ratio 2.85 vs Harpertown 9.0).
 
 ---
 

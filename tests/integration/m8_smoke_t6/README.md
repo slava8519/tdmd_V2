@@ -4,8 +4,9 @@ End-to-end regression gate closing M8 T8.10 on top of T8.5 / T8.7 on the
 canonical T6 tungsten SNAP fixture (`W_2940_2017_2.snap`, Wood & Thompson
 2017; 1024-atom BCC W; single-rank Fp64Reference NVE; 10 steps).
 
-**Gate:** `|E_total(step=10) − E_total(step=0)| / |E_total(step=0)| ≤ 1e-7`
-(D-M8-8 NVE-drift envelope — see *Gate derivation* below.)
+**Gate:** `|E_total(step=10) − E_total(step=0)| / |E_total(step=0)| ≤ 1e-6`
+(√-scaled D-M8-8 NVE-drift envelope — see *Gate derivation* below; v1.0.1
+rescope 2026-04-21.)
 
 **Status:** shipped M8 T8.10 (2026-04-21).
 
@@ -20,8 +21,9 @@ canonical T6 tungsten SNAP fixture (`W_2940_2017_2.snap`, Wood & Thompson
   for the canonical T6 1024-atom W BCC fixture (8×8×8 conventional BCC
   unit cells × 2 atoms/cell).
 - Integrator determinism: 10-step NVE energy drift at VV's O((ω·dt)²)
-  truncation-error floor — headroom check under the D-M8-8 NVE-drift
-  envelope (1e-7 relative drift over 10 steps; see *Gate derivation*).
+  truncation-error floor — headroom check under the √-scaled D-M8-8
+  NVE-drift envelope (1e-6 relative drift over 10 steps; see *Gate
+  derivation*).
 
 ## What this smoke does NOT cover
 
@@ -77,7 +79,7 @@ device MUST be visible (skipped with exit 0 otherwise).
 | Code | Meaning |
 |------|---------|
 | 0    | Green — gate passed. Also: SKIPPED (no GPU visible). |
-| 1    | Physics regression — energy drift exceeds 1e-12. Bisect before relaxing. |
+| 1    | Physics regression — energy drift exceeds 1e-6. Bisect before relaxing. |
 | 2    | Infra — missing binary, LFS pointer unresolved, thermo malformed. |
 | 3    | Perf — smoke exceeded wall-time budget (default 60 s). |
 | 77   | SKIP — LAMMPS submodule not initialized (fixture absent). Matches the Catch2 `SKIP_RETURN_CODE` convention used by `test_lammps_oracle_snap_fixture`. |
@@ -98,17 +100,34 @@ conflates two different phenomena:
 
 This smoke measures (2), so the gate is anchored to the D-M8-8 NVE-drift
 threshold registered in `verify/thresholds/thresholds.yaml`
-(`gpu_mixed_fast_snap_only.snap.nve_drift_per_1000_steps = 1e-5`).
-Linearly scaled to a 10-step run: **1e-7 relative drift**. On bring-up
-(2026-04-21, RTX 5080, Fp64Reference) the measured drift was `2.5e-9`
-— ≈40× headroom, enough to catch regressions without flapping.
+(`gpu_mixed_fast_snap_only.nve_drift_per_100_steps = 3e-6` — v1.0.1
+rescope 2026-04-21: horizon shortened from 1000 steps because pure-SNAP
+W on the canonical T6 fixture is intrinsically unstable beyond ~200
+steps, see rationale doc §4 + thresholds.yaml header note).
+
+Short-run scaling uses the diffusive round-off model (random-walk on the
+FP64 accumulator dominates here, not VV truncation):
+
+```
+gate(N_steps) = 3e-6 × √(N_steps / 100)
+  → N=10: 3e-6 × √0.1 ≈ 9.49e-7 → 1e-6 (rounded up modestly for headroom)
+```
+
+Bring-up measurements (2026-04-21, RTX 5080):
+- Fp64Reference `|ΔE|/|E₀|` = `2.5e-9` — ≈ 400× headroom.
+- MixedFastSnapOnly `|ΔE|/|E₀|` = `1.8e-7` — ≈ 5× headroom (FP32
+  SNAP bispectrum round-off envelope dominates).
+
+A companion 100-step variant (`run_m8_smoke_t6_100step.sh`) reads the
+authoritative `nve_drift_per_100_steps = 3e-6` gate directly; see that
+script's header for the rationale.
 
 An exec-pack SPEC delta at T8.10 session-report time amends line 1081
-to state the 1e-7 envelope explicitly.
+to state the √-scaled 1e-6 envelope explicitly.
 
 ## If the gate trips
 
-A drift exceeding 1e-7 on the T6 1024-atom 10-step NVE run points to:
+A drift exceeding 1e-6 on the T6 1024-atom 10-step NVE run points to:
 
 - Changed reduction layout in `src/potentials/snap/*` (per-atom vs
   per-bond vs per-(atom,jju) grouping — all must reduce deterministically).

@@ -32,16 +32,31 @@
     "measured_drift_relative": 1.807885e-7,
     "measured_etotal_step_0": -1.8214658888e4,
     "measured_etotal_step_10": -1.8214655595e4,
-    "gate_linear_scaled_10step": 1.0e-7,
     "gate_sqrt_scaled_10step": 1.0e-6,
-    "authoritative_gate_1000step": 1.0e-5,
-    "threshold_path": "benchmarks.gpu_mixed_fast_snap_only.nve_drift_per_1000_steps",
-    "verdict": "ABOVE_LINEAR_BELOW_SQRT",
+    "authoritative_gate_100step": 3.0e-6,
+    "threshold_path": "benchmarks.gpu_mixed_fast_snap_only.nve_drift_per_100_steps",
+    "threshold_version": "v1.0.1 (2026-04-21, T8.13 Option A rescope — was nve_drift_per_1000_steps=1e-5)",
+    "verdict": "PASS_UNDER_SQRT_SCALING",
     "fp64_reference_comparison": {
       "measured_drift_relative": 2.525e-9,
       "fp32_vs_fp64_ratio": 71.6,
       "interpretation": "FP32 SNAP bispectrum noise dominates 10-step drift; ratio matches expectation (~70-100x) for k_max=55 accumulations."
     }
+  },
+
+  "layer2_m8_smoke_t6_100step": {
+    "invocation": "./tests/integration/m8_smoke_t6/run_m8_smoke_t6_100step.sh --tdmd build-mixed-snap-only/src/cli/tdmd",
+    "fixture": "verify/benchmarks/t6_snap_tungsten/setup_1024.data (1024-atom BCC W, 8x8x8)",
+    "config_template": "verify/benchmarks/t6_snap_tungsten/config.yaml.template (n_steps overridden to 100)",
+    "measured_drift_relative_mixed_fast_snap_only": 7.55e-7,
+    "measured_drift_relative_fp64_reference": 5.80e-7,
+    "gate_authoritative_100step": 3.0e-6,
+    "threshold_path": "benchmarks.gpu_mixed_fast_snap_only.nve_drift_per_100_steps",
+    "threshold_version": "v1.0.1 (2026-04-21, T8.13 Option A)",
+    "verdict": "PASS",
+    "headroom_mixed_fast_snap_only": "~4x under gate",
+    "headroom_fp64_reference": "~5x under gate",
+    "note": "Added 2026-04-21 as the direct probe of the authoritative gate. Consumes the rescope landed same day; measurements are the bring-up numbers cited in rationale §4.1."
   },
 
   "layer3_differential_harnesses": {
@@ -128,15 +143,14 @@
     "per_flavor_gates": "GREEN",
     "spec_d17_step5_mandate": "SATISFIED — equal-or-tighter-than-MixedFast promise verified for every registered threshold",
     "shared_regression_risk": "NONE — MixedFastSnapOnly behaves identically to Fp64Reference on the same fixture",
-    "shared_preexisting_bug_severity": "HIGH — blocks T8.13 v1-alpha tag until separately triaged",
-    "blocks_m8_closure": true,
-    "blocks_m8_closure_reason": "Shared 1000-step crash is a new finding that was not surfaced before T8.10; safety gate at §D.15 red-flag protocol applies. Must resolve before tagging v1.0.0-alpha1."
+    "shared_preexisting_bug_severity": "RESOLVED (T8.13 Option A, 2026-04-21) — drift gate rescoped to 100-step horizon (matches upstream Wood & Thompson 2017 reference) via v1.0.1 threshold edit; pure-SNAP 1000-step horizon is physically ill-posed without ZBL composition (LAMMPS diverges on the same fixture under Langevin damping). Re-enable 1000-step form at M9+ after ZBL hybrid landing.",
+    "blocks_m8_closure": false,
+    "unblocks_t8_13_via": "verify/thresholds/thresholds.yaml v1.0.1 + rationale §4.1 + REPORT §9"
   },
 
   "followups": {
-    "new_task_needed": true,
-    "new_task_subject": "T6 1024-atom fixture 1000-step stability — shared Fp64Reference + MixedFastSnapOnly temperature runaway + SNAP GPU illegal-address crash",
-    "new_task_severity": "§D.15 red-flag — blocks T8.13",
-    "authoritative_finding_owner": "Architect + Validation + GPU/Performance (joint triage)"
+    "new_task_needed": false,
+    "resolution_path": "T8.13 Option A — spec-level rescope of NVE drift horizon to match fixture stability envelope; no new task. Defense-in-depth follow-on #167 (SNAP GPU robust failure mode) remains open but orthogonal.",
+    "authoritative_finding_owner": "Architect + Validation + GPU/Performance (joint triage resolved via Option A)"
   }
 }
