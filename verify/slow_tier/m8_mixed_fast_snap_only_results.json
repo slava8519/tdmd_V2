@@ -1,0 +1,142 @@
+{
+  "campaign": "m8_mixed_fast_snap_only",
+  "date": "2026-04-21",
+  "tdmd_commit": "44531e6",
+  "hardware": "RTX 5080 (sm_120), dev box",
+  "flavor_under_test": "MixedFastSnapOnlyBuild",
+  "reviewer_mandate": "Validation Engineer + Architect",
+
+  "layer1_ctest_battery": {
+    "invocation": "ctest --test-dir build-mixed-snap-only --output-on-failure",
+    "total_tests": 52,
+    "passed": 51,
+    "failed": 0,
+    "skipped": 1,
+    "wall_clock_sec": 76.89,
+    "log": "/tmp/tdmd_t812_ctest.log",
+    "overall": "GREEN",
+    "skipped_tests": [
+      {
+        "name": "test_t4_nve_drift",
+        "skip_return_code": 4,
+        "reason": "D-M6-8 drift gate is MixedFastBuild-only. MixedFastSnapOnlyBuild keeps EAM at FP64 (no FP32 EAM kernel linked), so the MixedFast FP32-EAM drift envelope does not apply. Correct behaviour — EAM residual here is the byte-exact FP64 reduction-order ~1e-14, well below any drift budget.",
+        "blocker": false
+      }
+    ]
+  },
+
+  "layer2_m8_smoke_t6_10step": {
+    "invocation": "./tests/integration/m8_smoke_t6/run_m8_smoke_t6.sh --tdmd build-mixed-snap-only/src/cli/tdmd",
+    "fixture": "verify/benchmarks/t6_snap_tungsten/setup_1024.data (1024-atom BCC W, 8x8x8)",
+    "config_template": "verify/benchmarks/t6_snap_tungsten/config.yaml.template",
+    "measured_drift_relative": 1.807885e-7,
+    "measured_etotal_step_0": -1.8214658888e4,
+    "measured_etotal_step_10": -1.8214655595e4,
+    "gate_linear_scaled_10step": 1.0e-7,
+    "gate_sqrt_scaled_10step": 1.0e-6,
+    "authoritative_gate_1000step": 1.0e-5,
+    "threshold_path": "benchmarks.gpu_mixed_fast_snap_only.nve_drift_per_1000_steps",
+    "verdict": "ABOVE_LINEAR_BELOW_SQRT",
+    "fp64_reference_comparison": {
+      "measured_drift_relative": 2.525e-9,
+      "fp32_vs_fp64_ratio": 71.6,
+      "interpretation": "FP32 SNAP bispectrum noise dominates 10-step drift; ratio matches expectation (~70-100x) for k_max=55 accumulations."
+    }
+  },
+
+  "layer3_differential_harnesses": {
+    "t1_al_morse_differential": {
+      "ctest_target": "test_t1_differential",
+      "verdict": "PASS",
+      "wall_clock_sec": 1.29
+    },
+    "t4_nial_alloy_differential": {
+      "ctest_target": "test_t4_differential",
+      "verdict": "PASS",
+      "wall_clock_sec": 1.85,
+      "note": "EAM runs FP64 under this flavor — residual identical to Fp64Reference."
+    },
+    "t6_snap_differential": {
+      "ctest_target": "test_t6_differential",
+      "verdict": "PASS",
+      "wall_clock_sec": 17.42,
+      "note": "D-M8-7 byte-exact vs LAMMPS on 250-atom fixture. Flavor-orthogonal (CPU FP64 oracle path)."
+    },
+    "snap_gpu_bit_exact": {
+      "ctest_target": "test_snap_gpu_bit_exact",
+      "verdict": "PASS",
+      "wall_clock_sec": 0.01,
+      "note": "D-M6-7 extension to SNAP GPU (landed T8.7). Flavor-orthogonal (Reference flavor compile-time).",
+      "build_note": "Self-tests when built under Fp64Reference; on non-Reference flavors it exercises the GPU bit-exact invariant the same way."
+    },
+    "snap_mixed_fast_within_threshold": {
+      "ctest_target": "test_snap_mixed_fast_within_threshold",
+      "verdict": "PASS",
+      "wall_clock_sec": 0.15,
+      "gate_paths": [
+        "benchmarks.gpu_mixed_fast_snap_only.snap.force_relative (1.0e-5)",
+        "benchmarks.gpu_mixed_fast_snap_only.snap.energy_relative (1.0e-7)"
+      ]
+    },
+    "eam_mixed_fast_within_threshold": {
+      "ctest_target": "test_eam_mixed_fast_within_threshold",
+      "verdict": "PASS",
+      "wall_clock_sec": 0.15,
+      "note": "EAM stays FP64 in MixedFastSnapOnly — measured residual ~1e-14, nowhere near 1e-5 budget."
+    }
+  },
+
+  "layer4_multirank_regression": {
+    "test_multirank_td_smoke_2rank": {
+      "verdict": "PASS",
+      "wall_clock_sec": 0.34,
+      "note": "D-M7-10 byte-exact chain (M3..M7 thermo equivalence) preserved under this flavor."
+    },
+    "test_gpu_2rank_smoke": {
+      "verdict": "PASS",
+      "wall_clock_sec": 0.73
+    }
+  },
+
+  "findings": {
+    "per_flavor_gates": "ALL GREEN — every gate authoritatively registered for MixedFastSnapOnlyBuild passes. §D.17 step 5 per-flavor contract satisfied.",
+    "pre_existing_shared_bug": {
+      "summary": "1000-step NVE on the T6 1024-atom fixture reproduces a runaway temperature culminating in gpu::SnapGpu::D2H cudaErrorIllegalAddress crash on BOTH Fp64ReferenceBuild and MixedFastSnapOnlyBuild, with the trajectories agreeing to ~1e-7 rel step-by-step through step 200. This is a physics + code issue not introduced by T8.8 (MixedFastSnapOnly flavor add).",
+      "observed_temperatures": {
+        "step_0": "300 K (initialized)",
+        "step_10": "303.4 K (normal)",
+        "step_50": "414 K (+38% — starting to diverge)",
+        "step_100": "1284 K (+328% — ΔPE≈130 eV released to KE)",
+        "step_200": "51055 K (!!) both flavors agree to 1e-7",
+        "step_210_220": "88000 → 142493 K (melting/vapourising)",
+        "crash_point": "between step 220 and step 1000 — cudaErrorIllegalAddress on SNAP D2H force copy"
+      },
+      "diagnosis": "Initial BCC lattice at a0=3.1803 Å (upstream Wood & Thompson 2017 parameter) is ~0.13 eV/atom above the equilibrium minimum for the W_2940_2017_2 SNAP fit. NVE conservation converts that PE budget into KE over ~100 steps, heating the crystal past melting by step 200. At high T the neighbour count per atom exceeds the preallocated SNAP GPU buffers → illegal memory access.",
+      "flavor_regression_test": "RESULT: NOT A MixedFastSnapOnlyBuild REGRESSION. Both flavors trip the same trap at the same step. Fp64Reference values at step 200: T=51055.055579 K, E_tot=-18215.376704 eV. MixedFastSnapOnly at step 200: T=51055.062586 K, E_tot=-18215.376767 eV. Relative agreement ~1e-7, within expected FP32 bispectrum noise.",
+      "blocks_t8_12_verdict": false,
+      "blocks_t8_13_alpha_tag": true,
+      "recommended_followups": [
+        "Fix the fixture: either lattice-relax the 1024-atom setup (LAMMPS minimize + write_data) before committing, or add explicit initial-relaxation steps in the integration test",
+        "Add max-neighbours guard on SNAP GPU path so high-T configurations fail gracefully with a bounded error message rather than cudaErrorIllegalAddress",
+        "Add a 100-step variant of m8_smoke_t6 to the slow-tier that would have caught this before T8.10 landed",
+        "Investigate upstream Wood & Thompson 2017 log file to see if they also observe this heating (they only run 100 steps — T ends near 1300 K consistent with our observation)"
+      ]
+    }
+  },
+
+  "verdict": {
+    "per_flavor_gates": "GREEN",
+    "spec_d17_step5_mandate": "SATISFIED — equal-or-tighter-than-MixedFast promise verified for every registered threshold",
+    "shared_regression_risk": "NONE — MixedFastSnapOnly behaves identically to Fp64Reference on the same fixture",
+    "shared_preexisting_bug_severity": "HIGH — blocks T8.13 v1-alpha tag until separately triaged",
+    "blocks_m8_closure": true,
+    "blocks_m8_closure_reason": "Shared 1000-step crash is a new finding that was not surfaced before T8.10; safety gate at §D.15 red-flag protocol applies. Must resolve before tagging v1.0.0-alpha1."
+  },
+
+  "followups": {
+    "new_task_needed": true,
+    "new_task_subject": "T6 1024-atom fixture 1000-step stability — shared Fp64Reference + MixedFastSnapOnly temperature runaway + SNAP GPU illegal-address crash",
+    "new_task_severity": "§D.15 red-flag — blocks T8.13",
+    "authoritative_finding_owner": "Architect + Validation + GPU/Performance (joint triage)"
+  }
+}

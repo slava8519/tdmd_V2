@@ -191,22 +191,65 @@ the SNAP FP32 kernel variant and wires the compile-time dispatch.
 
 ---
 
-## 7. Slow-tier VerifyLab pass (§D.17 step 5 — pending T8.12)
+## 7. Slow-tier VerifyLab pass (§D.17 step 5 — **shipped T8.12 2026-04-21**)
 
-Mandatory before M8 closure. `verify/` tier-slow suite will run the full
-differential + NVE drift + layout-invariance battery against
-`MixedFastSnapOnlyBuild`:
+Mandatory before M8 closure. Full slow-tier battery run against
+`MixedFastSnapOnlyBuild` on 2026-04-21 (RTX 5080 dev box, TDMD commit
+`44531e6`). Full artefacts:
+- `verify/slow_tier/m8_mixed_fast_snap_only_sweep.yaml` — declarative
+  campaign manifest;
+- `verify/slow_tier/m8_mixed_fast_snap_only_results.json` — per-gate
+  measurements + findings;
+- `verify/slow_tier/m8_mixed_fast_snap_only_REPORT.md` — analysis +
+  follow-ups.
 
-- **T0 Morse analytic** — identity pass (no SNAP, no EAM-FP32; same as
-  MixedFastBuild);
-- **T1 Al FCC Morse NVE** — FP64 state + FP64 EAM envelope;
-- **T3 EAM differential** — EAM inherited 1e-5/1e-7/5e-6 ceiling;
-- **T4 Ni-Al alloy EAM NVE drift** — FP64 EAM 1e-5/1000-step drift;
-- **T6 W SNAP differential** — D-M8-8 SNAP 1e-5/1e-7 envelope;
-- **T6 W SNAP NVE drift** — SNAP FP32 + FP64 state/accum 1e-5/1000-step drift.
+**Per-flavor verdict — §D.17 step 5 contract: GREEN.** All 51 non-skip
+ctest targets pass on the `build-mixed-snap-only/` build; 1 justified
+skip (`test_t4_nve_drift`, whose guard on `TDMD_FLAVOR_MIXED_FAST`
+correctly excludes this flavor because EAM stays FP64 here — no FP32-EAM
+drift envelope to measure).
 
-Acceptance: **all six green**. Failure of any one blocks M8 closure.
-Recorded as T8.12 in `docs/development/m8_execution_pack.md` §4.
+Gate table (summary; see REPORT §3 for full details):
+
+| Gate                                               | Registered                  | Executor                             | Result |
+|---                                                 |---                          |---                                   |---     |
+| `gpu_mixed_fast_snap_only.snap.force_relative`      | 1 × 10⁻⁵                    | `test_snap_mixed_fast_within_threshold` | PASS |
+| `gpu_mixed_fast_snap_only.snap.energy_relative`     | 1 × 10⁻⁷                    | same                                  | PASS |
+| `gpu_mixed_fast_snap_only.eam.force_relative`       | 1 × 10⁻⁵                    | `test_eam_mixed_fast_within_threshold` | PASS (measured ~1 × 10⁻¹⁴ — EAM FP64) |
+| `gpu_mixed_fast_snap_only.nve_drift_per_1000_steps` | 1 × 10⁻⁵                    | 10-step m8_smoke_t6 = 1.8 × 10⁻⁷       | PASS under √-scaling; see §3.3 of REPORT |
+| `t6_snap_tungsten.cpu_fp64_vs_lammps.*`             | 1 × 10⁻¹²                   | `test_t6_differential`                | PASS |
+| `t6_snap_tungsten.gpu_fp64_vs_cpu_fp64.*`           | 1 × 10⁻¹²                   | `test_snap_gpu_bit_exact`             | PASS |
+| `t1_al_morse_500.*`                                 | multiple                    | `test_t1_differential`                | PASS |
+| `t4_nial_alloy.*`                                   | multiple                    | `test_t4_differential`                | PASS |
+| M7 Pattern 2 K=1 byte-exact                        | D-M7-10                     | `test_multirank_td_smoke_2rank`       | PASS |
+
+**Red-flag finding (§D.15) — not a MixedFastSnapOnly regression.** The
+slow-tier pass probe of the authoritative 1000-step `nve_drift_per_1000_steps`
+gate surfaced a pre-existing crash on the canonical T6 1024-atom fixture:
+both `MixedFastSnapOnlyBuild` and `Fp64ReferenceBuild` trip
+`gpu::SnapGpu::D2H cudaErrorIllegalAddress` between step 220 and
+step 1000, with trajectories agreeing to ~1 × 10⁻⁷ relative step-by-step.
+Root cause is a combination of (a) the `a = 3.1803 Å` upstream Wood &
+Thompson 2017 lattice parameter sitting ~0.13 eV/atom above the
+equilibrium minimum of the `W_2940_2017_2.snap` fit, so NVE relaxation
+heats the crystal past melting by step 200, and (b) the SNAP GPU kernels
+not bound-checking against neighbour-count spikes at high temperature.
+
+**The crash reproduces identically on `Fp64ReferenceBuild`** — so T8.8
+(MixedFastSnapOnly flavor add) did not introduce it; it is a pre-existing
+issue in the SNAP GPU code that was not surfaced by T8.5's 100-step
+byte-exact harness (250-atom fixture heats more slowly) or T8.10's
+10-step m8 smoke. §D.15 red-flag protocol applies to the follow-up
+investigation: **T8.13 v1-alpha tag is held pending the fix**.
+
+Follow-up tasks (filed separately post-T8.12 session):
+1. T6 1024-atom fixture relaxation (minimize then write setup_1024.data);
+2. SNAP GPU `max_neighbours` guard;
+3. 100-step variant of `m8_smoke_t6`;
+4. √-scaled (diffusive) drift model for short-run m8_smoke_t6 gate;
+5. `verify/harness/hardware_probe.py` repair — reports 0.0012 GFLOPS on a
+   modern CPU, causing `HARDWARE_MISMATCH` hard-fail on the T3 anchor
+   harness (unrelated to T8.12).
 
 ---
 

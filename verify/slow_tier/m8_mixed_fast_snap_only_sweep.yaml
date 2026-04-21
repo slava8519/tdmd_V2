@@ -1,0 +1,181 @@
+# T8.12 — slow-tier VerifyLab sweep campaign for MixedFastSnapOnlyBuild.
+#
+# SPEC: TDMD_Engineering_Spec.md §D.17 step 5 (slow-tier pass mandate for
+#       new BuildFlavors). Exec pack: docs/development/m8_execution_pack.md
+#       T8.12. Depends on T8.8 (flavor landed), T8.10 (T6 canonical fixture),
+#       T8.11 (scaling measurement).
+#
+# Scope: matrix = { BuildFlavor × ExecProfile × fixture }. This file is
+# declarative — the actual execution driver is the ctest battery of the
+# per-flavor build directory plus the m8_smoke_t6 shell-script gate. The
+# artefact records what was run, not a new harness.
+#
+# Role: Validation / Reference Engineer.
+# Authored: 2026-04-21.
+
+campaign:
+  id: m8_mixed_fast_snap_only
+  goal: |
+    §D.17 step 5 slow-tier pass hard gate before M8 closure. Prove
+    MixedFastSnapOnlyBuild passes every gate that MixedFastBuild passes
+    (equal-or-tighter promise per mixed_fast_snap_only_rationale §4),
+    does not regress Fp64ReferenceBuild byte-exactness (D-M6-7), and
+    does not regress MixedFastBuild dense-cutoff budget (D-M6-8).
+  date: "2026-04-21"
+  hardware: "RTX 5080 (sm_120), dev box — Option A: no self-hosted GPU CI yet"
+  tdmd_commit: "44531e6"
+  reviewer_mandate: "Validation Engineer + Architect (§D.17 step 7)"
+
+flavors:
+  # Primary flavor under validation.
+  - name: MixedFastSnapOnlyBuild
+    build_dir: build-mixed-snap-only
+    flags: "TDMD_BUILD_FLAVOR=MixedFastSnapOnlyBuild + TDMD_BUILD_CUDA=ON"
+    cmake_define: TDMD_FLAVOR_MIXED_FAST_SNAP_ONLY
+    purpose: "slow-tier pass target"
+
+  # Oracle flavor — reference baseline we must not regress.
+  - name: Fp64ReferenceBuild
+    build_dir: build
+    flags: "TDMD_BUILD_FLAVOR=Fp64ReferenceBuild + TDMD_BUILD_CUDA=ON"
+    cmake_define: TDMD_FLAVOR_REFERENCE
+    purpose: "byte-exact D-M6-7 oracle"
+
+  # Sibling flavor — MixedFast ≡ reference for SNAP FP32, but EAM FP32 here.
+  # Used only for drift-budget provenance (D-M6-8 dense 1e-5 / 1000 steps).
+  - name: MixedFastBuild
+    build_dir: build-mixed
+    flags: "TDMD_BUILD_FLAVOR=MixedFastBuild + TDMD_BUILD_CUDA=ON"
+    cmake_define: TDMD_FLAVOR_MIXED_FAST
+    purpose: "provenance only, not exercised by this sweep"
+
+fixtures:
+  # Existing benchmark fixtures; no new fixture creation (T8.12 runs existing).
+  - id: t0_morse_analytic
+    directory: verify/benchmarks/t0_morse_analytic
+    purpose: "trivial 2-atom LJ-like analytic anchor (flavor build + link check)"
+  - id: t1_al_morse_500
+    directory: verify/benchmarks/t1_al_morse_500
+    purpose: "Al Morse differential vs LAMMPS (non-SNAP path regression)"
+  - id: t4_nial_alloy
+    directory: verify/benchmarks/t4_nial_alloy
+    purpose: "Ni-Al EAM/alloy differential (EAM must stay FP64 in this flavor)"
+  - id: t6_snap_tungsten
+    directory: verify/benchmarks/t6_snap_tungsten
+    purpose: "tungsten SNAP — primary target for MixedFastSnapOnlyBuild"
+
+# What executes. Each entry is a real gate already registered in the build
+# graph — this sweep does not introduce new tests (per exec pack T8.12 scope).
+gates:
+
+  # --- Layer 1: full ctest battery under MixedFastSnapOnlyBuild ---
+  - id: ctest_full_battery
+    flavor: MixedFastSnapOnlyBuild
+    invocation: "ctest --test-dir build-mixed-snap-only --output-on-failure"
+    total_tests: 52
+    mandate: "All non-skip tests green. Skip reasons must each be justified."
+    log: "/tmp/tdmd_t812_ctest.log"
+
+  # --- Layer 2: T6 canonical fixture NVE conservation (D-M8-8) ---
+  - id: m8_smoke_t6_10step
+    flavor: MixedFastSnapOnlyBuild
+    invocation: >-
+      ./tests/integration/m8_smoke_t6/run_m8_smoke_t6.sh
+      --tdmd build-mixed-snap-only/src/cli/tdmd
+    gate_path: benchmarks.gpu_mixed_fast_snap_only.nve_drift_per_1000_steps
+    gate_value: 1.0e-5
+    measurement_scale: "10 steps"
+    linear_scaled_gate_10step: 1.0e-7
+    sqrt_scaled_gate_10step: 1.0e-6
+
+  # --- Layer 3: differential harnesses (all exercised by ctest above) ---
+  - id: t1_al_morse_differential
+    ctest_target: test_t1_differential
+    flavor: MixedFastSnapOnlyBuild
+    gate_paths:
+      - benchmarks.t1_al_morse_500.thermo_temperature_relative
+      - benchmarks.t1_al_morse_500.thermo_potential_energy_relative
+      - benchmarks.t1_al_morse_500.thermo_kinetic_energy_relative
+      - benchmarks.t1_al_morse_500.thermo_total_energy_relative
+      - benchmarks.t1_al_morse_500.thermo_pressure_relative
+    purpose: "non-SNAP Morse path regression under new flavor"
+
+  - id: t4_nial_alloy_differential
+    ctest_target: test_t4_differential
+    flavor: MixedFastSnapOnlyBuild
+    gate_paths:
+      - benchmarks.t4_nial_alloy.thermo_total_energy_relative
+      - benchmarks.t4_nial_alloy.forces_relative
+    purpose: "EAM path regression (must stay FP64 in this flavor)"
+
+  - id: t6_snap_differential
+    ctest_target: test_t6_differential
+    flavor: MixedFastSnapOnlyBuild
+    gate_paths:
+      - benchmarks.t6_snap_tungsten.cpu_fp64_vs_lammps.forces_relative
+      - benchmarks.t6_snap_tungsten.cpu_fp64_vs_lammps.thermo_total_energy_relative
+    purpose: "SNAP CPU FP64 byte-exact vs LAMMPS (D-M8-7) — flavor-orthogonal"
+
+  - id: snap_gpu_bit_exact
+    ctest_target: test_snap_gpu_bit_exact
+    flavor: MixedFastSnapOnlyBuild
+    gate_paths:
+      - benchmarks.t6_snap_tungsten.gpu_fp64_vs_cpu_fp64.forces_relative
+    purpose: "GPU FP64 ≡ CPU FP64 byte-exact (D-M6-7 extension, landed T8.7)"
+
+  - id: snap_mixed_fast_within_threshold
+    ctest_target: test_snap_mixed_fast_within_threshold
+    flavor: MixedFastSnapOnlyBuild
+    gate_paths:
+      - benchmarks.gpu_mixed_fast_snap_only.snap.force_relative
+      - benchmarks.gpu_mixed_fast_snap_only.snap.energy_relative
+    purpose: "FP32 SNAP force/energy within D-M8-8 dense-cutoff budget"
+
+  - id: eam_mixed_fast_within_threshold
+    ctest_target: test_eam_mixed_fast_within_threshold
+    flavor: MixedFastSnapOnlyBuild
+    gate_paths:
+      - benchmarks.gpu_mixed_fast_snap_only.eam.force_relative
+      - benchmarks.gpu_mixed_fast_snap_only.eam.energy_relative
+    purpose: >-
+      EAM residual under this flavor. Must match FP64 reference (EAM kept
+      FP64 in MixedFastSnapOnly), not MixedFast's FP32 envelope. Expected
+      residual O(1e-14) — deep under 1e-5 budget.
+
+  # --- Layer 4: multi-rank regression (M7 Pattern 2 K=1 byte-exact) ---
+  - id: multirank_td_smoke
+    ctest_target: test_multirank_td_smoke_2rank
+    flavor: MixedFastSnapOnlyBuild
+    purpose: "D-M7-10 byte-exact chain extension to SNAP under this flavor"
+
+  - id: gpu_2rank_smoke
+    ctest_target: test_gpu_2rank_smoke
+    flavor: MixedFastSnapOnlyBuild
+    purpose: "2-rank shared-GPU sanity under this flavor"
+
+# What this sweep does NOT exercise (per exec pack T8.12 out-of-scope):
+out_of_scope:
+  - id: t3_al_fcc_large_anchor
+    reason: >-
+      T3 anchor-test (Andreev 10^6 Al FCC reproduction) is EAM-pathed; under
+      MixedFastSnapOnlyBuild EAM keeps FP64, so the physics is identical to
+      Fp64Reference. T3 itself tracked as task #164 (separate 2026-04-21 run
+      hit HARDWARE_MISMATCH harness gate — documented in build/t3_anchor_report.json,
+      not a MixedFastSnapOnly signal). Not a slow-tier blocker.
+  - id: cloud_burst_scaling
+    reason: "T8.11 scaling on ≥8 ranks deferred to cloud-burst; T8.12 is breadth not scale."
+  - id: new_test_creation
+    reason: "Exec pack T8.12 scope explicitly excludes new fixtures or test creation."
+
+# Deliverables this sweep produces (§D.17 step 5 trail of evidence):
+artefacts:
+  - path: verify/slow_tier/m8_mixed_fast_snap_only_sweep.yaml
+    this: "this file — campaign manifest"
+  - path: verify/slow_tier/m8_mixed_fast_snap_only_results.json
+    content: "per-gate pass/fail + measured numbers + ctest log pointer"
+  - path: verify/slow_tier/m8_mixed_fast_snap_only_REPORT.md
+    content: "analysis, findings, follow-ups"
+  - path: docs/specs/potentials/mixed_fast_snap_only_rationale.md
+    edit: "append §7 — 'Slow-tier pass shipped T8.12 2026-04-21'"
+  - path: TDMD_Engineering_Spec.md Приложение C
+    edit: "T8.12 addendum"
