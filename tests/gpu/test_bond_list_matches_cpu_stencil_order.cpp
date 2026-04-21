@@ -493,4 +493,132 @@ TEST_CASE("SnapBondListGpu — rebuild increments build_version + stays consiste
   REQUIRE(std::memcmp(snap1.bond_rsq.data(), snap2.bond_rsq.data(), bonds_1 * sizeof(double)) == 0);
 }
 
+// ---------------------------------------------------------------------------
+// T-opt-3b: reverse_bond_index pairing. For every directed bond b = (i, j) the
+// paired bond b' = (j, i) must exist in atom j's bond range, and the geometry
+// must be exactly negated (bond_dx[b'] == -bond_dx[b], bit-exact — minimum_image
+// is deterministic, and the 2000-atom BCC W box is large enough that each pair
+// is unique under a single periodic image).
+// ---------------------------------------------------------------------------
+TEST_CASE("SnapBondListGpu — reverse_bond_index pairs bond (i,j) with bond (j,i) bit-exactly",
+          "[gpu][snap][bond_list][t_opt_3b]") {
+  if (!cuda_device_available()) {
+    SKIP("no CUDA device available");
+  }
+
+  constexpr double kLatticeA = 3.18;
+  constexpr int kNrep = 5;  // 250 atoms in 15.9 Å box — 2·cutoff=9.46 < 15.9 → unique pairs
+  constexpr double kCutoff = 4.73;
+  constexpr double kSkin = 0.2;
+
+  tdmd::Box box = make_cubic_box(kLatticeA * kNrep);
+  tdmd::AtomSoA atoms;
+  add_bcc_W(atoms, kNrep, kLatticeA);
+  REQUIRE(atoms.size() == 250u);
+  apply_tiny_rattle(atoms);
+
+  tdmd::CellGrid grid;
+  grid.build(box, kCutoff, kSkin);
+  grid.bin(atoms);
+
+  constexpr std::uint32_t kNSpecies = 1;
+  const double cutsq = kCutoff * kCutoff;
+  std::vector<double> rcut_sq_ab(kNSpecies * kNSpecies, cutsq);
+  std::vector<std::uint32_t> host_types(atoms.size(), 0U);
+
+  tg::BoxParams bp;
+  bp.xlo = box.xlo;
+  bp.ylo = box.ylo;
+  bp.zlo = box.zlo;
+  bp.lx = box.xhi - box.xlo;
+  bp.ly = box.yhi - box.ylo;
+  bp.lz = box.zhi - box.zlo;
+  bp.cell_x = grid.cell_x();
+  bp.cell_y = grid.cell_y();
+  bp.cell_z = grid.cell_z();
+  bp.nx = grid.nx();
+  bp.ny = grid.ny();
+  bp.nz = grid.nz();
+  bp.periodic_x = box.periodic_x;
+  bp.periodic_y = box.periodic_y;
+  bp.periodic_z = box.periodic_z;
+
+  tg::GpuConfig cfg;
+  cfg.memory_pool_init_size_mib = 4;
+  tg::DevicePool pool(cfg);
+  tg::DeviceStream stream = tg::make_stream(cfg.device_id);
+
+  tg::SnapBondListGpu bl;
+  bl.build(atoms.size(),
+           host_types.data(),
+           atoms.x.data(),
+           atoms.y.data(),
+           atoms.z.data(),
+           grid.cell_count(),
+           grid.cell_offsets().data(),
+           grid.cell_atoms().data(),
+           rcut_sq_ab.data(),
+           kNSpecies,
+           bp,
+           pool,
+           stream);
+
+  const auto snap = bl.download(stream);
+  const std::size_t nb = snap.bond_i.size();
+  REQUIRE(nb > 0u);
+  REQUIRE(snap.reverse_bond_index.size() == nb);
+
+  const std::uint32_t kSentinel = 0xFFFFFFFFu;
+  std::size_t unpaired = 0;
+  std::size_t atom_mismatch = 0;
+  std::size_t geom_mismatch = 0;
+  double worst_dx_rel = 0.0;
+  double worst_dy_rel = 0.0;
+  double worst_dz_rel = 0.0;
+
+  for (std::size_t b = 0; b < nb; ++b) {
+    const std::uint32_t bp_idx = snap.reverse_bond_index[b];
+    if (bp_idx == kSentinel || bp_idx >= nb) {
+      ++unpaired;
+      continue;
+    }
+    // Index consistency: bond b = (i, j) must pair with bond bp_idx = (j, i).
+    if (snap.bond_i[bp_idx] != snap.bond_j[b] || snap.bond_j[bp_idx] != snap.bond_i[b]) {
+      ++atom_mismatch;
+      continue;
+    }
+    // Geometry consistency: Δr must be exactly negated. minimum_image is
+    // deterministic → bit-exact negation under Fp64 Reference; Fp32/FMA
+    // flavors may drift by 1 ULP on the r² round-trip but dx/dy/dz come from
+    // position subtraction only.
+    const double sum_dx = snap.bond_dx[b] + snap.bond_dx[bp_idx];
+    const double sum_dy = snap.bond_dy[b] + snap.bond_dy[bp_idx];
+    const double sum_dz = snap.bond_dz[b] + snap.bond_dz[bp_idx];
+    const double scale_dx =
+        std::max(1.0, std::max(std::abs(snap.bond_dx[b]), std::abs(snap.bond_dx[bp_idx])));
+    const double scale_dy =
+        std::max(1.0, std::max(std::abs(snap.bond_dy[b]), std::abs(snap.bond_dy[bp_idx])));
+    const double scale_dz =
+        std::max(1.0, std::max(std::abs(snap.bond_dz[b]), std::abs(snap.bond_dz[bp_idx])));
+    worst_dx_rel = std::max(worst_dx_rel, std::abs(sum_dx) / scale_dx);
+    worst_dy_rel = std::max(worst_dy_rel, std::abs(sum_dy) / scale_dy);
+    worst_dz_rel = std::max(worst_dz_rel, std::abs(sum_dz) / scale_dz);
+    if (std::abs(sum_dx) > 1e-14 * scale_dx || std::abs(sum_dy) > 1e-14 * scale_dy ||
+        std::abs(sum_dz) > 1e-14 * scale_dz) {
+      ++geom_mismatch;
+    }
+  }
+
+  REQUIRE(unpaired == 0u);
+  REQUIRE(atom_mismatch == 0u);
+  REQUIRE(geom_mismatch == 0u);
+
+  // Symmetry: reverse(reverse(b)) == b for every bond.
+  for (std::size_t b = 0; b < nb; ++b) {
+    const std::uint32_t bp_idx = snap.reverse_bond_index[b];
+    REQUIRE(bp_idx < nb);
+    REQUIRE(snap.reverse_bond_index[bp_idx] == b);
+  }
+}
+
 #endif  // TDMD_BUILD_CUDA

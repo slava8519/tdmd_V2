@@ -66,6 +66,13 @@ struct SnapBondListGpuView {
   const double* d_bond_dy = nullptr;
   const double* d_bond_dz = nullptr;
   const double* d_bond_rsq = nullptr;
+
+  // T-opt-3b: paired-bond index. For bond b with (bond_i=i, bond_j=j), the
+  // paired bond b' satisfies (bond_i=j, bond_j=i) with Δr_{b'} = -Δr_b. Enables
+  // the atom-i gather to subtract dedr_own[reverse[b]] in place of a separately
+  // computed dedr_peer — halves the snap_deidrj_bond_kernel workload while
+  // preserving T8.7 byte-exactness (same FP operands, same += order).
+  const std::uint32_t* d_reverse_bond_index = nullptr;
 };
 
 // Host-side mirror of the device arrays; for validation tests + differential.
@@ -79,6 +86,7 @@ struct SnapBondListHostSnapshot {
   std::vector<double> bond_dy;
   std::vector<double> bond_dz;
   std::vector<double> bond_rsq;
+  std::vector<std::uint32_t> reverse_bond_index;  // T-opt-3b: paired-bond index.
 };
 
 class SnapBondListGpu {

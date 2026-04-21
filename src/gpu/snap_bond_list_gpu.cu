@@ -213,6 +213,41 @@ __global__ void count_bonds_kernel(std::uint32_t n,
   counts[i] = c;
 }
 
+// T-opt-3b: paired-bond index builder.
+//
+// For each bond b = (i, j), locate the paired bond b' = (j, i) within atom j's
+// bond range [atom_bond_start[j], atom_bond_start[j+1]). Under the SNAP full-
+// list emission (no `j<i` filter), the paired bond is guaranteed to exist for
+// every bond; we additionally assert bit-exact negation of the Δr geometry
+// (minimum_image is deterministic and produces `-Δr` when seen from the other
+// endpoint), so we narrow the scan match to `bond_j == i` which is unique when
+// `2 * cutoff < box_axis` on every axis (the 2000-atom BCC W fixture satisfies
+// this; tests add geometric assertions for defence in depth).
+//
+// One thread per bond. Scan cost is O(avg_neighbors_per_atom) ≈ 50 per thread.
+__global__ void build_reverse_bond_index_kernel(std::uint32_t n_bonds,
+                                                const std::uint32_t* __restrict__ bond_i,
+                                                const std::uint32_t* __restrict__ bond_j,
+                                                const std::uint32_t* __restrict__ atom_bond_start,
+                                                std::uint32_t* __restrict__ reverse_bond_index) {
+  const std::uint32_t b = blockIdx.x * blockDim.x + threadIdx.x;
+  if (b >= n_bonds) {
+    return;
+  }
+  const std::uint32_t i = bond_i[b];
+  const std::uint32_t j = bond_j[b];
+  const std::uint32_t scan_begin = atom_bond_start[j];
+  const std::uint32_t scan_end = atom_bond_start[j + 1];
+  std::uint32_t paired = 0xFFFFFFFFu;
+  for (std::uint32_t bp = scan_begin; bp < scan_end; ++bp) {
+    if (bond_j[bp] == i) {
+      paired = bp;
+      break;
+    }
+  }
+  reverse_bond_index[b] = paired;
+}
+
 __global__ void emit_bonds_kernel(std::uint32_t n,
                                   const std::uint32_t* __restrict__ types,
                                   const double* __restrict__ x,
@@ -295,6 +330,7 @@ struct SnapBondListGpu::Impl {
   DevicePtr<std::byte> d_bond_dy_bytes;
   DevicePtr<std::byte> d_bond_dz_bytes;
   DevicePtr<std::byte> d_bond_rsq_bytes;
+  DevicePtr<std::byte> d_reverse_bond_index_bytes;
 
   std::uint32_t* d_atom_bond_start = nullptr;
   std::uint32_t* d_bond_i = nullptr;
@@ -305,6 +341,7 @@ struct SnapBondListGpu::Impl {
   double* d_bond_dy = nullptr;
   double* d_bond_dz = nullptr;
   double* d_bond_rsq = nullptr;
+  std::uint32_t* d_reverse_bond_index = nullptr;
 
   // Shared core used by both build() (after its H2D) and build_from_device()
   // (no H2D). Runs: count_kernel → D2H counts → host exclusive scan → H2D
@@ -354,6 +391,7 @@ SnapBondListGpuView SnapBondListGpu::view() const noexcept {
   v.d_bond_dy = impl_->d_bond_dy;
   v.d_bond_dz = impl_->d_bond_dz;
   v.d_bond_rsq = impl_->d_bond_rsq;
+  v.d_reverse_bond_index = impl_->d_reverse_bond_index;
   return v;
 }
 
@@ -395,10 +433,12 @@ void SnapBondListGpu::build(std::size_t n,
     impl_->d_bond_dy_bytes.reset();
     impl_->d_bond_dz_bytes.reset();
     impl_->d_bond_rsq_bytes.reset();
+    impl_->d_reverse_bond_index_bytes.reset();
     impl_->d_atom_bond_start = nullptr;
     impl_->d_bond_i = impl_->d_bond_j = nullptr;
     impl_->d_bond_type_i = impl_->d_bond_type_j = nullptr;
     impl_->d_bond_dx = impl_->d_bond_dy = impl_->d_bond_dz = impl_->d_bond_rsq = nullptr;
+    impl_->d_reverse_bond_index = nullptr;
     return;
   }
 
@@ -505,10 +545,12 @@ void SnapBondListGpu::build_from_device(std::size_t n,
     impl_->d_bond_dy_bytes.reset();
     impl_->d_bond_dz_bytes.reset();
     impl_->d_bond_rsq_bytes.reset();
+    impl_->d_reverse_bond_index_bytes.reset();
     impl_->d_atom_bond_start = nullptr;
     impl_->d_bond_i = impl_->d_bond_j = nullptr;
     impl_->d_bond_type_i = impl_->d_bond_type_j = nullptr;
     impl_->d_bond_dx = impl_->d_bond_dy = impl_->d_bond_dz = impl_->d_bond_rsq = nullptr;
+    impl_->d_reverse_bond_index = nullptr;
     return;
   }
 
@@ -618,9 +660,11 @@ void SnapBondListGpu::Impl::run_passes_from_device(std::size_t n,
     d_bond_dy_bytes.reset();
     d_bond_dz_bytes.reset();
     d_bond_rsq_bytes.reset();
+    d_reverse_bond_index_bytes.reset();
     d_bond_i = d_bond_j = nullptr;
     d_bond_type_i = d_bond_type_j = nullptr;
     d_bond_dx = d_bond_dy = d_bond_dz = d_bond_rsq = nullptr;
+    d_reverse_bond_index = nullptr;
     check_cuda("cudaStreamSynchronize (empty bond list)", cudaStreamSynchronize(s));
     return;
   }
@@ -668,6 +712,23 @@ void SnapBondListGpu::Impl::run_passes_from_device(std::size_t n,
                                                            d_bond_dz,
                                                            d_bond_rsq);
     check_cuda("launch emit_bonds_kernel", cudaGetLastError());
+  }
+
+  // ---------- 5. T-opt-3b: paired-bond index ----------
+  {
+    TDMD_NVTX_RANGE("snap.bond_list.reverse_index_kernel");
+    const std::size_t u32_bytes = total_bonds * sizeof(std::uint32_t);
+    d_reverse_bond_index_bytes = pool.allocate_device(u32_bytes, stream);
+    d_reverse_bond_index = reinterpret_cast<std::uint32_t*>(d_reverse_bond_index_bytes.get());
+
+    const std::uint32_t nb32 = static_cast<std::uint32_t>(total_bonds);
+    const std::uint32_t rblocks = (nb32 + kThreadsPerBlock - 1) / kThreadsPerBlock;
+    build_reverse_bond_index_kernel<<<rblocks, kThreadsPerBlock, 0, s>>>(nb32,
+                                                                         d_bond_i,
+                                                                         d_bond_j,
+                                                                         d_atom_bond_start,
+                                                                         d_reverse_bond_index);
+    check_cuda("launch build_reverse_bond_index_kernel", cudaGetLastError());
     check_cuda("cudaStreamSynchronize (bond list build)", cudaStreamSynchronize(s));
   }
 }
@@ -700,6 +761,7 @@ SnapBondListHostSnapshot SnapBondListGpu::download(DeviceStream& stream) const {
   snap.bond_dy.assign(nb, 0.0);
   snap.bond_dz.assign(nb, 0.0);
   snap.bond_rsq.assign(nb, 0.0);
+  snap.reverse_bond_index.assign(nb, 0);
   if (nb > 0) {
     check_cuda("cudaMemcpyAsync D2H bond_i",
                cudaMemcpyAsync(snap.bond_i.data(),
@@ -747,6 +809,12 @@ SnapBondListHostSnapshot SnapBondListGpu::download(DeviceStream& stream) const {
                cudaMemcpyAsync(snap.bond_rsq.data(),
                                impl_->d_bond_rsq,
                                nb * sizeof(double),
+                               cudaMemcpyDeviceToHost,
+                               s));
+    check_cuda("cudaMemcpyAsync D2H reverse_bond_index",
+               cudaMemcpyAsync(snap.reverse_bond_index.data(),
+                               impl_->d_reverse_bond_index,
+                               nb * sizeof(std::uint32_t),
                                cudaMemcpyDeviceToHost,
                                s));
   }
