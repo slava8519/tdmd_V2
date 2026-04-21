@@ -120,6 +120,27 @@ public:
              DevicePool& pool,
              DeviceStream& stream);
 
+  // T8.6c-v5 Stage 2: variant that consumes already-resident device arrays (used
+  // from SnapGpu::compute() to avoid redundant H2D, since the same atom data is
+  // already on device from SnapGpu's H2D step). `ncells` is only used to size
+  // the `d_cell_offsets` array for bounds — device pointer lifetime is the
+  // caller's responsibility. Emission order is identical to `build()`.
+  //
+  // Throws `std::runtime_error` on CPU-only build or on CUDA failure.
+  void build_from_device(std::size_t n,
+                         const std::uint32_t* d_types,
+                         const double* d_x,
+                         const double* d_y,
+                         const double* d_z,
+                         std::size_t ncells,
+                         const std::uint32_t* d_cell_offsets,
+                         const std::uint32_t* d_cell_atoms,
+                         const double* d_rcut_sq_ab,
+                         std::uint32_t n_species,
+                         const BoxParams& params,
+                         DevicePool& pool,
+                         DeviceStream& stream);
+
   // D2H copy of the full bond list. Synchronises on the given stream.
   // Intended for tests + differential validation — not for hot-path code.
   [[nodiscard]] SnapBondListHostSnapshot download(DeviceStream& stream) const;

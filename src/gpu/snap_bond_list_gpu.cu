@@ -305,6 +305,22 @@ struct SnapBondListGpu::Impl {
   double* d_bond_dy = nullptr;
   double* d_bond_dz = nullptr;
   double* d_bond_rsq = nullptr;
+
+  // Shared core used by both build() (after its H2D) and build_from_device()
+  // (no H2D). Runs: count_kernel → D2H counts → host exclusive scan → H2D
+  // offsets → emit_kernel → stream sync.
+  void run_passes_from_device(std::size_t n,
+                              const std::uint32_t* d_types,
+                              const double* d_x,
+                              const double* d_y,
+                              const double* d_z,
+                              const std::uint32_t* d_cell_offsets,
+                              const std::uint32_t* d_cell_atoms,
+                              const double* d_rcut_sq_ab,
+                              std::uint32_t n_species,
+                              const BoxParams& params,
+                              DevicePool& pool,
+                              DeviceStream& stream);
 };
 
 SnapBondListGpu::SnapBondListGpu() : impl_(std::make_unique<Impl>()) {}
@@ -446,6 +462,84 @@ void SnapBondListGpu::build(std::size_t n,
   auto* d_cell_atoms = reinterpret_cast<std::uint32_t*>(impl_->d_cell_atoms_bytes.get());
   auto* d_rcut_sq_ab = reinterpret_cast<double*>(impl_->d_rcut_sq_ab_bytes.get());
 
+  impl_->run_passes_from_device(n,
+                                d_types,
+                                d_x,
+                                d_y,
+                                d_z,
+                                d_cell_offsets,
+                                d_cell_atoms,
+                                d_rcut_sq_ab,
+                                n_species,
+                                params,
+                                pool,
+                                stream);
+}
+
+void SnapBondListGpu::build_from_device(std::size_t n,
+                                        const std::uint32_t* d_types,
+                                        const double* d_x,
+                                        const double* d_y,
+                                        const double* d_z,
+                                        std::size_t /*ncells*/,
+                                        const std::uint32_t* d_cell_offsets,
+                                        const std::uint32_t* d_cell_atoms,
+                                        const double* d_rcut_sq_ab,
+                                        std::uint32_t n_species,
+                                        const BoxParams& params,
+                                        DevicePool& pool,
+                                        DeviceStream& stream) {
+  TDMD_NVTX_RANGE("snap.bond_list.build_from_device");
+
+  impl_->atom_count = n;
+  ++impl_->build_version;
+
+  if (n == 0) {
+    impl_->bond_count = 0;
+    impl_->d_atom_bond_start_bytes.reset();
+    impl_->d_bond_i_bytes.reset();
+    impl_->d_bond_j_bytes.reset();
+    impl_->d_bond_type_i_bytes.reset();
+    impl_->d_bond_type_j_bytes.reset();
+    impl_->d_bond_dx_bytes.reset();
+    impl_->d_bond_dy_bytes.reset();
+    impl_->d_bond_dz_bytes.reset();
+    impl_->d_bond_rsq_bytes.reset();
+    impl_->d_atom_bond_start = nullptr;
+    impl_->d_bond_i = impl_->d_bond_j = nullptr;
+    impl_->d_bond_type_i = impl_->d_bond_type_j = nullptr;
+    impl_->d_bond_dx = impl_->d_bond_dy = impl_->d_bond_dz = impl_->d_bond_rsq = nullptr;
+    return;
+  }
+
+  impl_->run_passes_from_device(n,
+                                d_types,
+                                d_x,
+                                d_y,
+                                d_z,
+                                d_cell_offsets,
+                                d_cell_atoms,
+                                d_rcut_sq_ab,
+                                n_species,
+                                params,
+                                pool,
+                                stream);
+}
+
+void SnapBondListGpu::Impl::run_passes_from_device(std::size_t n,
+                                                   const std::uint32_t* d_types,
+                                                   const double* d_x,
+                                                   const double* d_y,
+                                                   const double* d_z,
+                                                   const std::uint32_t* d_cell_offsets,
+                                                   const std::uint32_t* d_cell_atoms,
+                                                   const double* d_rcut_sq_ab,
+                                                   std::uint32_t n_species,
+                                                   const BoxParams& params,
+                                                   DevicePool& pool,
+                                                   DeviceStream& stream) {
+  cudaStream_t s = raw_stream(stream);
+
   DeviceBondBoxParams p;
   p.xlo = params.xlo;
   p.ylo = params.ylo;
@@ -502,14 +596,13 @@ void SnapBondListGpu::build(std::size_t n,
       host_offsets[i + 1] = host_offsets[i] + static_cast<std::uint32_t>(host_counts[i]);
     }
     total_bonds = host_offsets[n];
-    impl_->bond_count = static_cast<std::size_t>(total_bonds);
+    bond_count = static_cast<std::size_t>(total_bonds);
 
     const std::size_t offsets_bytes = (n + 1) * sizeof(std::uint32_t);
-    impl_->d_atom_bond_start_bytes = pool.allocate_device(offsets_bytes, stream);
-    impl_->d_atom_bond_start =
-        reinterpret_cast<std::uint32_t*>(impl_->d_atom_bond_start_bytes.get());
+    d_atom_bond_start_bytes = pool.allocate_device(offsets_bytes, stream);
+    d_atom_bond_start = reinterpret_cast<std::uint32_t*>(d_atom_bond_start_bytes.get());
     check_cuda("cudaMemcpyAsync H2D offsets",
-               cudaMemcpyAsync(impl_->d_atom_bond_start,
+               cudaMemcpyAsync(d_atom_bond_start,
                                host_offsets.data(),
                                offsets_bytes,
                                cudaMemcpyHostToDevice,
@@ -517,17 +610,17 @@ void SnapBondListGpu::build(std::size_t n,
   }
 
   if (total_bonds == 0) {
-    impl_->d_bond_i_bytes.reset();
-    impl_->d_bond_j_bytes.reset();
-    impl_->d_bond_type_i_bytes.reset();
-    impl_->d_bond_type_j_bytes.reset();
-    impl_->d_bond_dx_bytes.reset();
-    impl_->d_bond_dy_bytes.reset();
-    impl_->d_bond_dz_bytes.reset();
-    impl_->d_bond_rsq_bytes.reset();
-    impl_->d_bond_i = impl_->d_bond_j = nullptr;
-    impl_->d_bond_type_i = impl_->d_bond_type_j = nullptr;
-    impl_->d_bond_dx = impl_->d_bond_dy = impl_->d_bond_dz = impl_->d_bond_rsq = nullptr;
+    d_bond_i_bytes.reset();
+    d_bond_j_bytes.reset();
+    d_bond_type_i_bytes.reset();
+    d_bond_type_j_bytes.reset();
+    d_bond_dx_bytes.reset();
+    d_bond_dy_bytes.reset();
+    d_bond_dz_bytes.reset();
+    d_bond_rsq_bytes.reset();
+    d_bond_i = d_bond_j = nullptr;
+    d_bond_type_i = d_bond_type_j = nullptr;
+    d_bond_dx = d_bond_dy = d_bond_dz = d_bond_rsq = nullptr;
     check_cuda("cudaStreamSynchronize (empty bond list)", cudaStreamSynchronize(s));
     return;
   }
@@ -538,23 +631,23 @@ void SnapBondListGpu::build(std::size_t n,
     const std::size_t u32_bytes = total_bonds * sizeof(std::uint32_t);
     const std::size_t f64_bytes = total_bonds * sizeof(double);
 
-    impl_->d_bond_i_bytes = pool.allocate_device(u32_bytes, stream);
-    impl_->d_bond_j_bytes = pool.allocate_device(u32_bytes, stream);
-    impl_->d_bond_type_i_bytes = pool.allocate_device(u32_bytes, stream);
-    impl_->d_bond_type_j_bytes = pool.allocate_device(u32_bytes, stream);
-    impl_->d_bond_dx_bytes = pool.allocate_device(f64_bytes, stream);
-    impl_->d_bond_dy_bytes = pool.allocate_device(f64_bytes, stream);
-    impl_->d_bond_dz_bytes = pool.allocate_device(f64_bytes, stream);
-    impl_->d_bond_rsq_bytes = pool.allocate_device(f64_bytes, stream);
+    d_bond_i_bytes = pool.allocate_device(u32_bytes, stream);
+    d_bond_j_bytes = pool.allocate_device(u32_bytes, stream);
+    d_bond_type_i_bytes = pool.allocate_device(u32_bytes, stream);
+    d_bond_type_j_bytes = pool.allocate_device(u32_bytes, stream);
+    d_bond_dx_bytes = pool.allocate_device(f64_bytes, stream);
+    d_bond_dy_bytes = pool.allocate_device(f64_bytes, stream);
+    d_bond_dz_bytes = pool.allocate_device(f64_bytes, stream);
+    d_bond_rsq_bytes = pool.allocate_device(f64_bytes, stream);
 
-    impl_->d_bond_i = reinterpret_cast<std::uint32_t*>(impl_->d_bond_i_bytes.get());
-    impl_->d_bond_j = reinterpret_cast<std::uint32_t*>(impl_->d_bond_j_bytes.get());
-    impl_->d_bond_type_i = reinterpret_cast<std::uint32_t*>(impl_->d_bond_type_i_bytes.get());
-    impl_->d_bond_type_j = reinterpret_cast<std::uint32_t*>(impl_->d_bond_type_j_bytes.get());
-    impl_->d_bond_dx = reinterpret_cast<double*>(impl_->d_bond_dx_bytes.get());
-    impl_->d_bond_dy = reinterpret_cast<double*>(impl_->d_bond_dy_bytes.get());
-    impl_->d_bond_dz = reinterpret_cast<double*>(impl_->d_bond_dz_bytes.get());
-    impl_->d_bond_rsq = reinterpret_cast<double*>(impl_->d_bond_rsq_bytes.get());
+    d_bond_i = reinterpret_cast<std::uint32_t*>(d_bond_i_bytes.get());
+    d_bond_j = reinterpret_cast<std::uint32_t*>(d_bond_j_bytes.get());
+    d_bond_type_i = reinterpret_cast<std::uint32_t*>(d_bond_type_i_bytes.get());
+    d_bond_type_j = reinterpret_cast<std::uint32_t*>(d_bond_type_j_bytes.get());
+    d_bond_dx = reinterpret_cast<double*>(d_bond_dx_bytes.get());
+    d_bond_dy = reinterpret_cast<double*>(d_bond_dy_bytes.get());
+    d_bond_dz = reinterpret_cast<double*>(d_bond_dz_bytes.get());
+    d_bond_rsq = reinterpret_cast<double*>(d_bond_rsq_bytes.get());
 
     emit_bonds_kernel<<<nblocks, kThreadsPerBlock, 0, s>>>(n32,
                                                            d_types,
@@ -564,16 +657,16 @@ void SnapBondListGpu::build(std::size_t n,
                                                            d_cell_offsets,
                                                            d_cell_atoms,
                                                            d_rcut_sq_ab,
-                                                           impl_->d_atom_bond_start,
+                                                           d_atom_bond_start,
                                                            p,
-                                                           impl_->d_bond_i,
-                                                           impl_->d_bond_j,
-                                                           impl_->d_bond_type_i,
-                                                           impl_->d_bond_type_j,
-                                                           impl_->d_bond_dx,
-                                                           impl_->d_bond_dy,
-                                                           impl_->d_bond_dz,
-                                                           impl_->d_bond_rsq);
+                                                           d_bond_i,
+                                                           d_bond_j,
+                                                           d_bond_type_i,
+                                                           d_bond_type_j,
+                                                           d_bond_dx,
+                                                           d_bond_dy,
+                                                           d_bond_dz,
+                                                           d_bond_rsq);
     check_cuda("launch emit_bonds_kernel", cudaGetLastError());
     check_cuda("cudaStreamSynchronize (bond list build)", cudaStreamSynchronize(s));
   }

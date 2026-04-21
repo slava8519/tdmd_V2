@@ -52,6 +52,7 @@
 
 #include "tdmd/gpu/device_pool.hpp"
 #include "tdmd/gpu/neighbor_list_gpu.hpp"
+#include "tdmd/gpu/snap_bond_list_gpu.hpp"
 #include "tdmd/gpu/snap_gpu.hpp"
 #include "tdmd/gpu/types.hpp"
 #include "tdmd/telemetry/nvtx.hpp"
@@ -61,6 +62,17 @@
 #include <sstream>
 #include <stdexcept>
 #include <vector>
+
+// T8.6c-v5 Stage 2: per-bond ui dispatch is the default. Set to 1 at compile
+// time (-DTDMD_SNAP_LEGACY_PERATOM=1) to A/B against the legacy per-atom
+// snap_ui_kernel. The legacy path dispatches the old one-block-per-atom kernel
+// that walks the 3×3×3 stencil and accumulates ulisttot inline. The new path
+// uses the bond list (Stage 1) + per-bond kernel + per-atom gather kernel.
+// Byte-exact ≤1e-12 rel T8.7 gate holds under both paths (see comments on
+// snap_ui_gather_kernel below).
+#ifndef TDMD_SNAP_LEGACY_PERATOM
+#define TDMD_SNAP_LEGACY_PERATOM 0
+#endif
 
 #if TDMD_BUILD_CUDA
 #include "cuda_handles.hpp"
@@ -287,14 +299,19 @@ __device__ __forceinline__ void compute_deidrj_parallel_device(int twojmax,
 }
 
 // ---------------------------------------------------------------------------
-// KERNEL 1: snap_ui_kernel
+// KERNEL 1: snap_ui_kernel (legacy per-atom path)
 //
 // One block per atom, 128 threads. Each block accumulates d_ulisttot_r/i[i,·]
 // by walking its 3³ cell stencil and calling compute_uarray per in-cutoff pair.
 // The U accumulation is FP-sensitive (recurrence + accumulation order), so
 // the compute_uarray + add-to-ulisttot work runs single-lane (tid==0). Zeroing
 // and the final global write are thread-parallel across the idxu_max slab.
+//
+// T8.6c-v5 Stage 2: retained only for A/B testing via
+// `-DTDMD_SNAP_LEGACY_PERATOM=1`. The default build path is bond list +
+// snap_ui_bond_kernel + snap_ui_gather_kernel (see below).
 // ---------------------------------------------------------------------------
+#if TDMD_SNAP_LEGACY_PERATOM
 __global__ void snap_ui_kernel(std::uint32_t n,
                                const std::uint32_t* __restrict__ types,
                                const double* __restrict__ x,
@@ -457,6 +474,199 @@ __global__ void snap_ui_kernel(std::uint32_t n,
     d_ulisttot_i[base + k] = ulisttot_i[k];
   }
 }
+#endif  // TDMD_SNAP_LEGACY_PERATOM
+
+#if !TDMD_SNAP_LEGACY_PERATOM
+// ---------------------------------------------------------------------------
+// T8.6c-v5 Stage 2: KERNEL 1a — snap_ui_bond_kernel (per-bond dispatch)
+//
+// Launch shape: <<<n_bonds, 128>>>. One block per bond (= per in-cutoff
+// neighbour pair). Each block computes the SNAP Wigner-U contribution for its
+// bond and writes it to per-bond slab `d_ulist_bond_{r,i}[b * idxu_max + k]`
+// (exclusive per-bond storage — reduce-then-scatter per gpu/SPEC §6.1, no
+// atomicAdd(double*, double)).
+//
+// The writeout is the scaled value `sfacwj * ulist[k]` — i.e. exactly the
+// increment that the legacy snap_ui_kernel's add_uarraytot loop would deposit
+// for this bond. The per-atom gather kernel below then sums these increments
+// across each atom's bond range (CSR [atom_bond_start[i], atom_bond_start[i+1]))
+// in *emission order*, preserving the CPU's neighbour-walk accumulation order
+// position-by-position — the invariant that makes the T8.7 ≤ 1e-12 rel
+// byte-exact gate hold under per-bond parallelism.
+//
+// Shared memory: 2·idxu_max·8 B (ulist scratch) ≈ 5.3 KB @ twojmax=8. No opt-in
+// needed (< 48 KB default per-block ceiling). Scalar shared scratch is named
+// (ui_*_sh / sfacwj_sh) to match the legacy kernel's variables.
+// ---------------------------------------------------------------------------
+__global__ void snap_ui_bond_kernel(std::uint32_t n_bonds,
+                                    const std::uint32_t* __restrict__ bond_type_i,
+                                    const std::uint32_t* __restrict__ bond_type_j,
+                                    const double* __restrict__ bond_dx,
+                                    const double* __restrict__ bond_dy,
+                                    const double* __restrict__ bond_dz,
+                                    const double* __restrict__ bond_rsq,
+                                    const int* __restrict__ idxu_block,
+                                    const double* __restrict__ rootpq,
+                                    const double* __restrict__ radius_elem,
+                                    const double* __restrict__ weight_elem,
+                                    DeviceSnapParams p,
+                                    double* __restrict__ d_ulist_bond_r,
+                                    double* __restrict__ d_ulist_bond_i) {
+  const std::uint32_t b = blockIdx.x;
+  if (b >= n_bonds) {
+    return;
+  }
+  const int tid = static_cast<int>(threadIdx.x);
+  const int block_threads = static_cast<int>(blockDim.x);
+
+  extern __shared__ double shm_ui_bond[];
+  double* ulist_r = shm_ui_bond;
+  double* ulist_i = ulist_r + p.idxu_max;
+
+  __shared__ double ui_r_sh;
+  __shared__ double ui_z0_sh;
+  __shared__ double sfacwj_sh;
+
+  const std::uint32_t itype = bond_type_i[b];
+  const std::uint32_t jtype = bond_type_j[b];
+  const double ddx = bond_dx[b];
+  const double ddy = bond_dy[b];
+  const double ddz = bond_dz[b];
+  const double rsq = bond_rsq[b];
+
+  if (tid == 0) {
+    const double r = sqrt(rsq);
+    const double radi = radius_elem[itype];
+    const double radj = radius_elem[jtype];
+    const double wj = weight_elem[jtype];
+    const double rcut = (radi + radj) * p.rcutfac;
+    const double theta0 = (r - p.rmin0) * p.rfac0 * M_PI / (rcut - p.rmin0);
+    const double z0 = r / tan(theta0);
+    ui_r_sh = r;
+    ui_z0_sh = z0;
+    const double sfac = snap_detail::compute_sfac_device(r, rcut, p.rmin0, p.switch_flag);
+    sfacwj_sh = sfac * wj;
+  }
+  __syncthreads();
+
+  snap_detail::compute_uarray_parallel_device(static_cast<unsigned>(tid),
+                                              static_cast<unsigned>(block_threads),
+                                              ddx,
+                                              ddy,
+                                              ddz,
+                                              ui_z0_sh,
+                                              ui_r_sh,
+                                              rootpq,
+                                              p.jdimpq,
+                                              idxu_block,
+                                              p.twojmax,
+                                              ulist_r,
+                                              ulist_i);
+  __syncthreads();
+
+  // Scale and write per-bond ulist increments to global.
+  const std::size_t out_base = static_cast<std::size_t>(b) * static_cast<std::size_t>(p.idxu_max);
+  for (int k = tid; k < p.idxu_max; k += block_threads) {
+    d_ulist_bond_r[out_base + k] = sfacwj_sh * ulist_r[k];
+    d_ulist_bond_i[out_base + k] = sfacwj_sh * ulist_i[k];
+  }
+}
+
+// ---------------------------------------------------------------------------
+// T8.6c-v5 Stage 2: KERNEL 1b — snap_ui_gather_kernel (per-atom gather)
+//
+// Launch shape: <<<n_atoms, 128>>>. Sums the per-bond increments into
+// d_ulisttot[i,·]. Each block = one atom. Each thread owns the strided subset
+// of k positions with (k % block_threads == tid).
+//
+// Byte-exactness vs. legacy snap_ui_kernel (T8.7 ≤ 1e-12 rel gate):
+//   - Seed: zero ulisttot, then write wself to ma==mb diagonal (identical to
+//     legacy zero_uarraytot + self-identity block in snap_ui_kernel).
+//   - Accumulate: for each k owned by this thread, the sum is
+//         acc[k] = seed(k) + Σ_{b ∈ [b_begin, b_end)} d_ulist_bond[b, k]
+//     The bond range is emitted in the Stage 1 bond list in CPU-stencil walk
+//     order (verified by test_bond_list_matches_cpu_stencil_order). Per-bond
+//     kernel writes d_ulist_bond[b, k] = sfacwj(b) * ulist(b)[k] — exactly the
+//     increment the legacy kernel deposits in its add_uarraytot inner loop.
+//     Same values, same order, same FP operands → bit-identical sums.
+//
+// Shared memory: 2·idxu_max·8 B (ulisttot scratch) ≈ 5.3 KB @ twojmax=8.
+// ---------------------------------------------------------------------------
+__global__ void snap_ui_gather_kernel(std::uint32_t n_atoms,
+                                      const std::uint32_t* __restrict__ atom_bond_start,
+                                      const int* __restrict__ idxu_block,
+                                      DeviceSnapParams p,
+                                      const double* __restrict__ d_ulist_bond_r,
+                                      const double* __restrict__ d_ulist_bond_i,
+                                      double* __restrict__ d_ulisttot_r,
+                                      double* __restrict__ d_ulisttot_i) {
+  const std::uint32_t i = blockIdx.x;
+  if (i >= n_atoms) {
+    return;
+  }
+  const int tid = static_cast<int>(threadIdx.x);
+  const int block_threads = static_cast<int>(blockDim.x);
+
+  extern __shared__ double shm_gather[];
+  double* ulisttot_r = shm_gather;
+  double* ulisttot_i = ulisttot_r + p.idxu_max;
+
+  // Zero ulisttot (parallel).
+  for (int k = tid; k < p.idxu_max; k += block_threads) {
+    ulisttot_r[k] = 0.0;
+    ulisttot_i[k] = 0.0;
+  }
+  __syncthreads();
+
+  // Self-identity seed (mirror of zero_uarraytot in CPU). nelements_=1 ⇒
+  // jelem == ielem == 0; wselfall_flag=1 would broaden the diagonal to all
+  // jelems (still a single-element M8 write with n_species=1).
+  if (tid == 0) {
+    const int jelem = 0;
+    const int ielem = 0;
+    const int write_self = (jelem == ielem) || (p.wselfall_flag != 0);
+    for (int j = 0; j <= p.twojmax; ++j) {
+      int jju = idxu_block[j];
+      for (int mb = 0; mb <= j; ++mb) {
+        for (int ma = 0; ma <= j; ++ma) {
+          if (write_self && ma == mb) {
+            ulisttot_r[jju] = p.wself;
+          }
+          jju++;
+        }
+      }
+    }
+  }
+  __syncthreads();
+
+  // Accumulate the atom's bond range. Per k (fixed per thread), the add
+  // sequence is: seed value + d_ulist_bond[b_begin,k] + ... + d_ulist_bond[b_end-1,k].
+  // Stage 1's CPU-stencil emission order means this sequence == legacy per-atom
+  // snap_ui_kernel's sequence for the same k.
+  const std::uint32_t b_begin = atom_bond_start[i];
+  const std::uint32_t b_end = atom_bond_start[i + 1];
+
+  for (int k = tid; k < p.idxu_max; k += block_threads) {
+    double acc_r = ulisttot_r[k];
+    double acc_i = ulisttot_i[k];
+    for (std::uint32_t b = b_begin; b < b_end; ++b) {
+      const std::size_t bbase = static_cast<std::size_t>(b) * static_cast<std::size_t>(p.idxu_max);
+      acc_r += d_ulist_bond_r[bbase + k];
+      acc_i += d_ulist_bond_i[bbase + k];
+    }
+    ulisttot_r[k] = acc_r;
+    ulisttot_i[k] = acc_i;
+  }
+  __syncthreads();
+
+  // Write ulisttot to global (parallel).
+  const std::size_t out_base = static_cast<std::size_t>(i) * static_cast<std::size_t>(p.idxu_max);
+  for (int k = tid; k < p.idxu_max; k += block_threads) {
+    d_ulisttot_r[out_base + k] = ulisttot_r[k];
+    d_ulisttot_i[out_base + k] = ulisttot_i[k];
+  }
+}
+#endif  // !TDMD_SNAP_LEGACY_PERATOM
 
 // ---------------------------------------------------------------------------
 // KERNEL 2: snap_yi_kernel
@@ -999,6 +1209,14 @@ struct SnapGpu::Impl {
   DevicePtr<std::byte> d_pe_per_atom_bytes;
   DevicePtr<std::byte> d_virial_per_atom_bytes;
 
+  // T8.6c-v5 Stage 2: per-bond scratch.
+  // Bond list (built each compute() from the already-resident device cells
+  // arrays). d_ulist_bond_{r,i} size = n_bonds * idxu_max * 8 B — grown on
+  // demand through the DevicePool (cudaMallocAsync-backed, D-M6-12).
+  SnapBondListGpu bond_list;
+  DevicePtr<std::byte> d_ulist_bond_r_bytes;
+  DevicePtr<std::byte> d_ulist_bond_i_bytes;
+
   // SNAP parameter tables — uploaded once, reused across compute() calls.
   DevicePtr<std::byte> d_radius_elem_bytes;
   DevicePtr<std::byte> d_weight_elem_bytes;
@@ -1381,9 +1599,10 @@ SnapGpuResult SnapGpu::compute(std::size_t n,
   auto* d_virial_per_atom = reinterpret_cast<double*>(impl_->d_virial_per_atom_bytes.get());
 
   // --- 6. Launch kernels.
-  const std::size_t shm_ui_bytes = static_cast<std::size_t>(4 * idxu_max) * sizeof(double);
   const std::size_t shm_de_bytes = static_cast<std::size_t>(10 * idxu_max) * sizeof(double);
 
+#if TDMD_SNAP_LEGACY_PERATOM
+  const std::size_t shm_ui_bytes = static_cast<std::size_t>(4 * idxu_max) * sizeof(double);
   {
     TDMD_NVTX_RANGE("snap.ui_kernel");
     snap_ui_kernel<<<n32, kThreadsPerBlock, shm_ui_bytes, s>>>(n32,
@@ -1403,6 +1622,87 @@ SnapGpuResult SnapGpu::compute(std::size_t n,
                                                                d_ulisttot_i);
     check_cuda("launch snap_ui_kernel", cudaGetLastError());
   }
+#else
+  // T8.6c-v5 Stage 2: bond list → per-bond ui → per-atom gather.
+  // (1) Build bond list from already-resident device atom/cell arrays. The
+  //     emission order is byte-identical to the legacy snap_ui_kernel's
+  //     3×3×3 cell-stencil walk (Stage 1 invariant, tested in
+  //     test_bond_list_matches_cpu_stencil_order).
+  {
+    TDMD_NVTX_RANGE("snap.bond_list.build");
+    impl_->bond_list.build_from_device(n,
+                                       d_types,
+                                       d_x,
+                                       d_y,
+                                       d_z,
+                                       ncells,
+                                       d_cell_offsets,
+                                       d_cell_atoms,
+                                       d_rcut_sq,
+                                       static_cast<std::uint32_t>(tables.n_species),
+                                       params,
+                                       pool,
+                                       stream);
+  }
+  const auto bond_view = impl_->bond_list.view();
+  const std::size_t n_bonds = bond_view.bond_count;
+
+  // (2) Allocate per-bond ulist scratch (shrinks/grows through DevicePool).
+  // Zero-bond edge case: skip the ui + gather dispatches; gather kernel's
+  // seed-only semantics are still needed (ulisttot = 0 + wself diagonal). We
+  // handle the zero-bond case by launching the gather kernel with empty
+  // ranges — still correct and cheap.
+  const std::size_t ulist_bond_bytes =
+      (n_bonds == 0) ? 0u : (n_bonds * static_cast<std::size_t>(idxu_max) * sizeof(double));
+  if (ulist_bond_bytes > 0) {
+    impl_->d_ulist_bond_r_bytes = pool.allocate_device(ulist_bond_bytes, stream);
+    impl_->d_ulist_bond_i_bytes = pool.allocate_device(ulist_bond_bytes, stream);
+  }
+  auto* d_ulist_bond_r =
+      (n_bonds > 0) ? reinterpret_cast<double*>(impl_->d_ulist_bond_r_bytes.get()) : nullptr;
+  auto* d_ulist_bond_i =
+      (n_bonds > 0) ? reinterpret_cast<double*>(impl_->d_ulist_bond_i_bytes.get()) : nullptr;
+
+  // (3) Per-bond ui kernel. Shared memory: 2·idxu_max·8 B ≈ 5.3 KB @ twojmax=8.
+  const std::size_t shm_ui_bond_bytes = static_cast<std::size_t>(2 * idxu_max) * sizeof(double);
+  if (n_bonds > 0) {
+    TDMD_NVTX_RANGE("snap.ui_bond_kernel");
+    const std::uint32_t n_bonds_u32 = static_cast<std::uint32_t>(n_bonds);
+    snap_ui_bond_kernel<<<n_bonds_u32, kThreadsPerBlock, shm_ui_bond_bytes, s>>>(
+        n_bonds_u32,
+        bond_view.d_bond_type_i,
+        bond_view.d_bond_type_j,
+        bond_view.d_bond_dx,
+        bond_view.d_bond_dy,
+        bond_view.d_bond_dz,
+        bond_view.d_bond_rsq,
+        d_idxu_block,
+        d_rootpq,
+        d_radius,
+        d_weight,
+        dp,
+        d_ulist_bond_r,
+        d_ulist_bond_i);
+    check_cuda("launch snap_ui_bond_kernel", cudaGetLastError());
+  }
+
+  // (4) Per-atom gather kernel (always dispatched — seeds ulisttot even when
+  //     an atom has no bonds, matching CPU's zero + self-identity).
+  {
+    TDMD_NVTX_RANGE("snap.ui_gather_kernel");
+    const std::size_t shm_gather_bytes = static_cast<std::size_t>(2 * idxu_max) * sizeof(double);
+    snap_ui_gather_kernel<<<n32, kThreadsPerBlock, shm_gather_bytes, s>>>(
+        n32,
+        bond_view.d_atom_bond_start,
+        d_idxu_block,
+        dp,
+        d_ulist_bond_r,
+        d_ulist_bond_i,
+        d_ulisttot_r,
+        d_ulisttot_i);
+    check_cuda("launch snap_ui_gather_kernel", cudaGetLastError());
+  }
+#endif
   {
     TDMD_NVTX_RANGE("snap.yi_kernel");
     snap_yi_kernel<<<n32, kThreadsPerBlock, shm_yi_bytes, s>>>(n32,
