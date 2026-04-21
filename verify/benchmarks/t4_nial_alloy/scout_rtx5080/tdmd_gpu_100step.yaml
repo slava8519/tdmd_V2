@@ -1,0 +1,32 @@
+# T4 Ni-Al EAM/alloy scout config — RTX 5080 perf probe, 100 step.
+# Uses the committed 864-atom fixture (6×6×6 FCC) for bit-identical input
+# with the companion LAMMPS script.
+
+simulation:
+  units: metal
+  seed: 12345
+
+atoms:
+  source: lammps_data
+  path: ../setup.data
+
+potential:
+  style: eam/alloy
+  params:
+    file: ../../../third_party/potentials/NiAl_Mishin_2004.eam.alloy
+
+integrator:
+  style: velocity_verlet
+  dt: 0.001
+
+neighbor:
+  skin: 0.3
+
+thermo:
+  every: 10
+
+run:
+  n_steps: 100
+
+runtime:
+  backend: gpu
