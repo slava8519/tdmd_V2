@@ -129,6 +129,10 @@ struct DeviceSnapParams {
 
 // ------------ Shared device helpers (mirrored from EAM) --------------------
 
+// Cell-stencil helpers used only by the legacy per-atom snap_ui_kernel /
+// snap_deidrj_kernel. T8.6c-v5 Stage 2/3 per-bond kernels consume the
+// pre-built bond list so these are unreferenced in the default build.
+#if TDMD_SNAP_LEGACY_PERATOM
 __device__ __forceinline__ std::uint32_t wrap_axis_dev(int idx, std::uint32_t n) {
   const int ni = static_cast<int>(n);
   int w = idx % ni;
@@ -185,6 +189,7 @@ __device__ __forceinline__ std::size_t pair_index_dev(std::uint32_t a,
   return static_cast<std::size_t>(a) * static_cast<std::size_t>(n_species) +
          static_cast<std::size_t>(b);
 }
+#endif  // TDMD_SNAP_LEGACY_PERATOM
 
 // Flat 3D address into jdim×jdim×jdim index blocks (idxcg/idxz/idxb _block).
 __device__ __forceinline__ std::size_t jkk_index_dev(int j1, int j2, int j, int jdim) {
@@ -869,12 +874,17 @@ __global__ void snap_yi_kernel(std::uint32_t n,
 }
 
 // ---------------------------------------------------------------------------
-// KERNEL 3: snap_deidrj_kernel
+// KERNEL 3: snap_deidrj_kernel (legacy per-atom path)
 //
 // One block per atom, 128 threads. Writes per-atom fx/fy/fz + per-atom virial.
 // Each block walks i's 3³ cells, runs compute_deidrj twice per pair (own side
 // using ylist[i], peer side using ylist[j] read from global).
+//
+// T8.6c-v5 Stage 3: retained only for A/B testing via
+// `-DTDMD_SNAP_LEGACY_PERATOM=1`. Default build path is bond list +
+// snap_deidrj_bond_kernel + snap_force_gather_kernel (see below).
 // ---------------------------------------------------------------------------
+#if TDMD_SNAP_LEGACY_PERATOM
 __global__ void snap_deidrj_kernel(std::uint32_t n,
                                    const std::uint32_t* __restrict__ types,
                                    const double* __restrict__ x,
@@ -1147,6 +1157,295 @@ __global__ void snap_deidrj_kernel(std::uint32_t n,
     d_virial_per_atom[i * 6 + 5] = v_yz;
   }
 }
+#endif  // TDMD_SNAP_LEGACY_PERATOM
+
+#if !TDMD_SNAP_LEGACY_PERATOM
+// ---------------------------------------------------------------------------
+// T8.6c-v5 Stage 3 (MixedFast): KERNEL 3a — snap_deidrj_bond_kernel
+//
+// Per-bond dispatch mirror of the FP64 kernel. Only narrowing site in this TU
+// is `sqrtf(rsq)` — identical to mixed_ui_bond_kernel above (T8.9 Phase A
+// D-M8-8 1e-5/1e-7 force budget). All downstream math (theta0, sincos, z0,
+// dz0dr, rcut, wj_sh, sfac, compute_uarray/duarray/deidrj) runs FP64.
+//
+// Byte-exactness note: "byte-exact" in MixedFast means "matches the legacy
+// mixed_fast snap_deidrj_kernel" (not FP64 reference). The FP32 sqrtf site is
+// the only entropy source; since the new path mirrors it bit-for-bit, the
+// D-M8-8 1e-5/1e-7 rel budget is preserved against the legacy mixed baseline.
+// ---------------------------------------------------------------------------
+__global__ void snap_deidrj_bond_kernel(std::uint32_t n_bonds,
+                                        const std::uint32_t* __restrict__ bond_i,
+                                        const std::uint32_t* __restrict__ bond_j,
+                                        const std::uint32_t* __restrict__ bond_type_i,
+                                        const std::uint32_t* __restrict__ bond_type_j,
+                                        const double* __restrict__ bond_dx,
+                                        const double* __restrict__ bond_dy,
+                                        const double* __restrict__ bond_dz,
+                                        const double* __restrict__ bond_rsq,
+                                        const int* __restrict__ idxu_block,
+                                        const double* __restrict__ rootpq,
+                                        const double* __restrict__ radius_elem,
+                                        const double* __restrict__ weight_elem,
+                                        const double* __restrict__ d_ylist_r,
+                                        const double* __restrict__ d_ylist_i,
+                                        DeviceSnapParams p,
+                                        double* __restrict__ d_dedr_own,
+                                        double* __restrict__ d_dedr_peer) {
+  const std::uint32_t b = blockIdx.x;
+  if (b >= n_bonds) {
+    return;
+  }
+  const int tid = static_cast<int>(threadIdx.x);
+  const int block_threads = static_cast<int>(blockDim.x);
+
+  extern __shared__ double shm_deb[];
+  double* ylist_slab_r = shm_deb;
+  double* ylist_slab_i = ylist_slab_r + p.idxu_max;
+  double* ulist_r = ylist_slab_i + p.idxu_max;
+  double* ulist_i = ulist_r + p.idxu_max;
+  double* dulist_r = ulist_i + p.idxu_max;
+  double* dulist_i = dulist_r + p.idxu_max * 3;
+
+  __shared__ double dedr_warp_sums[4][3];
+
+  const std::uint32_t ii = bond_i[b];
+  const std::uint32_t jj = bond_j[b];
+  const std::uint32_t itype = bond_type_i[b];
+  const std::uint32_t jtype = bond_type_j[b];
+  const double ddx = bond_dx[b];
+  const double ddy = bond_dy[b];
+  const double ddz = bond_dz[b];
+  const double rsq = bond_rsq[b];
+
+  const double wi = weight_elem[itype];
+
+  __shared__ double r_sh;
+  __shared__ double z0_sh;
+  __shared__ double dz0dr_sh;
+  __shared__ double rcut_sh;
+  __shared__ double wj_sh;
+
+  if (tid == 0) {
+    // T8.9 Phase A narrowing: ONLY `sqrtf` runs FP32; the result is widened
+    // back to FP64 before any downstream math.
+    const float rsq_f = static_cast<float>(rsq);
+    const float r_f = sqrtf(rsq_f);
+    const double r = static_cast<double>(r_f);
+    const double radi = radius_elem[itype];
+    const double radj = radius_elem[jtype];
+    const double wj = weight_elem[jtype];
+    const double rcut = (radi + radj) * p.rcutfac;
+    const double rscale0 = p.rfac0 * static_cast<double>(M_PI) / (rcut - p.rmin0);
+    const double theta0 = (r - p.rmin0) * rscale0;
+    double cs_d, sn_d;
+    sincos(theta0, &sn_d, &cs_d);
+    const double z0 = r * cs_d / sn_d;
+    const double dz0dr = z0 / r - (r * rscale0) * (rsq + z0 * z0) / rsq;
+    r_sh = r;
+    z0_sh = z0;
+    dz0dr_sh = dz0dr;
+    rcut_sh = rcut;
+    wj_sh = wj;
+  }
+
+  const std::size_t iibase = static_cast<std::size_t>(ii) * static_cast<std::size_t>(p.idxu_max);
+  for (int k = tid; k < p.idxu_max; k += block_threads) {
+    ylist_slab_r[k] = d_ylist_r[iibase + k];
+    ylist_slab_i[k] = d_ylist_i[iibase + k];
+  }
+  __syncthreads();
+
+  const int warp_id = tid >> 5;
+  const int lane_id = tid & 0x1f;
+
+  // OWN side.
+  snap_detail::compute_uarray_parallel_device(static_cast<unsigned>(tid),
+                                              static_cast<unsigned>(block_threads),
+                                              ddx,
+                                              ddy,
+                                              ddz,
+                                              z0_sh,
+                                              r_sh,
+                                              rootpq,
+                                              p.jdimpq,
+                                              idxu_block,
+                                              p.twojmax,
+                                              ulist_r,
+                                              ulist_i);
+  snap_detail::compute_duarray_parallel_device(static_cast<unsigned>(tid),
+                                               static_cast<unsigned>(block_threads),
+                                               ddx,
+                                               ddy,
+                                               ddz,
+                                               z0_sh,
+                                               r_sh,
+                                               dz0dr_sh,
+                                               wj_sh,
+                                               rcut_sh,
+                                               p.rmin0,
+                                               p.switch_flag,
+                                               rootpq,
+                                               p.jdimpq,
+                                               idxu_block,
+                                               p.twojmax,
+                                               ulist_r,
+                                               ulist_i,
+                                               dulist_r,
+                                               dulist_i);
+
+  double dedr_own_local[3];
+  compute_deidrj_parallel_device(p.twojmax,
+                                 tid,
+                                 block_threads,
+                                 warp_id,
+                                 lane_id,
+                                 idxu_block,
+                                 dulist_r,
+                                 dulist_i,
+                                 ylist_slab_r,
+                                 ylist_slab_i,
+                                 dedr_warp_sums,
+                                 dedr_own_local);
+  if (tid == 0) {
+    d_dedr_own[b * 3 + 0] = dedr_own_local[0];
+    d_dedr_own[b * 3 + 1] = dedr_own_local[1];
+    d_dedr_own[b * 3 + 2] = dedr_own_local[2];
+  }
+  __syncthreads();
+
+  // PEER side.
+  const std::size_t jjbase = static_cast<std::size_t>(jj) * static_cast<std::size_t>(p.idxu_max);
+  for (int k = tid; k < p.idxu_max; k += block_threads) {
+    ylist_slab_r[k] = d_ylist_r[jjbase + k];
+    ylist_slab_i[k] = d_ylist_i[jjbase + k];
+  }
+  __syncthreads();
+
+  snap_detail::compute_uarray_parallel_device(static_cast<unsigned>(tid),
+                                              static_cast<unsigned>(block_threads),
+                                              -ddx,
+                                              -ddy,
+                                              -ddz,
+                                              z0_sh,
+                                              r_sh,
+                                              rootpq,
+                                              p.jdimpq,
+                                              idxu_block,
+                                              p.twojmax,
+                                              ulist_r,
+                                              ulist_i);
+  snap_detail::compute_duarray_parallel_device(static_cast<unsigned>(tid),
+                                               static_cast<unsigned>(block_threads),
+                                               -ddx,
+                                               -ddy,
+                                               -ddz,
+                                               z0_sh,
+                                               r_sh,
+                                               dz0dr_sh,
+                                               wi,
+                                               rcut_sh,
+                                               p.rmin0,
+                                               p.switch_flag,
+                                               rootpq,
+                                               p.jdimpq,
+                                               idxu_block,
+                                               p.twojmax,
+                                               ulist_r,
+                                               ulist_i,
+                                               dulist_r,
+                                               dulist_i);
+
+  double dedr_peer_local[3];
+  compute_deidrj_parallel_device(p.twojmax,
+                                 tid,
+                                 block_threads,
+                                 warp_id,
+                                 lane_id,
+                                 idxu_block,
+                                 dulist_r,
+                                 dulist_i,
+                                 ylist_slab_r,
+                                 ylist_slab_i,
+                                 dedr_warp_sums,
+                                 dedr_peer_local);
+  if (tid == 0) {
+    d_dedr_peer[b * 3 + 0] = dedr_peer_local[0];
+    d_dedr_peer[b * 3 + 1] = dedr_peer_local[1];
+    d_dedr_peer[b * 3 + 2] = dedr_peer_local[2];
+  }
+}
+
+// ---------------------------------------------------------------------------
+// T8.6c-v5 Stage 3 (MixedFast): KERNEL 3b — snap_force_gather_kernel
+//
+// Per-atom gather. All-FP64 arithmetic (d_dedr_own/peer are doubles, virial
+// multiplies are doubles). No narrowing here. Semantically identical to the
+// FP64 snap_gpu.cu force-gather — both consume the same per-bond dedr slabs
+// in CSR order.
+// ---------------------------------------------------------------------------
+__global__ void snap_force_gather_kernel(std::uint32_t n_atoms,
+                                         const std::uint32_t* __restrict__ atom_bond_start,
+                                         const double* __restrict__ bond_dx,
+                                         const double* __restrict__ bond_dy,
+                                         const double* __restrict__ bond_dz,
+                                         const double* __restrict__ d_dedr_own,
+                                         const double* __restrict__ d_dedr_peer,
+                                         double* __restrict__ d_fx,
+                                         double* __restrict__ d_fy,
+                                         double* __restrict__ d_fz,
+                                         double* __restrict__ d_virial_per_atom) {
+  const std::uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i >= n_atoms) {
+    return;
+  }
+  const std::uint32_t b_begin = atom_bond_start[i];
+  const std::uint32_t b_end = atom_bond_start[i + 1];
+
+  double fx_acc = 0.0;
+  double fy_acc = 0.0;
+  double fz_acc = 0.0;
+  double v_xx = 0.0;
+  double v_yy = 0.0;
+  double v_zz = 0.0;
+  double v_xy = 0.0;
+  double v_xz = 0.0;
+  double v_yz = 0.0;
+
+  for (std::uint32_t b = b_begin; b < b_end; ++b) {
+    const std::size_t b3 = static_cast<std::size_t>(b) * 3u;
+    const double own_x = d_dedr_own[b3 + 0];
+    const double own_y = d_dedr_own[b3 + 1];
+    const double own_z = d_dedr_own[b3 + 2];
+    const double ddx = bond_dx[b];
+    const double ddy = bond_dy[b];
+    const double ddz = bond_dz[b];
+
+    fx_acc += own_x;
+    fy_acc += own_y;
+    fz_acc += own_z;
+    v_xx += own_x * ddx;
+    v_yy += own_y * ddy;
+    v_zz += own_z * ddz;
+    v_xy += own_x * ddy;
+    v_xz += own_x * ddz;
+    v_yz += own_y * ddz;
+
+    fx_acc -= d_dedr_peer[b3 + 0];
+    fy_acc -= d_dedr_peer[b3 + 1];
+    fz_acc -= d_dedr_peer[b3 + 2];
+  }
+
+  d_fx[i] += fx_acc;
+  d_fy[i] += fy_acc;
+  d_fz[i] += fz_acc;
+  d_virial_per_atom[i * 6 + 0] = v_xx;
+  d_virial_per_atom[i * 6 + 1] = v_yy;
+  d_virial_per_atom[i * 6 + 2] = v_zz;
+  d_virial_per_atom[i * 6 + 3] = v_xy;
+  d_virial_per_atom[i * 6 + 4] = v_xz;
+  d_virial_per_atom[i * 6 + 5] = v_yz;
+}
+#endif  // !TDMD_SNAP_LEGACY_PERATOM
 
 // Host-side Kahan reduction (D-M6-15 mirror of EAM precedent).
 double kahan_sum_host(const double* __restrict__ data, std::size_t n) {
@@ -1191,10 +1490,12 @@ struct SnapGpuMixed::Impl {
   DevicePtr<std::byte> d_pe_per_atom_bytes;
   DevicePtr<std::byte> d_virial_per_atom_bytes;
 
-  // T8.6c-v5 Stage 2 (mixed mirror): per-bond scratch.
+  // T8.6c-v5 Stage 2 + Stage 3 (mixed mirror): per-bond scratch.
   SnapBondListGpu bond_list;
   DevicePtr<std::byte> d_ulist_bond_r_bytes;
   DevicePtr<std::byte> d_ulist_bond_i_bytes;
+  DevicePtr<std::byte> d_dedr_own_bytes;
+  DevicePtr<std::byte> d_dedr_peer_bytes;
 
   // SNAP parameter tables — uploaded once, reused across compute() calls.
   DevicePtr<std::byte> d_radius_elem_bytes;
@@ -1691,6 +1992,7 @@ SnapGpuResult SnapGpuMixed::compute(std::size_t n,
                                                                d_pe_per_atom);
     check_cuda("launch snap_yi_kernel", cudaGetLastError());
   }
+#if TDMD_SNAP_LEGACY_PERATOM
   {
     TDMD_NVTX_RANGE("snap.deidrj_kernel");
     snap_deidrj_kernel<<<n32, kThreadsPerBlock, shm_de_bytes, s>>>(n32,
@@ -1714,6 +2016,60 @@ SnapGpuResult SnapGpuMixed::compute(std::size_t n,
                                                                    d_virial_per_atom);
     check_cuda("launch snap_deidrj_kernel", cudaGetLastError());
   }
+#else
+  // T8.6c-v5 Stage 3 (mixed mirror): per-bond deidrj + per-atom force gather.
+  const std::size_t dedr_bond_bytes = (n_bonds == 0) ? 0u : (n_bonds * 3u * sizeof(double));
+  if (dedr_bond_bytes > 0) {
+    impl_->d_dedr_own_bytes = pool.allocate_device(dedr_bond_bytes, stream);
+    impl_->d_dedr_peer_bytes = pool.allocate_device(dedr_bond_bytes, stream);
+  }
+  auto* d_dedr_own =
+      (n_bonds > 0) ? reinterpret_cast<double*>(impl_->d_dedr_own_bytes.get()) : nullptr;
+  auto* d_dedr_peer =
+      (n_bonds > 0) ? reinterpret_cast<double*>(impl_->d_dedr_peer_bytes.get()) : nullptr;
+
+  if (n_bonds > 0) {
+    TDMD_NVTX_RANGE("snap.deidrj_bond_kernel");
+    const std::uint32_t n_bonds_u32 = static_cast<std::uint32_t>(n_bonds);
+    snap_deidrj_bond_kernel<<<n_bonds_u32, kThreadsPerBlock, shm_de_bytes, s>>>(
+        n_bonds_u32,
+        bond_view.d_bond_i,
+        bond_view.d_bond_j,
+        bond_view.d_bond_type_i,
+        bond_view.d_bond_type_j,
+        bond_view.d_bond_dx,
+        bond_view.d_bond_dy,
+        bond_view.d_bond_dz,
+        bond_view.d_bond_rsq,
+        d_idxu_block,
+        d_rootpq,
+        d_radius,
+        d_weight,
+        d_ylist_r,
+        d_ylist_i,
+        dp,
+        d_dedr_own,
+        d_dedr_peer);
+    check_cuda("launch snap_deidrj_bond_kernel", cudaGetLastError());
+  }
+
+  {
+    TDMD_NVTX_RANGE("snap.force_gather_kernel");
+    const unsigned grid = (n32 + kThreadsPerBlock - 1u) / kThreadsPerBlock;
+    snap_force_gather_kernel<<<grid, kThreadsPerBlock, 0, s>>>(n32,
+                                                               bond_view.d_atom_bond_start,
+                                                               bond_view.d_bond_dx,
+                                                               bond_view.d_bond_dy,
+                                                               bond_view.d_bond_dz,
+                                                               d_dedr_own,
+                                                               d_dedr_peer,
+                                                               d_fx,
+                                                               d_fy,
+                                                               d_fz,
+                                                               d_virial_per_atom);
+    check_cuda("launch snap_force_gather_kernel", cudaGetLastError());
+  }
+#endif
 
   // --- 7. D2H forces + per-atom reductions.
   std::vector<double> host_pe(n);
