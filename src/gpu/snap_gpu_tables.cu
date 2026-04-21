@@ -33,6 +33,7 @@
 #include <cmath>
 #include <cstddef>
 #include <stdexcept>
+#include <vector>
 
 namespace tdmd::gpu::snap_detail {
 
@@ -266,6 +267,32 @@ void init_rootpqarray_into(FlatIndexTables& t) {
   }
 }
 
+// T-opt-2: build the per-jju CSR bucket of jjz indices (see header comment on
+// FlatIndexTables). The jju of each jjz is idxz_packed[jjz*10 + 9].
+// Bucketing is stable-by-jjz: within a bucket, jjz values are strictly
+// ascending — matches the legacy tid==0 Phase B loop's += order at that jju.
+// Implementation: counting-sort style two-pass over idxz_max.
+void build_idxz_jju_buckets_into(FlatIndexTables& t) {
+  t.idxz_jju_bucket_begin.assign(t.idxu_max + 1, 0);
+  t.idxz_by_jju.assign(t.idxz_max, 0);
+  if (t.idxz_max == 0 || t.idxu_max == 0) {
+    return;
+  }
+  for (int jjz = 0; jjz < t.idxz_max; ++jjz) {
+    const int jju = t.idxz_packed[jjz * 10 + 9];
+    ++t.idxz_jju_bucket_begin[jju + 1];
+  }
+  for (int jju = 0; jju < t.idxu_max; ++jju) {
+    t.idxz_jju_bucket_begin[jju + 1] += t.idxz_jju_bucket_begin[jju];
+  }
+  std::vector<int> cursor(t.idxu_max, 0);
+  for (int jjz = 0; jjz < t.idxz_max; ++jjz) {
+    const int jju = t.idxz_packed[jjz * 10 + 9];
+    const int slot = t.idxz_jju_bucket_begin[jju] + cursor[jju]++;
+    t.idxz_by_jju[slot] = jjz;
+  }
+}
+
 }  // namespace
 
 FlatIndexTables build_flat_tables(int twojmax) {
@@ -282,6 +309,7 @@ FlatIndexTables build_flat_tables(int twojmax) {
   build_indexlist_into(t);
   init_clebsch_gordan_into(t);
   init_rootpqarray_into(t);
+  build_idxz_jju_buckets_into(t);
 
   return t;
 }

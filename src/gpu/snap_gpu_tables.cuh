@@ -81,6 +81,17 @@ struct FlatIndexTables {
   //   rootpq   — size jdimpq² doubles (flat row-major; rootpq[p*jdimpq + q])
   std::vector<double> cglist;
   std::vector<double> rootpq;
+
+  // T-opt-2 (yi_kernel Phase B parallelization): per-jju CSR bucket of jjz
+  // indices. Each bucket lists the jjz values that map to this jju
+  // (= idxz_packed[jjz*10 + 9]) in ascending jjz order. With this, Phase B
+  // can be parallelized as tid-strided over jju (each thread owns one jju's
+  // += sequence) — and the ascending-jjz ordering inside each bucket matches
+  // the legacy single-lane loop's accumulation order bit-for-bit.
+  //   idxz_jju_bucket_begin — size idxu_max + 1 (CSR prefix sum)
+  //   idxz_by_jju           — size idxz_max (sorted jjz values)
+  std::vector<int> idxz_jju_bucket_begin;
+  std::vector<int> idxz_by_jju;
 };
 
 // Build a complete FlatIndexTables instance for the given twojmax. Pure host

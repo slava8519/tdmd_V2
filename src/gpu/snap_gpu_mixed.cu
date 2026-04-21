@@ -671,8 +671,10 @@ __global__ void snap_yi_kernel(std::uint32_t n,
                                const int* __restrict__ idxz_block,
                                const int* __restrict__ idxb_block,
                                const int* __restrict__ idxcg_block,
-                               const int* __restrict__ idxz_packed,  // idxz_max × 10
-                               const int* __restrict__ idxb_packed,  // idxb_max × 3
+                               const int* __restrict__ idxz_packed,            // idxz_max × 10
+                               const int* __restrict__ idxb_packed,            // idxb_max × 3
+                               const int* __restrict__ idxz_jju_bucket_begin,  // idxu_max + 1
+                               const int* __restrict__ idxz_by_jju,            // idxz_max
                                const double* __restrict__ cglist,
                                const double* __restrict__ beta,  // n_species × beta_stride
                                std::size_t beta_stride,
@@ -816,13 +818,23 @@ __global__ void snap_yi_kernel(std::uint32_t n,
   }
   __syncthreads();
 
-  // Phase B: single-lane sequential accumulation in original jjz order.
-  if (tid == 0) {
-    for (int jjz = 0; jjz < p.idxz_max; ++jjz) {
-      const int jju = idxz_packed[jjz * 10 + 9];
-      ylist_r[jju] += ybuf_r[jjz];
-      ylist_i[jju] += ybuf_i[jjz];
+  // Phase B (T-opt-2): parallel accumulation, tid-strided over idxu_max.
+  // Each thread owns one or more jju slots (exclusive writes to ylist[jju]).
+  for (int jju = tid; jju < p.idxu_max; jju += block_threads) {
+    const int b_begin = idxz_jju_bucket_begin[jju];
+    const int b_end = idxz_jju_bucket_begin[jju + 1];
+    if (b_begin == b_end) {
+      continue;
     }
+    double acc_r = ylist_r[jju];
+    double acc_i = ylist_i[jju];
+    for (int bs = b_begin; bs < b_end; ++bs) {
+      const int jjz = idxz_by_jju[bs];
+      acc_r += ybuf_r[jjz];
+      acc_i += ybuf_i[jjz];
+    }
+    ylist_r[jju] = acc_r;
+    ylist_i[jju] = acc_i;
   }
   __syncthreads();
 
@@ -1459,6 +1471,9 @@ struct SnapGpuMixed::Impl {
   DevicePtr<std::byte> d_idxb_block_bytes;
   DevicePtr<std::byte> d_idxz_packed_bytes;
   DevicePtr<std::byte> d_idxb_packed_bytes;
+  // T-opt-2: per-jju CSR bucket of jjz indices for yi_kernel Phase B parallel.
+  DevicePtr<std::byte> d_idxz_jju_bucket_begin_bytes;
+  DevicePtr<std::byte> d_idxz_by_jju_bytes;
   DevicePtr<std::byte> d_cglist_bytes;
   DevicePtr<std::byte> d_rootpq_bytes;
 
@@ -1526,6 +1541,8 @@ SnapGpuResult SnapGpuMixed::compute(std::size_t n,
     const std::size_t idxb_block_bytes = ft.idxb_block.size() * sizeof(int);
     const std::size_t idxz_packed_bytes = ft.idxz_packed.size() * sizeof(int);
     const std::size_t idxb_packed_bytes = ft.idxb_packed.size() * sizeof(int);
+    const std::size_t idxz_jju_bucket_begin_bytes = ft.idxz_jju_bucket_begin.size() * sizeof(int);
+    const std::size_t idxz_by_jju_bytes = ft.idxz_by_jju.size() * sizeof(int);
     const std::size_t cglist_bytes = ft.cglist.size() * sizeof(double);
     const std::size_t rootpq_bytes = ft.rootpq.size() * sizeof(double);
 
@@ -1535,6 +1552,9 @@ SnapGpuResult SnapGpuMixed::compute(std::size_t n,
     impl_->d_idxb_block_bytes = pool.allocate_device(idxb_block_bytes, stream);
     impl_->d_idxz_packed_bytes = pool.allocate_device(idxz_packed_bytes, stream);
     impl_->d_idxb_packed_bytes = pool.allocate_device(idxb_packed_bytes, stream);
+    impl_->d_idxz_jju_bucket_begin_bytes =
+        pool.allocate_device(idxz_jju_bucket_begin_bytes, stream);
+    impl_->d_idxz_by_jju_bytes = pool.allocate_device(idxz_by_jju_bytes, stream);
     impl_->d_cglist_bytes = pool.allocate_device(cglist_bytes, stream);
     impl_->d_rootpq_bytes = pool.allocate_device(rootpq_bytes, stream);
 
@@ -1572,6 +1592,18 @@ SnapGpuResult SnapGpuMixed::compute(std::size_t n,
                cudaMemcpyAsync(impl_->d_idxb_packed_bytes.get(),
                                ft.idxb_packed.data(),
                                idxb_packed_bytes,
+                               cudaMemcpyHostToDevice,
+                               s));
+    check_cuda("memcpy idxz_jju_bucket_begin",
+               cudaMemcpyAsync(impl_->d_idxz_jju_bucket_begin_bytes.get(),
+                               ft.idxz_jju_bucket_begin.data(),
+                               idxz_jju_bucket_begin_bytes,
+                               cudaMemcpyHostToDevice,
+                               s));
+    check_cuda("memcpy idxz_by_jju",
+               cudaMemcpyAsync(impl_->d_idxz_by_jju_bytes.get(),
+                               ft.idxz_by_jju.data(),
+                               idxz_by_jju_bytes,
                                cudaMemcpyHostToDevice,
                                s));
     check_cuda("memcpy cglist",
@@ -1810,6 +1842,9 @@ SnapGpuResult SnapGpuMixed::compute(std::size_t n,
   auto* d_idxb_block = reinterpret_cast<int*>(impl_->d_idxb_block_bytes.get());
   auto* d_idxz_packed = reinterpret_cast<int*>(impl_->d_idxz_packed_bytes.get());
   auto* d_idxb_packed = reinterpret_cast<int*>(impl_->d_idxb_packed_bytes.get());
+  auto* d_idxz_jju_bucket_begin =
+      reinterpret_cast<int*>(impl_->d_idxz_jju_bucket_begin_bytes.get());
+  auto* d_idxz_by_jju = reinterpret_cast<int*>(impl_->d_idxz_by_jju_bytes.get());
   auto* d_cglist = reinterpret_cast<double*>(impl_->d_cglist_bytes.get());
   auto* d_rootpq = reinterpret_cast<double*>(impl_->d_rootpq_bytes.get());
 
@@ -1927,6 +1962,8 @@ SnapGpuResult SnapGpuMixed::compute(std::size_t n,
                                                                d_idxcg_block,
                                                                d_idxz_packed,
                                                                d_idxb_packed,
+                                                               d_idxz_jju_bucket_begin,
+                                                               d_idxz_by_jju,
                                                                d_cglist,
                                                                d_beta,
                                                                tables.beta_stride,
