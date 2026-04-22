@@ -1,6 +1,6 @@
 # T8.10 scout — TDMD GPU SNAP vs LAMMPS CPU + KOKKOS-GPU SNAP on RTX 5080
 
-**Date:** 2026-04-20 (revised 2026-04-21 with T8.6c-v5 Stages 1-3 per-bond dispatch landed; re-revised 2026-04-21 with T-opt-3b paired-bond reverse index + T-opt-2 yi Phase B parallel-over-jju)
+**Date:** 2026-04-20 (revised 2026-04-21 with T8.6c-v5 Stages 1-3 per-bond dispatch landed; re-revised 2026-04-21 with T-opt-3b paired-bond reverse index + T-opt-2 yi Phase B parallel-over-jju; 2026-04-22: T-opt-4 Item 1 single-walk bond list)
 **Hardware:** NVIDIA GeForce RTX 5080 (sm_120, 16 GB GDDR7, 32 °C idle, driver 590.48.01)
 **Build:** CUDA 13.1, per-flavor: `build/` (Fp64Reference), `build-mixed/` (MixedFast), `build-mixed-snap-only/` (MixedFastSnapOnly)
 **LAMMPS (CPU/legacy GPU pkg):** `verify/third_party/lammps/build_tdmd/lmp` — ML-SNAP + GPU + MANYBODY + KSPACE. This build has no `snap/gpu`/`snap/kk` pair style; `-sf gpu` on `pair_style snap` is a silent CPU fallthrough.
@@ -27,9 +27,12 @@
 | TDMD `Fp64ReferenceBuild` (GPU, post-T-opt-3b)        | + paired-bond reverse index (halves deidrj_bond work) |  — |   40.8 | 9.49×   | 0.230× |
 | TDMD `MixedFastBuild` (GPU, post-T-opt-3b)            | + paired-bond reverse index (halves deidrj_bond work) |  — |   34.4 | 8.00×   | 0.194× |
 | TDMD `MixedFastSnapOnlyBuild` (GPU, post-T-opt-3b)    | + paired-bond reverse index (halves deidrj_bond work) |  — |   33.8 | 7.86×   | 0.190× |
-| **TDMD `Fp64ReferenceBuild` (GPU, post-T-opt-2)**       | + yi_kernel Phase B parallel-over-jju via CSR buckets |  3.70 |   **37.0** | **8.60×**   | **0.208×** |
-| **TDMD `MixedFastBuild` (GPU, post-T-opt-2)**           | + yi_kernel Phase B parallel-over-jju via CSR buckets |  2.95 |   **29.5**  | **6.86×**   | **0.166×** (**2.81× faster than LAMMPS CPU 1-rank**) |
-| **TDMD `MixedFastSnapOnlyBuild` (GPU, post-T-opt-2)**   | + yi_kernel Phase B parallel-over-jju via CSR buckets |  2.97 |   **29.7**  | **6.91×**   | **0.167×** |
+| TDMD `Fp64ReferenceBuild` (GPU, post-T-opt-2)           | + yi_kernel Phase B parallel-over-jju via CSR buckets |  3.70 |   37.0 | 8.60×   | 0.208× |
+| TDMD `MixedFastBuild` (GPU, post-T-opt-2)               | + yi_kernel Phase B parallel-over-jju via CSR buckets |  2.95 |   29.5 | 6.86×   | 0.166× (2.81× faster than LAMMPS CPU 1-rank) |
+| TDMD `MixedFastSnapOnlyBuild` (GPU, post-T-opt-2)       | + yi_kernel Phase B parallel-over-jju via CSR buckets |  2.97 |   29.7 | 6.91×   | 0.167× |
+| **TDMD `Fp64ReferenceBuild` (GPU, post-T-opt-4-item1)** | + single-walk bond list (stage+compact replaces count+emit) | 3.64 | **36.4** | **8.47×** | **0.205×** |
+| **TDMD `MixedFastBuild` (GPU, post-T-opt-4-item1)**     | + single-walk bond list (stage+compact replaces count+emit) | 2.92 | **29.2** | **6.79×** | **0.164×** (**2.85× faster than LAMMPS CPU 1-rank**) |
+| **TDMD `MixedFastSnapOnlyBuild` (GPU, post-T-opt-4-item1)** | + single-walk bond list (stage+compact replaces count+emit) | 2.92 | **29.2** | **6.79×** | **0.164×** |
 | LAMMPS SNAP 1-rank (`-sf gpu` → CPU fallback) | FP64 + FMA   |   17.87 |   178.7 |              41.5×  |                    ≡ 1-rank CPU |
 | LAMMPS SNAP CPU 1-rank              | FP64 + FMA             |   17.79 |   177.9 |              41.4×  |                   1.00×|
 | **LAMMPS SNAP KOKKOS snap/kk (GPU)** | CUDA FP64, newton on + neigh half | 0.4305 |   **4.30** | **1.00×**     |                   **0.0242×** (41.4× faster than LAMMPS CPU) |
@@ -60,8 +63,9 @@ post-v4). The gap to LAMMPS KOKKOS `snap/kk` 4.30 ms/step is now
 | T8.6c-v5 Stage 2 | `snap_ui_bond_kernel` + `snap_ui_gather_kernel` replace `snap_ui_kernel` | 69.4 ms/step | 57.1 ms/step | — |
 | T8.6c-v5 Stage 3 | `snap_deidrj_bond_kernel` + `snap_force_gather_kernel` replace `snap_deidrj_kernel` | 59.6 ms/step | 47.9 ms/step | 48.0 ms/step |
 | T-opt-3b | Paired-bond reverse index: halves deidrj_bond work via dedr_peer[b] ≡ dedr_own[reverse(b)] pure-function identity | 40.8 ms/step | 34.4 ms/step | 33.8 ms/step |
-| **T-opt-2** | **yi_kernel Phase B parallel-over-jju via CSR buckets (no atomics — disjoint writes)** | **37.0 ms/step** | **29.5 ms/step** | **29.7 ms/step** |
-| cumulative T8.6c+T-opt | —                         | **12.11×**    | **10.71×**    | **10.98×**    |
+| T-opt-2 | yi_kernel Phase B parallel-over-jju via CSR buckets (no atomics — disjoint writes) | 37.0 ms/step | 29.5 ms/step | 29.7 ms/step |
+| **T-opt-4 item 1** | **Single-walk bond list: stage+compact replaces count+emit (one 27-cell stencil traversal per build)** | **36.4 ms/step** | **29.2 ms/step** | **29.2 ms/step** |
+| cumulative T8.6c+T-opt | —                         | **12.32×**    | **10.82×**    | **11.17×**    |
 
 **T8.6c-v4 alone delivers 2.67× (Fp64Ref), 2.27× (MixedFast), 1.80×
 (MixedSnapOnly) on top of v3.** This was the largest single-commit lever of
@@ -96,16 +100,36 @@ last tid==0-gated serial loop in the hot path: `snap_yi_kernel`'s Phase B
 backed by a pre-built CSR bucket of jjz values ordered ascending per jju
 (matching legacy sweep bit-for-bit).
 
-The M8 ≥ 20 % gate still requires ≤ 3.44 ms/step (i.e. further ~8.6×
-speedup on top of T-opt-2). On a single RTX 5080 closing that remaining
-gap is expected to require either (a) the structurally-different
-multi-rank TD path where each rank owns ≤ 1/Nₖ of the atom count, or
-(b) algorithmic wins from TDMD's multi-step scheduling (zones on coarser
-dt cost proportionally less per wall-second — Andreev's native lever).
-Option (a) is M7; option (b) is anchor-test territory (M5). The
-single-GPU kernel-tuning ladder has now flattened: further per-bond
-kernel work (shared-mem blocking, persistent kernel, sub-step
+The M8 ≥ 20 % gate still requires ≤ 3.44 ms/step (i.e. further ~8.5×
+speedup on top of T-opt-4 Item 1). On a single RTX 5080 closing that
+remaining gap is expected to require either (a) the structurally-
+different multi-rank TD path where each rank owns ≤ 1/Nₖ of the atom
+count, or (b) algorithmic wins from TDMD's multi-step scheduling (zones
+on coarser dt cost proportionally less per wall-second — Andreev's
+native lever). Option (a) is M7; option (b) is anchor-test territory
+(M5). The single-GPU kernel-tuning ladder has now flattened: further
+per-bond kernel work (shared-mem blocking, persistent kernel, sub-step
 amortisation) is expected to deliver < 2× on its own.
+
+**T-opt-4 Item 1** replaces the two-pass count_bonds + emit_bonds pipeline
+with a single-walk stage+compact pipeline. The stage kernel walks the 27-
+cell stencil once per atom, stages matching (j, Δr, r²) tuples into a
+per-atom staging buffer (stride = `kMaxBondsPerAtom` = 256), and records
+the count. Host scan produces offsets; compact kernel gathers staged
+tuples into the packed CSR without re-walking the stencil. Byte-exact
+invariant preserved: the stage kernel uses the same `scan_snap_bonds`
+visitor that the legacy count+emit pair shared, so the FP operands
+(Δr, r²) and within-atom emission order are bit-identical. The final
+`cudaStreamSynchronize` at end of build was removed; downstream gather
+kernels drive ordering via the same stream, and staging DevicePtr
+destruction issues stream-ordered `cudaFreeAsync`. Win: ~0.3 ms/step
+MixedFast (= 1.0 % wall), ~0.5 ms MixedSnapOnly (= 1.7 %), ~0.6 ms
+Fp64Ref (= 1.6 %). Modest because the SNAP bond-list build is only
+~3 % of total step wall — the pre-impl nsys gap study (TDMD 1.75 ms vs
+KOKKOS &lt; 0.05 ms ≈ 30×) had framed the opportunity as a ~5 % ceiling;
+we captured about a third of it, consistent with the single-walk
+removing one of two full stencil passes and leaving the H2D copies and
+host exclusive scan as the remaining floor.
 
 ### T8.6c-v4 regression anomaly — MixedSnapOnly < MixedFast post-refactor
 
@@ -139,10 +163,12 @@ LAMMPS KOKKOS numbers are median-of-3 after 1 warmup discard; 4 total runs with 
    parallelism**, the gap further narrowed to 21.4× (92.0 ms/step MixedFast).
    **After T8.6c-v5 per-bond dispatch**, the gap narrowed to 11.1×
    (47.9 ms/step MixedFast). **After T-opt-3b paired-bond reverse
-   index and T-opt-2 yi Phase B parallel-over-jju**, the gap now stands at
-   **6.86× slower** (29.5 ms/step MixedFast). Cumulative T8.6c+T-opt wins:
-   Fp64Ref 12.11×, MixedFast 10.71×, MixedSnapOnly 10.98×. MixedFast now
-   runs **2.81× faster than LAMMPS CPU 1-rank** (was 1.77× slower
+   index and T-opt-2 yi Phase B parallel-over-jju**, the gap narrowed to
+   6.86× slower (29.5 ms/step MixedFast). **After T-opt-4 Item 1 single-
+   walk bond list** it now stands at **6.79× slower** (29.2 ms/step
+   MixedFast). Cumulative T8.6c+T-opt wins: Fp64Ref 12.32×, MixedFast
+   10.82×, MixedSnapOnly 11.17×. MixedFast now runs **2.85× faster than
+   LAMMPS CPU 1-rank** (was 1.77× slower
    pre-T8.6c). Relative to LAMMPS CPU 1-rank (178 ms/step), LAMMPS GPU
    is 41.4× faster, so the GPU baseline remains the only honest reference
    for the M8 ≥ 20 % gate.
