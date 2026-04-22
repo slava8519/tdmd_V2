@@ -17,7 +17,7 @@
 # Sections for other benchmarks land as they come online (T3 at M5, ...).
 
 schema_version: 1
-last_updated: 2026-04-20
+last_updated: 2026-04-22
 
 tolerances:
 
@@ -386,3 +386,122 @@ tolerances:
         `verify/third_party/lammps/examples/snap/`. Benchmark driver resolves
         them via `LAMMPS_EXAMPLES_DIR` env var (default = submodule path) so
         cloud-burst hosts can relocate without a threshold change.
+
+    # ---------------------------------------------------------------------------
+    # T8 NVT Al FCC canonical benchmark — RESERVED at M9 T9.1 (2026-04-22).
+    # Values calibrated by T9.10 on the first successful 10^5-step run; until
+    # then all rows carry `status: reserved` and MUST NOT be consulted by CI
+    # (benchmark harness is gated to reserved-throw per SPEC §3.4).
+    # ---------------------------------------------------------------------------
+    t8_al_fcc_nvt:
+      # Equipartition band: <KE> = (3/2)·N·k_B·T within ±3% relative over the
+      # 10^5-step sampling window (after 10^4-step equilibration discarded).
+      # Activated by T9.10 after measurement on target hardware.
+      equipartition_rel_band:
+        relative: 0.03
+        status: reserved
+        target_milestone: M9
+        activation_task: T9.10
+        rationale: >-
+          3% envelope absorbs expected Nosé-Hoover chain phase-space sampling
+          noise at M=3, damping_time=0.1 ps, thermostat_update_interval=50.
+          Tighter band risks false-red during normal canonical-ensemble
+          fluctuations; looser band masks integrator drift. See
+          integrator/SPEC §4.4.
+
+      # Maxwell-Boltzmann velocity distribution goodness-of-fit (chi-squared
+      # p-value MIN — rejection at p < threshold). Per-component v_x,v_y,v_z.
+      maxwell_boltzmann_chi2_p_min:
+        absolute: 0.05
+        status: reserved
+        target_milestone: M9
+        activation_task: T9.10
+        rationale: >-
+          Standard 5% significance bar — rejects only statistically strong
+          deviations from canonical distribution. Aligns with LAMMPS NVT
+          integration-test conventions.
+
+      # Deterministic 100-step gate: TDMD vs LAMMPS fix nvt, identical velocity
+      # seed + identical thermostat params + identical EAM coeffs. Rel
+      # residual on per-atom positions + velocities at step 100.
+      lammps_step100_forces_rel:
+        relative: 1.0e-10
+        status: reserved
+        target_milestone: M9
+        activation_task: T9.3
+        rationale: >-
+          Pre-divergence deterministic window. LAMMPS fix nvt Trotter
+          ordering matches integrator/SPEC §4.2 canonical 7-step form
+          bit-for-bit up to ~100 steps before chaotic divergence dominates.
+          Tightness matches T4 EAM NVE reference_fp64_vs_lammps.
+
+      # Statistical 10^4-step gate: ensemble average temperature within ±3 K
+      # of setpoint (~1% relative at 300 K).
+      lammps_statistical_temp_k_tol:
+        absolute: 3.0
+        status: reserved
+        target_milestone: M9
+        activation_task: T9.10
+        rationale: >-
+          3 K absolute tolerance at T=300 K = 1% relative; consistent with
+          LAMMPS NVT validation precedent. Tightens proportionally at lower
+          T — explicit absolute form preferred to fractional because physical
+          temperature distribution width is absolute, not relative.
+
+      # NVE-sanity regression: run identical setup without thermostat; drift
+      # must match T1 metal-units Al-FCC canonical NVE drift envelope.
+      nve_drift_per_1000_steps:
+        relative: 1.0e-5
+        status: reserved
+        target_milestone: M9
+        activation_task: T9.2
+        rationale: >-
+          Reaffirms Trotter ordering correctness — thermostat-free branch
+          must reproduce the verified T1 NVE envelope. Direct regression
+          guard against accidental VV-path perturbation during NVT refactor.
+
+    # ---------------------------------------------------------------------------
+    # T9 NPT Al FCC canonical benchmark — RESERVED at M9 T9.1 (2026-04-22).
+    # Values calibrated by T9.11. Same reserved-throw policy as T8 above.
+    # ---------------------------------------------------------------------------
+    t9_al_fcc_npt:
+      # Equilibrium volume match LAMMPS NPT within 2% relative. Volume is a
+      # strongly ensemble-averaged observable; LAMMPS baseline under identical
+      # pressure + temperature + EAM coeffs is the direct reference.
+      equilibrium_volume_rel_tol:
+        relative: 0.02
+        status: reserved
+        target_milestone: M9
+        activation_task: T9.11
+        rationale: >-
+          2% absorbs barostat-coupling-interval discretization (default
+          barostat_update_interval=100) + finite-sample statistical error on
+          the 10^4-step averaging window. Volume is the primary NPT observable;
+          tighter band risks false-red on legitimate pressure fluctuation
+          noise, looser band misses equation-of-state miscalibration.
+
+      # Volume fluctuation σ_V match within 5% relative. Fluctuation magnitude
+      # is κ_T·k_B·T·V (isothermal compressibility); LAMMPS under matched
+      # params is the reference.
+      volume_fluctuation_rel_tol:
+        relative: 0.05
+        status: reserved
+        target_milestone: M9
+        activation_task: T9.11
+        rationale: >-
+          5% on σ_V is ~2× looser than ⟨V⟩ band because fluctuation variance
+          requires larger sample for stable estimate. Standard statistical-
+          ensemble-validation convention.
+
+      # Deterministic 100-step box parity: box volume + atom positions vs
+      # LAMMPS fix npt iso at step 100.
+      lammps_step100_box_rel:
+        relative: 1.0e-10
+        status: reserved
+        target_milestone: M9
+        activation_task: T9.7
+        rationale: >-
+          Same pre-divergence gate as T8; NPT adds a box-volume check
+          alongside positions/velocities since barostat variable is a new
+          degree of freedom. Rel budget identical — Trotter ordering is the
+          sole source of residual at step 100.

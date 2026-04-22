@@ -3,7 +3,8 @@
 **Module:** `integrator/`
 **Status:** master module spec
 **Parent:** `TDMD Engineering Spec v2.1` §5.1, §6.5, §12
-**Last updated:** 2026-04-16
+**Version:** v1.1 (M9 T9.1 SPEC delta: §4/§5/§7.3 promoted from draft to M9-normative; §11 roadmap realigned with master spec §14; §13 change log introduced)
+**Last updated:** 2026-04-22
 
 ---
 
@@ -275,7 +276,13 @@ Measured через NVTX ranges + `nvidia-smi` sampling. If >10% idle — likely
 
 ---
 
-## 4. NVT thermostat (v1.5 — M9+)
+## 4. NVT thermostat (M9 normative, v1.5 shipping)
+
+> **M9 T9.1 promotion (2026-04-22):** §4 promoted from draft to M9-normative per
+> master spec §14 M9 and `docs/development/m9_execution_pack.md` D-M9-1..D-M9-17.
+> Deliverable owners: T9.2 CPU impl, T9.3 LAMMPS diff, T9.4 GPU impl,
+> T9.5 GPU ≡ CPU bit-exact under Reference + `--fmad=false` (D-M9-10), T9.10
+> T8 canonical benchmark registration.
 
 ### 4.1. Nosé-Hoover chains
 
@@ -400,7 +407,14 @@ Default `barostat_update_interval: 100` — pressure response intrinsically slow
 
 ---
 
-## 5. NPT barostat (v1.5 — M9+)
+## 5. NPT barostat (M9 normative, v1.5 shipping)
+
+> **M9 T9.1 promotion (2026-04-22):** §5 promoted from draft to M9-normative.
+> **Correction vs §11 pre-T9.1 roadmap:** NPT delivery is **M9**, not M10 —
+> master spec §14 M9 explicitly lists `NoseHooverNptIntegrator CPU + GPU
+> (basic isotropic)` as shipping deliverable. Implementation tasks: T9.6 CPU,
+> T9.7 LAMMPS diff, T9.8 GPU, T9.11 T9 canonical benchmark registration.
+> Anisotropic NPT (stress tensor) remains v2+ per §5.3.
 
 ### 5.1. Parrinello-Rahman-like с Nosé-Hoover
 
@@ -506,7 +520,7 @@ NVT/NPT имеют **global state** — thermostat variables `ξ_k` и их mome
 
 Три концептуальных варианта решения:
 
-#### 7.3.1. Вариант A — Global frozen state (v1.5 policy)
+#### 7.3.1. Вариант A — Global frozen state (M9-normative v1.5 policy)
 
 Thermostat update делается **один раз на iteration** в scheduler'е, после всех zone commits. Все zones в current iteration видят **одно и то же** `ξ_k` value.
 
@@ -692,13 +706,14 @@ NVTX ranges:
 
 | Milestone | Integrator deliverable |
 |---|---|
-| M1 | `VelocityVerletIntegrator` CPU; fixed dt; NVE |
-| M2 | TD scheduler integration (per-zone calls) |
-| M6 | GPU kernels для VV (half-kick, drift kernels) |
-| M7 | Adaptive dt in Production profile |
-| **M9** | `NoseHooverNvtIntegrator` CPU + GPU |
-| **M10** | `NoseHooverNptIntegrator` |
-| v2+ | `LangevinIntegrator`, anisotropic NPT, per-zone dt research |
+| M1 | `VelocityVerletIntegrator` CPU; fixed dt; NVE (closed 2026-04-18) |
+| M2 | TD scheduler integration (per-zone calls) (closed 2026-04-18) |
+| M6 | GPU kernels для VV (half-kick, drift kernels) (closed 2026-04-19, T6.6) |
+| M7 | Adaptive dt in Production profile (closed 2026-04-20) |
+| **M9** | `NoseHooverNvtIntegrator` CPU + GPU **AND** `NoseHooverNptIntegrator` CPU + GPU (basic isotropic); PolicyValidator K=1 enforcement for non-NVE styles; T8 NVT + T9 NPT canonical benchmarks landed |
+| **M10** | MEAM integration (not integrator scope — see `docs/specs/potentials/SPEC.md`) |
+| **M11** | NVT-in-TD research window — Variant C prototype + go/no-go decision (см. §7.3.4) |
+| v2+ | `LangevinIntegrator`, anisotropic NPT (stress tensor), per-zone dt research |
 
 ---
 
@@ -712,4 +727,33 @@ NVTX ranges:
 
 ---
 
-*Конец integrator/SPEC.md v1.0, дата: 2026-04-16.*
+## 13. Change log
+
+### v1.1 — 2026-04-22 (M9 T9.1 SPEC delta)
+
+- **§4 NVT thermostat** promoted from draft "v1.5 — M9+" to M9-normative.
+  Content unchanged (Trotter 7-step, Yoshida-Suzuki 3rd-order chain, default
+  `thermostat_update_interval: 50`). Header banner cites M9 pack D-M9-1..D-M9-17.
+  Shipping tasks: T9.2 CPU, T9.3 LAMMPS diff, T9.4 GPU, T9.5 bit-exact gate.
+- **§5 NPT barostat** promoted from draft "v1.5 — M9+" to M9-normative.
+  Scope correction: NPT delivery is **M9**, not M10 — reconciles integrator/SPEC
+  §11 with master spec §14 M9 (which explicitly includes
+  `NoseHooverNptIntegrator CPU + GPU (basic isotropic)`). Anisotropic NPT
+  remains v2+. Shipping tasks: T9.6 CPU, T9.7 LAMMPS diff, T9.8 GPU, T9.11
+  T9 benchmark registration.
+- **§7.3.1 Вариант A** relabelled "v1.5 policy" → "M9-normative v1.5 policy"
+  (same content — policy gated in PolicyValidator per T9.9).
+- **§11 roadmap** M10 NPT row **removed** (NPT moved to M9); M10 now listed as
+  MEAM integration (pointer to `docs/specs/potentials/SPEC.md`); M11 row added
+  linking to §7.3.4 Variant C research window. M1/M2/M6/M7 rows annotated with
+  closure dates.
+- **§13 change log** introduced (this section).
+
+### v1.0 — 2026-04-16
+
+- Initial integrator module SPEC landed at M1 kickoff. Velocity-Verlet CPU
+  reference (§3) + placeholder drafts for NVT/NPT/TD patterns (§4–§7).
+
+---
+
+*Конец integrator/SPEC.md v1.1, дата: 2026-04-22.*

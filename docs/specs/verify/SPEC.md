@@ -3,7 +3,8 @@
 **Module:** `verify/`
 **Status:** master module spec
 **Parent:** `TDMD Engineering Spec v2.1` §13 (testing), §3.2 (positioning)
-**Last updated:** 2026-04-19 (T7.11 — added §4.6 T7 mixed-scaling benchmark)
+**Version:** v1.1 (M9 T9.1 SPEC delta: §4 extended to T0–T9; §4.8 T8 NVT + §4.9 T9 NPT authored; §14 roadmap extended through M12; §16 change log introduced)
+**Last updated:** 2026-04-22 (M9 T9.1 SPEC delta — T8 NVT + T9 NPT canonical benchmarks registered)
 
 ---
 
@@ -343,11 +344,11 @@ Threshold change процедура (из playbook §9.1 adapted):
 
 ---
 
-## 4. Benchmarks (T0-T7)
+## 4. Benchmarks (T0-T9)
 
 ### 4.1. Обзор
 
-Из master spec §13.2:
+Из master spec §13.2 + M9 T9.1 SPEC delta:
 
 | Tier | Name | Description | Primary purpose |
 |---|---|---|---|
@@ -359,6 +360,12 @@ Threshold change процедура (из playbook §9.1 adapted):
 | T5 | `meam-angular` | Si MEAM | many-body TD target |
 | T6 | `snap-tungsten` | W SNAP (`W_2940_2017_2.snap`, Wood+Thompson 2017, 128-atom BCC) | **ML niche proof-of-value** — M8 artifact gate |
 | T7 | `mixed-scaling` | T4 + T6 parallel | multi-GPU TD×SD |
+| **T8** | `al-fcc-nvt` | Al FCC 512, EAM/alloy, Nosé-Hoover NVT | **NVT canonical** — M9 artifact gate (equipartition + Maxwell-Boltzmann) |
+| **T9** | `al-fcc-npt` | Al FCC 512, EAM/alloy, Nosé-Hoover NPT isotropic | **NPT canonical** — M9 artifact gate (⟨V⟩ + fluctuations vs LAMMPS) |
+
+> **Registry headroom:** T10+ reserved for M12 (PACE/MLIAP) and future ML
+> potential additions. Current active range is T0–T9; any new benchmark
+> follows §4.10 *Adding new benchmark* procedure.
 
 ### 4.2. Структура одного benchmark
 
@@ -748,7 +755,139 @@ Path-existence Catch2 gate:
 submodule not initialized; fails if fixture files go missing from a correctly
 initialized submodule.
 
-### 4.8. Adding new benchmark
+### 4.8. T8 (`t8_al_fcc_nvt`) — **registered M9 T9.1, lands T9.10**
+
+**Status:** registered at T9.1 (2026-04-22) — fixture and threshold calibration
+scheduled for T9.10 per `docs/development/m9_execution_pack.md`. This section
+describes the **canonical form** the fixture MUST take when it lands; any
+deviation requires Architect + Validation Engineer review.
+
+**Canonical fixture (D-M9-8):**
+
+- **Lattice:** Al FCC, 5×5×5 conventional cells × 4 atoms/cell = **500 atoms**
+  (master spec §14 M9 "512 atoms" rounds the canonical cubic count; 500 is the
+  exact FCC 5×5×5 number — fixture README SHOULD state both so the arithmetic
+  is not lost).
+- **Potential:** `eam/alloy` single-species Al (reuses T4 Mishin 2004 `Al.eam.alloy`
+  asset). Morse path not selected — per D-M9-8 — because Morse GPU kernel is
+  M10+ scope; `eam/alloy` leverages existing M6 T6.5 GPU kernel and gives T8
+  GPU coverage without new kernel work.
+- **Integrator:** Nosé-Hoover NVT, M = 3 chains, `damping_time = 0.1 ps`,
+  `thermostat_update_interval = 50` (integrator/SPEC §4.5 defaults).
+- **Thermodynamic setpoint:** T = 300 K, `dt = 1 fs`, 10⁵ steps (plus 10⁴
+  equilibration discarded from statistics).
+- **Assets at `verify/benchmarks/t8_al_fcc_nvt/`:**
+
+  ```
+  t8_al_fcc_nvt/
+  ├── README.md              # fixture purpose, atom count arithmetic, provenance
+  ├── generate_setup.py      # `--structure fcc_al --nrep 5` → setup.data
+  ├── setup.data             # committed (same policy as T1/T4)
+  ├── Al.eam.alloy           # reuse from T4 (symlink or fetched from submodule)
+  ├── config.yaml            # TDMD config: eam/alloy + nvt
+  ├── lammps_script.in       # `fix nvt temp 300 300 0.1` LAMMPS parity
+  ├── checks.yaml            # equipartition + Maxwell-Boltzmann + LAMMPS diff
+  └── metadata.yaml          # version, creation date, fixture hash
+  ```
+
+**Acceptance gates (D-M9-9 statistical, не byte-exact):**
+
+1. **Equipartition** — ⟨KE⟩ = (3/2)·N·k_B·T within **±2σ** over the sampling
+   window (10⁵ steps after 10⁴ equilibration). Threshold: `t8.equipartition_rel_band = 0.03`
+   (3% envelope on mean kinetic energy);
+2. **Velocity distribution Maxwell-Boltzmann** — χ² goodness-of-fit with
+   `p > 0.05` on per-component v_x, v_y, v_z histograms (bin count per
+   integrator/SPEC §9.3);
+3. **LAMMPS parity (pseudo-deterministic)** — 100-step with identical velocity
+   seed: positions + velocities match LAMMPS `fix nvt` to ≤ 1e-10 relative at
+   step 100 (pre-divergence window, deterministic-stochastic-free gate);
+4. **LAMMPS statistical match** — 10⁴-step: ⟨T⟩ within ±3 K (1% rel at 300 K),
+   ⟨KE⟩ within ±2σ of analytic equipartition;
+5. **NVE-sanity (regression)** — NVT fix disabled in a parallel run: NVE drift
+   `< 1e-5 / 1000 steps` holds (reaffirms §4.2 Trotter ordering correctness).
+
+**Tier assignment:** medium (equipartition + LAMMPS parity, ~30 min) + slow
+(full 10⁵-step statistical campaign). Fast-tier excluded — 10⁵ steps is
+nightly budget.
+
+**Threshold registry entries (reserved at T9.1, activated at T9.10):**
+
+```
+benchmarks.t8_al_fcc_nvt.equipartition_rel_band              status: reserved
+benchmarks.t8_al_fcc_nvt.maxwell_boltzmann_chi2_p_min        status: reserved
+benchmarks.t8_al_fcc_nvt.lammps_step100_forces_rel           status: reserved
+benchmarks.t8_al_fcc_nvt.lammps_statistical_temp_k_tol       status: reserved
+```
+
+See `verify/thresholds/thresholds.yaml` for full schema. Values calibrated
+from the first successful 10⁵-step run at T9.10.
+
+### 4.9. T9 (`t9_al_fcc_npt`) — **registered M9 T9.1, lands T9.11**
+
+**Status:** registered at T9.1 (2026-04-22) — fixture scheduled for T9.11. Same
+canonical-form contract as T8.
+
+**Canonical fixture (D-M9-8 shared):**
+
+- **Lattice + potential + chain_length + dt:** identical to T8 (Al FCC 500
+  atoms, `eam/alloy` Al, M=3 chains, `dt = 1 fs`).
+- **Integrator:** Nosé-Hoover NPT isotropic (Parrinello-Rahman-like per
+  integrator/SPEC §5.1), `temperature = 300 K`, `pressure = 1 bar`,
+  `temperature_damping = 0.1 ps`, `pressure_damping = 1.0 ps`,
+  `barostat_update_interval = 100` (integrator/SPEC §4.5.4 default).
+- **Run length:** 10⁵ steps (10⁴ equilibration discarded).
+- **Scope:** isotropic volume flex only; anisotropic (stress tensor) is v2+
+  per integrator/SPEC §5.3.
+- **Assets at `verify/benchmarks/t9_al_fcc_npt/`:**
+
+  ```
+  t9_al_fcc_npt/
+  ├── README.md              # shares T8's arithmetic rationale; NPT-specific setpoint
+  ├── generate_setup.py      # delegates to T8 — identical lattice
+  ├── setup.data             # may be symlink to T8's setup.data (same lattice)
+  ├── Al.eam.alloy           # shared asset
+  ├── config.yaml            # TDMD config: eam/alloy + npt isotropic
+  ├── lammps_script.in       # `fix npt temp 300 300 0.1 iso 1 1 1` parity
+  ├── checks.yaml            # volume match + fluctuation + LAMMPS diff
+  └── metadata.yaml
+  ```
+
+**Acceptance gates (D-M9-9):**
+
+1. **Equilibrium volume** — ⟨V⟩ matches LAMMPS NPT within **2% relative** over
+   the sampling window (consequence of matched pressure setpoint + matched EAM
+   parameters + Variant A thermostat policy). Threshold:
+   `t9.equilibrium_volume_rel_tol = 0.02`;
+2. **Volume fluctuation** — σ_V matches LAMMPS within **5% relative**. The
+   fluctuation magnitude is ensemble-statistical-mechanics predicted from
+   κ_T·k_B·T·V (isothermal compressibility); LAMMPS baseline under identical
+   params is the reference;
+3. **Temperature control** — while box flexes, ⟨T⟩ remains within ±3 K of
+   setpoint (D-M9-9 inherited from T8);
+4. **LAMMPS 100-step parity** — positions + velocities + box volume match
+   LAMMPS `fix npt iso` to ≤ 1e-10 relative at step 100 (deterministic seeds);
+5. **Stability sanity** — 10⁵-step trajectory does not exhibit box-variable
+   exponential runaway (`barostat_mass_damping > 0` well-formed per §5.2
+   validation bands).
+
+**Tier assignment:** same as T8 (medium + slow). 10⁵-step NPT is comparable
+cost to 10⁵-step NVT (single Allreduce per `barostat_update_interval` over
+the NVT cost).
+
+**Threshold registry entries (reserved at T9.1, activated at T9.11):**
+
+```
+benchmarks.t9_al_fcc_npt.equilibrium_volume_rel_tol          status: reserved
+benchmarks.t9_al_fcc_npt.volume_fluctuation_rel_tol          status: reserved
+benchmarks.t9_al_fcc_npt.lammps_step100_box_rel              status: reserved
+```
+
+**Shared with T8:** `setup.data` file identity (isotropic NPT drifts volume
+**away** from initial lattice; NVT holds volume fixed — same *starting* state
+is intentional and simplifies the "flip one knob at a time" debugging
+principle).
+
+### 4.10. Adding new benchmark
 
 При добавлении нового потенциала или расширении (e.g. новый ML model в wave 3), добавляется новый Txx benchmark. Процедура:
 
@@ -1443,14 +1582,18 @@ Integrated в standard TDMD telemetry (`telemetry/SPEC.md` §3).
 | Milestone | VerifyLab deliverable |
 |---|---|
 | M0 | Skeleton module, `thresholds.yaml` initial version |
-| **M1** | T0, T1 benchmarks; fast tier CI integration; `ThresholdRegistry` |
-| **M2** | T4 EAM benchmark; LAMMPS submodule; DifferentialRunner MVP; medium tier |
-| M3 | `ConservationChecker`, observable comparators |
-| M4 | Fast/medium tiers fully operational for all then-existing benchmarks |
-| **M5** | **AnchorTestRunner**; **T3 full Andreev reproduction**; slow tier |
-| M6 | GPU-aware benchmarks; mixed-precision tolerance handling |
-| **M7** | T7 mixed-scaling (Pattern 2); `PerfmodelValidator` integrated |
-| **M8** | **T6 SNAP benchmark**; release certificate process |
+| **M1** | T0, T1 benchmarks; fast tier CI integration; `ThresholdRegistry` (closed 2026-04-18) |
+| **M2** | T4 EAM benchmark; LAMMPS submodule; DifferentialRunner MVP; medium tier (closed 2026-04-18) |
+| M3 | `ConservationChecker`, observable comparators (closed 2026-04-18) |
+| M4 | Fast/medium tiers fully operational for all then-existing benchmarks (closed 2026-04-19) |
+| **M5** | **AnchorTestRunner**; **T3 full Andreev reproduction**; slow tier (closed 2026-04-19) |
+| M6 | GPU-aware benchmarks; mixed-precision tolerance handling (closed 2026-04-19) |
+| **M7** | T7 mixed-scaling (Pattern 2); `PerfmodelValidator` integrated (closed 2026-04-20) |
+| **M8** | **T6 SNAP benchmark**; release certificate process (**closed 2026-04-22** via Case B honest-documentation per D-M8-6; `v1.0.0-alpha1` shipped) |
+| **M9** | **T8 NVT + T9 NPT Al FCC canonical benchmarks** (fixtures at T9.10/T9.11); NVT/NPT differential harness vs LAMMPS (statistical gates per D-M9-9); PolicyValidator K=1-for-thermostatted CI gate; `v1.0.0-beta1` target tag at T9.13 |
+| **M10** | T5 MEAM Si benchmark; MEAM differential vs LAMMPS `meam/c` |
+| **M11** | Variant C NVT-in-TD research-window validation suite (if go/no-go passes) |
+| **M12** | T10 PACE/MLIAP benchmarks (Cu copper, Python-plugin harness) |
 | v2+ | Statistical uncertainty quantification; continuous fuzzing; community benchmark submissions |
 
 ---
@@ -1468,4 +1611,37 @@ Integrated в standard TDMD telemetry (`telemetry/SPEC.md` §3).
 
 ---
 
-*Конец verify/SPEC.md v1.0, дата: 2026-04-16.*
+---
+
+## 16. Change log
+
+### v1.1 — 2026-04-22 (M9 T9.1 SPEC delta)
+
+- **§4.1 benchmark table** extended to T0–T9: new rows T8 `al-fcc-nvt` and
+  T9 `al-fcc-npt` registered per master spec §14 M9. Headroom notice added:
+  T10+ reserved for M12 PACE/MLIAP.
+- **§4.8 T8 NVT** section authored (mirrors §4.7 T6 structure): canonical
+  fixture (Al FCC 5×5×5 = 500 atoms, EAM/alloy Al, Nosé-Hoover chains M=3,
+  300 K, 10⁵ steps), five acceptance gates (equipartition, Maxwell-Boltzmann
+  χ², LAMMPS 100-step parity, LAMMPS statistical, NVE-sanity regression),
+  threshold registry entries reserved (activated at T9.10).
+- **§4.9 T9 NPT** section authored: same fixture contract, isotropic NPT
+  (1 bar, `pressure_damping=1 ps`, `barostat_update_interval=100`), five
+  acceptance gates (⟨V⟩ within 2% vs LAMMPS, σ_V within 5%, ⟨T⟩ within ±3 K,
+  100-step box parity, stability sanity); reserved threshold entries
+  activated at T9.11.
+- **§4.10 Adding new benchmark** section renumbered from §4.8.
+- **§14 roadmap** extended: M1–M8 rows annotated with closure dates (including
+  M8 CLOSED 2026-04-22 with `v1.0.0-alpha1` shipped per Case B D-M8-6). New
+  rows: M9 (T8 + T9 + PolicyValidator K=1 gate + `v1.0.0-beta1` target),
+  M10 (T5 MEAM), M11 (Variant C research validation), M12 (T10 PACE/MLIAP).
+
+### v1.0 — 2026-04-16
+
+- Initial VerifyLab module SPEC landed at M0 kickoff. T0–T7 benchmark table,
+  threshold registry schema, tier policy (fast/medium/slow), LAMMPS-as-oracle
+  procedure.
+
+---
+
+*Конец verify/SPEC.md v1.1, дата: 2026-04-22.*
