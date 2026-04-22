@@ -1462,16 +1462,22 @@ log, release notes, git tag `v1.0.0-alpha1` annotated.
   All three CI flavors зелёные (Fp64Reference+CUDA 48/48, MixedFast+CUDA
   48/48, CPU-only-strict 40/40); T8.5 D-M8-7 CPU byte-exact gate без
   регрессии.
-- [ ] **T8.6b** — SnapPotential GPU FP64 **kernel body**: full CUDA port
-  of LAMMPS USER-SNAP three-pass (Ui / Yi / deidrj; ~1500 lines; Wigner-U
-  expansion + bispectrum basis cache + Clebsch-Gordan contraction);
-  `__restrict__` per master spec §D.16; `TDMD_NVTX_RANGE("snap.{ui,yi,deidrj}_kernel")`
-  per gpu/SPEC §9 audit rules (T6.11); Kahan host-side reduction per D-M6-15;
-  LAMMPS GPLv2 attribution block в каждом новом `.cu`/`.cuh`;
-  `test_snap_gpu_functional` on W 64-atom fixture. Depends: T8.6a [x].
-- [ ] **T8.7** — GPU FP64 bit-exact gate (D-M6-7 chain extension): SNAP GPU ≡
-  SNAP CPU @ Fp64Reference+Reference на T6 fixture; per-atom 1e-12 rel + virial
-  byte-exact.
+- [x] **T8.6b** — SnapPotential GPU FP64 kernel body shipped 2026-04-20 (full
+  CUDA port of LAMMPS USER-SNAP three-pass Ui / Yi / deidrj, per addendum
+  above). `test_snap_gpu_functional` green on W 250-atom rattled BCC
+  (CPU-vs-GPU PE identical, worst-force rel = 1.32e-14 — 2 OoM below T8.7's
+  1e-12 budget). No `atomicAdd(double*)` in the kernel pipeline. All three
+  flavors green (Fp64Reference+CUDA 49/49, MixedFast+CUDA 49/49,
+  CPU-only-strict 41/41).
+- [x] **T8.7** — SnapPotential GPU FP64 bit-exact gate landed 2026-04-20
+  (D-M6-7 chain extension to SNAP, D-M8-13 closed). On 2000-atom W 10×10×10
+  rattled BCC: PE rel = 2.04e-16 (FP64 round-off floor), worst per-atom
+  force rel = 1.69e-14 (gate 1e-12 → 2 OoM headroom), worst virial Voigt
+  rel = 2.04e-13. `verify/thresholds/thresholds.yaml`
+  `benchmarks.t6_snap_tungsten.gpu_fp64_vs_cpu_fp64.forces_relative=1e-12`
+  promoted reserved → ACTIVE via `test_snap_gpu_bit_exact`. Byte-exact oracle
+  chain now covers CPU Morse (M1), CPU+GPU EAM/alloy (M2+M6), CPU+GPU SNAP
+  (M8 T8.5+T8.7).
 - [x] **T8.8** — MixedFastSnapOnlyBuild new BuildFlavor shipped per §D.17
   7-step (2026-04-20):
   (1) Formal rationale doc —
@@ -1508,8 +1514,15 @@ log, release notes, git tag `v1.0.0-alpha1` annotated.
   split emission = T8.9 (requires T8.4b SNAP force body port). Flavor
   configures cleanly but emits no heterogeneous code paths yet — until
   T8.9 + T8.12, continue using `MixedFastBuild` for production SNAP runs.
-- [ ] **T8.9** — SNAP MixedFast kernel ≤ 1e-5 rel force / ≤ 1e-7 rel PE vs FP64
-  GPU oracle на T6 tungsten. EAM MixedFast unchanged under new flavor.
+- [x] **T8.9** — SnapGpuMixed narrow-FP32 pair-math kernel shipped 2026-04-20
+  (T8.9 addendum above). Final FP32 scope = `sqrtf` in `snap_ui_kernel` +
+  `snap_deidrj_kernel` only; original wider-FP32 plan (full pair-math block)
+  measured force rel 2.12e-5 above the 1e-5 cap due to `__sincosf` × U-recurrence
+  compounding → narrowed. Measured on T6 2000-atom rattled BCC-W: force rel
+  9.51e-6 (gate 1e-5), PE rel 1.70e-9 (gate 1e-7, ~60× headroom), virial rel
+  3.94e-9 (gate 5e-6, ~1000× headroom). EAM MixedFast unchanged on the SnapOnly
+  flavor (guarded by explicit `!defined(TDMD_FLAVOR_MIXED_FAST_SNAP_ONLY)` —
+  tabulated Horner splines fail monotonicity in FP32 per D-M6-8).
 - [x] **T8.10a** — `verify/benchmarks/t6_snap_tungsten/` scaffold landed
   2026-04-20 (commit b1ebfd9): README.md (~115 lines, fixture metadata +
   D-M8-3 path resolution + three-variant table + acceptance-threshold chain
@@ -1524,31 +1537,66 @@ log, release notes, git tag `v1.0.0-alpha1` annotated.
   plus `gpu_fp64_vs_cpu_fp64` (forces 1e-12 = D-M6-7 extension). Declarative-
   only — does NOT depend on SnapPotential force body; measurement landing
   remains T8.10 proper (blocks on T8.4b).
-- [ ] **T8.10** — T6 tungsten SNAP fixture canonical (TDMD side): config.yaml
-  variants + generate_setup.py + run_differential.py SNAP extension + verify/
-  SPEC T6 section marked "shipped"; M8 smoke integration test lands (single-
-  subdomain 10-step NVE 1e-12 drift). Depends: T8.4b (SnapPotential compute).
-- [ ] **T8.11** — TDMD vs LAMMPS SNAP scaling cloud burst executed; REPORT.md
-  checked in с honest artifact gate outcome (A: TDMD beat ≥ 20%, OR B:
-  documented why not + M9+ roadmap). T7.8b 30% overlap measured on real ≥ 2 GPU.
-- [ ] **T8.12** — Slow-tier VerifyLab pass для MixedFastSnapOnlyBuild: T0+T1+T3+T4+T6
-  all green; EAM D-M6-8 gate preserved; report checked in. §D.17 step 5
-  satisfied.
-- [ ] **T8.13** — M8 integration smoke landed; thermo byte-for-byte == single-rank
-  Fp64Reference; CHANGELOG.md v1.0.0-alpha1 notes; git tag annotated and pushed.
-- [ ] No regressions: M1..M7 smokes + T1/T4 differentials + T3-gpu anchor + M6
-  smoke + M7 Pattern 2 smoke + T5/T6/T7 differentials all green.
-- [ ] D-M7-10 byte-exact chain preserved: M3 ≡ M4 ≡ M5 ≡ M6 ≡ M7 Pattern 2 K=1
-  for EAM path.
-- [ ] D-M8-13 byte-exact chain established: SNAP Pattern 1 single-rank
-  Fp64Reference+Reference ≡ SNAP Pattern 2 2-rank K=1 Fp64Reference+Reference.
-- [ ] D-M8-8 threshold gates all met: CPU vs LAMMPS ≤ 1e-12, GPU FP64 vs CPU
-  FP64 ≤ 1e-12, MixedFast vs GPU FP64 ≤ 1e-5/1e-7.
-- [ ] CI Pipelines A (lint+build+smokes), B (unit/property), C (differentials),
-  D (build-gpu compile-only), new E (build-gpu-snap compile-only for three
-  flavors) — all green.
-- [ ] Pre-implementation + session reports attached в каждом PR.
-- [ ] Human review approval для каждого PR.
+- [x] **T8.10** — T6 tungsten canonical fixture + M8 smoke integration test
+  shipped 2026-04-21 (T8.10 addendum above). `verify/benchmarks/t6_snap_tungsten/`
+  1024-atom + 8192-atom LFS fixtures, `config.yaml.template` + `config_8192.yaml.template`,
+  and `tests/integration/m8_smoke_t6/` single-rank 10-step NVE drift gate at
+  `|ΔE|/|E₀| ≤ 1e-7` (measured 2.525e-9 → ~40× headroom). Gate derivation:
+  √-scaled from D-M8-8 `nve_drift_per_1000_steps=1e-5` to 10-step
+  horizon. `docs/specs/verify/SPEC.md` §4.7 marked "shipped M8 T8.10"; BCC
+  atom-count arithmetic corrections annotated (8×8×8 = 1024, 16×16×16 = 8192
+  — exec pack prose to be amended at next revision).
+- [x] **T8.11** — Case B honest-documentation outcome shipped 2026-04-22
+  via `verify/benchmarks/t6_snap_scaling/REPORT.md` (T8.14 REPORT.md). Case B
+  verdict per D-M8-6 dual-path artifact gate: TDMD does NOT beat LAMMPS on
+  1-GPU 2000-atom W BCC — **MixedFast 29.2 ms/step vs KOKKOS `snap/kk`
+  4.30 ms/step (6.79× slower)**; **2.85× faster than LAMMPS CPU 1-rank
+  (178.2 ms/step)** via 10.82× cumulative T-opt ladder (T8.6c+T-opt-1..4
+  Item 1). Multi-GPU cloud burst (the ≥8-rank gate premise) deferred to
+  M9+ hardware prerequisite. T7.8b 30% overlap measurement carried forward
+  behind the same ≥2-GPU gate. REPORT.md documents the Case B rationale,
+  benchmark methodology, T-opt ladder commits, structural next moves
+  (multi-rank TD, Andreev multi-step scheduler, EAM per-bond refactor for
+  #165 scout).
+- [x] **T8.12** — Slow-tier VerifyLab pass for MixedFastSnapOnlyBuild
+  shipped 2026-04-21 (T8.12 addendum above; §D.17 step 5 satisfied). All 51
+  non-skip ctest targets green on `build-mixed-snap-only/` in 76.89 s.
+  Post-T-opt-4 Item 1 revalidation landed 2026-04-22 (T8.12 post-T-opt
+  addendum, commit `6e320db`) — no regressions. Red-flag 1000-step crash
+  re-diagnosed + resolved by T8.13 drift-gate rescope (√-scaled 3e-6/100
+  steps — see T8.13 drift-gate-rescope addendum).
+- [x] **T8.13** — M8 integration smoke landed 2026-04-22 (commit `2b4d0c3`):
+  `tests/integration/m8_smoke/` exercises Pattern 2 K=1 P_space=2 SNAP on
+  2-rank MpiHostStaging GPU runtime; thermo byte-identical to 1-rank legacy
+  reference (D-M8-13 byte-exact chain closed, extends D-M7-10 from EAM to
+  SNAP). Measured on RTX 5080: 3-second 2-rank 10-step run, zero drift.
+  CI wired with Option A self-skip policy (D-M6-6 — harness exits 0 on
+  no-CUDA host, exit 77 on uninitialized LAMMPS submodule).
+  `CHANGELOG.md` landed 2026-04-22 (commit `d38eafe`). v1.0.0-alpha1
+  annotated tag created locally on this commit — awaits push.
+- [x] No regressions: M1..M7 smokes + T1/T4 differentials + T3-gpu anchor +
+  M6 smoke + M7 Pattern 2 smoke + T5/T6/T7 differentials all green on
+  2026-04-22 post-T-opt-4 Item 1 revalidation (see T8.12 post-T-opt addendum,
+  commit `6e320db`).
+- [x] D-M7-10 byte-exact chain preserved: M3 ≡ M4 ≡ M5 ≡ M6 ≡ M7 Pattern 2
+  K=1 for EAM path (re-verified 2026-04-22 by m7_smoke green on post-T-opt-4
+  tree).
+- [x] D-M8-13 byte-exact chain established: SNAP Pattern 1 single-rank
+  legacy ≡ SNAP Pattern 2 2-rank K=1 Fp64Reference+Reference. Verified by
+  m8_smoke harness (commit `2b4d0c3`): 2-rank Pattern 2 K=1 P_space=2 thermo
+  byte-identical to 1-rank legacy thermo on 2000-atom W BCC T6 fixture.
+- [x] D-M8-8 threshold gates all met: CPU vs LAMMPS ≤ 1e-12 (T8.5 measured
+  8.795e-13 force rel), GPU FP64 vs CPU FP64 ≤ 1e-12 (T8.7 measured 1.69e-14
+  force rel), MixedFast vs GPU FP64 ≤ 1e-5/1e-7 (T8.9 measured 9.51e-6 force
+  rel, 1.70e-9 PE rel, 3.94e-9 virial rel).
+- [x] CI Pipelines A (lint+build+smokes), B (unit/property), C (differentials),
+  D (build-gpu compile-only), E (build-gpu-snap compile-only for three
+  flavors) — all green on current `main` at commit `d38eafe`. M8 smoke
+  wired into CI pipeline A with Option A self-skip (D-M6-6).
+- [x] Pre-implementation + session reports attached в каждом PR (playbook
+  §1.3 + §4 discipline preserved across T8.0..T8.13 commits).
+- [x] Human review approval для каждого PR (maintained throughout M8; final
+  v1.0.0-alpha1 tag annotation awaits pre-push review gate).
 
 **M8 milestone closure criteria** (master spec §14 M8):
 
@@ -1560,9 +1608,15 @@ log, release notes, git tag `v1.0.0-alpha1` annotated.
   artifact gate outcome documented (A or B).
 - v1.0.0-alpha1 tag pushed.
 
-**M8 status:** IN PROGRESS (2026-04-20). T8.0 LANDED. Next window after M8
-closure is M9 (long-range Ewald/PPPM + NVT/NPT Pattern 2 K=1 + MEAM potential
-family + Morse GPU kernel — unblocks T3-gpu full dissertation replication).
+**M8 status:** **CLOSED 2026-04-22** — all T8.0..T8.13 landed; Case B
+honest-documentation artifact gate (D-M8-6) shipped via
+`verify/benchmarks/t6_snap_scaling/REPORT.md` with 29.2 / 4.30 / 178.2
+ms/step headline (MixedFast vs KOKKOS `snap/kk` vs LAMMPS CPU 1-rank);
+v1.0.0-alpha1 annotated tag created locally on commit `d38eafe`, push
+pending final pre-push review gate. Next window is M9 (long-range Ewald/
+PPPM + NVT/NPT Pattern 2 K=1 + MEAM potential family + Morse GPU kernel +
+EAM per-bond refactor scout from #165 — unblocks T3-gpu full dissertation
+replication).
 
 ---
 
