@@ -417,3 +417,32 @@ Task #167 (SNAP GPU robust-failure-mode guard) remains as a
 defense-in-depth follow-on — unrelated to the drift gate; any future
 pure-SNAP run that somehow crosses the stability horizon should still
 fail with a readable message, not `cudaErrorIllegalAddress`.
+
+---
+
+## 10. Post-T-opt-4 Item 1 revalidation (2026-04-22)
+
+T-opt-4 Item 1 (`e12abd5` — SNAP bond list single-walk) landed after this
+slow-tier pass was recorded at commit `44531e6`. The refactor is byte-
+exact by construction (shared `scan_snap_bonds` visitor preserves FP
+operands and within-atom emission order; `test_bond_list_matches_cpu_
+stencil_order` validates the invariant). Quick revalidation 2026-04-22
+on current HEAD:
+
+```bash
+$ cmake --build build-mixed-snap-only --parallel      # clean rebuild post-e12abd5
+$ ctest --test-dir build-mixed-snap-only --output-on-failure
+100% tests passed, 0 tests failed out of 52    # 1 justified skip (test_t4_nve_drift)
+Total Test time (real) =  78.93 sec
+
+$ ./tests/integration/m8_smoke_t6/run_m8_smoke_t6.sh --tdmd build-mixed-snap-only/src/cli/tdmd
+[m8-smoke]   |ΔE|/|E₀|    = 1.807885e-07    # byte-identical to §2 above
+[m8-smoke] PASS — T6 1024-atom W BCC SNAP NVE: |ΔE|/|E₀| = 1.807885e-07 ≤ 1.0e-6.
+```
+
+**Outcome.** Both layers byte-identical to the `44531e6` pass. `|ΔE|/|E₀|`
+matches to all 7 recorded digits, confirming T-opt-4 Item 1 preserves
+the MixedFastSnapOnlyBuild force-kernel output byte-for-byte. No thresh-
+old changes; no test-result changes; T8.12 slow-tier pass remains valid
+at HEAD. No full 4-6-hour re-sweep needed — the byte-exactness invariant
+shortcircuits the re-verification obligation.
