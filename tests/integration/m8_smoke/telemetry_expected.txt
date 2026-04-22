@@ -1,0 +1,32 @@
+# Expected telemetry counters for the M8 2-rank GPU Pattern 2 SNAP smoke
+# (10 steps, K=1, P_space=2, TD, Fp64ReferenceBuild).
+#
+# Same philosophy as M5/M6/M7's: these are invariants, not point values.
+# The smoke harness extracts the named JSON fields from
+# `--telemetry-jsonl` and checks each against its expected property.
+#
+# Format: <dotted_key>  <op>  <value>
+#   op ∈ { == , >= , <= , > , < }
+#
+# Reference: m8_execution_pack.md §T8.13 "Mandatory invariants".
+
+# Every run must finish its end-of-run JSONL emit (run_end event).
+event                        ==  run_end
+
+# Wall-time sanity — the 2-rank 10-step Pattern 2 GPU SNAP run on the T6
+# 1024-atom fixture should finish well under 120s on commodity hardware
+# (Fp64Reference SNAP at ~100ms/step is the expected envelope; the
+# Fp64ProductionBuild and MixedFast variants are faster but use the same
+# budget). 120s gives a generous margin for CI variance.
+total_wall_sec               <=  120.0
+
+# CommBackend / Telemetry lifecycle must be clean — any mismatched
+# ScopedSection scope indicates a RAII bug or exception escape.
+ignored_end_calls            ==  0
+
+# Subdomain boundary stalls must be zero on the nominal 10-step run.
+# Non-zero indicates OuterSdCoordinator watchdog fired — either a
+# pathological scheduling bug or a test-environment hang. With K=1
+# Pattern 2 degenerates to Pattern 1 spatial decomposition, so there is
+# no legitimate stall pressure.
+boundary_stalls_total        ==  0

@@ -155,6 +155,16 @@ jobs:
         # so golden drift fails CI even without a GPU.
         run: tests/integration/m7_smoke/run_m7_smoke.sh --tdmd build_cpu/src/cli/tdmd
 
+      - name: M8 smoke (GPU Pattern 2 K=1 SNAP, 2-rank ≡ 1-rank — SKIP on public CI)
+        # T8.13 / D-M8-13: extends the D-M7-10 byte-exact chain from EAM to
+        # SNAP. Same Option A policy as M6/M7 — harness self-skips on no GPU
+        # (exit 0) and on uninitialized LAMMPS submodule (exit 77, SNAP
+        # coeff files ship via submodule per D-M8-3). The step is wired
+        # end-to-end so infrastructure rot (template typo, LFS asset drift,
+        # submodule rebase) fails loudly in CI even when the GPU + SNAP
+        # fixture path cannot execute locally.
+        run: tests/integration/m8_smoke/run_m8_smoke.sh --tdmd build_cpu/src/cli/tdmd
+
       - name: Upload compile_commands.json
         if: matrix.compiler == 'clang-17'
         uses: actions/upload-artifact@v4
