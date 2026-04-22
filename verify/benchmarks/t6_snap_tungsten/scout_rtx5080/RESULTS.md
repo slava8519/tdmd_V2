@@ -28,10 +28,10 @@
 | TDMD `MixedFastBuild` (GPU, post-T-opt-3b)            | + paired-bond reverse index (halves deidrj_bond work) |  — |   34.4 | 8.00×   | 0.194× |
 | TDMD `MixedFastSnapOnlyBuild` (GPU, post-T-opt-3b)    | + paired-bond reverse index (halves deidrj_bond work) |  — |   33.8 | 7.86×   | 0.190× |
 | TDMD `Fp64ReferenceBuild` (GPU, post-T-opt-2)           | + yi_kernel Phase B parallel-over-jju via CSR buckets |  3.70 |   37.0 | 8.60×   | 0.208× |
-| TDMD `MixedFastBuild` (GPU, post-T-opt-2)               | + yi_kernel Phase B parallel-over-jju via CSR buckets |  2.95 |   29.5 | 6.86×   | 0.166× (2.81× faster than LAMMPS CPU 1-rank) |
+| TDMD `MixedFastBuild` (GPU, post-T-opt-2)               | + yi_kernel Phase B parallel-over-jju via CSR buckets |  2.95 |   29.5 | 6.86×   | 0.166× (6.04× faster than LAMMPS CPU 1-rank) |
 | TDMD `MixedFastSnapOnlyBuild` (GPU, post-T-opt-2)       | + yi_kernel Phase B parallel-over-jju via CSR buckets |  2.97 |   29.7 | 6.91×   | 0.167× |
 | **TDMD `Fp64ReferenceBuild` (GPU, post-T-opt-4-item1)** | + single-walk bond list (stage+compact replaces count+emit) | 3.64 | **36.4** | **8.47×** | **0.205×** |
-| **TDMD `MixedFastBuild` (GPU, post-T-opt-4-item1)**     | + single-walk bond list (stage+compact replaces count+emit) | 2.92 | **29.2** | **6.79×** | **0.164×** (**2.85× faster than LAMMPS CPU 1-rank**) |
+| **TDMD `MixedFastBuild` (GPU, post-T-opt-4-item1)**     | + single-walk bond list (stage+compact replaces count+emit) | 2.92 | **29.2** | **6.79×** | **0.164×** (**6.10× faster than LAMMPS CPU 1-rank**) |
 | **TDMD `MixedFastSnapOnlyBuild` (GPU, post-T-opt-4-item1)** | + single-walk bond list (stage+compact replaces count+emit) | 2.92 | **29.2** | **6.79×** | **0.164×** |
 | LAMMPS SNAP 1-rank (`-sf gpu` → CPU fallback) | FP64 + FMA   |   17.87 |   178.7 |              41.5×  |                    ≡ 1-rank CPU |
 | LAMMPS SNAP CPU 1-rank              | FP64 + FMA             |   17.79 |   177.9 |              41.4×  |                   1.00×|
@@ -167,7 +167,7 @@ LAMMPS KOKKOS numbers are median-of-3 after 1 warmup discard; 4 total runs with 
    6.86× slower (29.5 ms/step MixedFast). **After T-opt-4 Item 1 single-
    walk bond list** it now stands at **6.79× slower** (29.2 ms/step
    MixedFast). Cumulative T8.6c+T-opt wins: Fp64Ref 12.32×, MixedFast
-   10.82×, MixedSnapOnly 11.17×. MixedFast now runs **2.85× faster than
+   10.82×, MixedSnapOnly 11.17×. MixedFast now runs **6.10× faster than
    LAMMPS CPU 1-rank** (was 1.77× slower
    pre-T8.6c). Relative to LAMMPS CPU 1-rank (178 ms/step), LAMMPS GPU
    is 41.4× faster, so the GPU baseline remains the only honest reference
